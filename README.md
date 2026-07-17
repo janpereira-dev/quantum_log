@@ -6,7 +6,7 @@ Local-first observability and FinOps for AI coding agents. QUANTUM_LOG records v
 
 ## Status
 
-Milestones 0 through 5 are implemented in source. Current commands provide local initialization, SQLite ledger integrity checks, project registration/tags/resolution, NDJSON model-call normalization, task lifecycle, allocation repair/splits, versioned pricing persistence and recalculation, usage/report summaries, JSON/CSV export, accessible terminal dashboard, OTLP capture, and verified distribution scripts. No public release host or external package-manager package is claimed as published.
+Milestones 0 through 6 are implemented in source. Current commands provide local initialization, SQLite ledger integrity checks, project registration/tags/resolution, NDJSON model-call normalization, task lifecycle/summaries, allocation repair/splits, versioned pricing persistence and recalculation, usage/report summaries, JSON/CSV export, accessible terminal dashboard, OTLP capture, stdio MCP agent integration, guided unattributed repair, budget alerts, and verified distribution scripts. No public release host or external package-manager package is claimed as published.
 
 ## Concepts
 
@@ -34,7 +34,7 @@ go run ./cmd/qlog ingest file fixtures/session-a-b-a.ndjson
 go run ./cmd/qlog verify
 ```
 
-Run `qlog tui` for the dashboard. With no arguments, `qlog` opens it only when stdout is an interactive terminal; piped or redirected output keeps command help. Navigation supports Left/Right, Tab, and 1-4; `Esc` returns to Overview, `?` toggles keyboard help, and `q` or `Ctrl+C` quits. Set `NO_COLOR=1` for plain text. Available Milestone 2 commands include `qlog task start|finish|list`, `qlog project list|show|tag list`, `qlog allocation show|split|repair`, `qlog pricing add|list|show|recalculate`, `qlog report summary`, `qlog export --format json|csv`, and `qlog usage month --group-by project,provider,model --json`.
+Run `qlog tui` for the dashboard. With no arguments, `qlog` opens it only when stdout is an interactive terminal; piped or redirected output keeps command help. Navigation supports Left/Right, Tab, and 1-4; `Esc` returns to Overview, `?` toggles keyboard help, and `q` or `Ctrl+C` quits. Set `NO_COLOR=1` for plain text. Agent integrations run through `qlog mcp serve` using stdio. MCP exposes project registration/resolution/switching, tags, tasks, summaries, unattributed repair, and cost allocation tools. `qlog unattributed list` prints repair commands; `qlog budget set-project|set-tag` persists monthly allocated-cost alerts without blocking usage. Available commands include `qlog task start|finish|list|summary`, `qlog project list|show|tag list`, `qlog allocation show|split|repair`, `qlog pricing add|list|show|recalculate`, `qlog report summary`, `qlog export --format json|csv`, and `qlog usage month --group-by project,provider,model --json`.
 
 ## Local Paths
 
@@ -69,6 +69,7 @@ Run `qlog doctor --json` for local database health and `qlog verify` for ledger 
 3. Milestone 3: accessible TUI.
 4. Milestone 4: verified capture adapters and OTLP.
 5. Milestone 5: signed releases and installers.
+6. Milestone 6: agent MCP integration, task summaries, unattributed repair, and budget alerts.
 
 ## License
 

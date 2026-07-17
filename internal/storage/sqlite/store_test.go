@@ -24,11 +24,70 @@ func TestOpenMigratesAndConfiguresDatabase(t *testing.T) {
 		t.Fatalf("foreign_keys = %d, want 1", foreignKeys)
 	}
 
-	for _, table := range []string{"hosts", "projects", "project_locations", "work_contexts", "raw_events", "usage_allocations", "project_tags", "tasks", "sessions", "turns", "model_calls", "tool_calls", "pricing_rules", "cost_snapshots"} {
+	for _, table := range []string{"hosts", "projects", "project_locations", "work_contexts", "raw_events", "usage_allocations", "project_tags", "tasks", "sessions", "turns", "model_calls", "tool_calls", "pricing_rules", "cost_snapshots", "budgets"} {
 		var name string
 		if err := store.db.QueryRow("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", table).Scan(&name); err != nil {
 			t.Fatalf("table %q missing: %v", table, err)
 		}
+	}
+}
+
+func TestTaskAndUnattributedSummariesAndBudgets(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	project, _, err := store.RegisterProject(ctx, "Project", "project", filepath.Join(t.TempDir(), "project"))
+	if err != nil {
+		t.Fatalf("RegisterProject() error = %v", err)
+	}
+	if err := store.AddProjectTag(ctx, project.ID, "team", "core"); err != nil {
+		t.Fatalf("AddProjectTag() error = %v", err)
+	}
+	taskID, err := store.StartTask(ctx, TaskInput{ProjectID: project.ID, Title: "Agent work", TaskType: "build"})
+	if err != nil {
+		t.Fatalf("StartTask() error = %v", err)
+	}
+	now := time.Now().UTC()
+	if _, err := store.RecordModelCall(ctx, ModelCallInput{ProjectID: project.ID, TaskID: taskID, Provider: "provider", ModelID: "model", InputTokens: 100, EstimatedCostUSDMicros: 1_000, OccurredAt: now}); err != nil {
+		t.Fatalf("RecordModelCall(task) error = %v", err)
+	}
+	unattributedID, err := store.RecordModelCall(ctx, ModelCallInput{Provider: "provider", ModelID: "model", InputTokens: 30, EstimatedCostUSDMicros: 500, OccurredAt: now})
+	if err != nil {
+		t.Fatalf("RecordModelCall(unattributed) error = %v", err)
+	}
+
+	task, err := store.TaskSummary(ctx, taskID)
+	if err != nil || task.ModelCallCount != 1 || task.ObservedTokens != 100 || task.AllocatedCostUSDMicros != 1_000 {
+		t.Fatalf("TaskSummary() = %#v, %v", task, err)
+	}
+	unattributed, err := store.UnattributedSummary(ctx)
+	if err != nil || unattributed.ModelCallCount != 1 || unattributed.ModelCalls[0].ID != unattributedID {
+		t.Fatalf("UnattributedSummary() = %#v, %v", unattributed, err)
+	}
+	if err := store.RepairModelCallAllocation(ctx, unattributedID, project.ID); err != nil {
+		t.Fatalf("RepairModelCallAllocation() error = %v", err)
+	}
+	if unattributed, err = store.UnattributedSummary(ctx); err != nil || unattributed.ModelCallCount != 0 {
+		t.Fatalf("UnattributedSummary() after repair = %#v, %v", unattributed, err)
+	}
+
+	if _, err := store.SetBudget(ctx, BudgetInput{Scope: "project", Target: project.ID, MonthlyCostUSDMicros: 1_200, AlertPercent: 80}); err != nil {
+		t.Fatalf("SetBudget(project) error = %v", err)
+	}
+	if _, err := store.SetBudget(ctx, BudgetInput{Scope: "tag", Target: "team=core", MonthlyCostUSDMicros: 1_800, AlertPercent: 80}); err != nil {
+		t.Fatalf("SetBudget(tag) error = %v", err)
+	}
+	alerts, err := store.BudgetAlerts(ctx, now)
+	if err != nil || len(alerts) != 2 || alerts[0].Alert != "exceeded" || alerts[1].Alert != "warning" {
+		t.Fatalf("BudgetAlerts() = %#v, %v", alerts, err)
+	}
+	report, err := store.ProjectReport(ctx, "project", now)
+	if err != nil || report.ObservedTokens != 100 || report.AllocatedCostUSDMicros != 1_500 || len(report.BudgetAlerts) != 1 {
+		t.Fatalf("ProjectReport() = %#v, %v", report, err)
 	}
 }
 

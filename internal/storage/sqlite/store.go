@@ -141,6 +141,63 @@ type TaskRecord struct {
 	FinishedAt  *time.Time `json:"finished_at,omitempty"`
 }
 
+// TaskSummary reports task lifecycle data plus usage already recorded against it.
+// It does not infer usage from an agent session or project.
+type TaskSummary struct {
+	TaskRecord
+	ModelCallCount         int64 `json:"model_call_count"`
+	ObservedTokens         int64 `json:"observed_tokens"`
+	AllocatedCostUSDMicros int64 `json:"allocated_cost_usd_micros"`
+}
+
+type ProjectReport struct {
+	Project                ProjectSummary `json:"project"`
+	Tags                   []ProjectTag   `json:"tags"`
+	ActiveTaskCount        int64          `json:"active_task_count"`
+	ObservedModelCallCount int64          `json:"observed_model_call_count"`
+	ObservedTokens         int64          `json:"observed_tokens"`
+	AllocatedCostUSDMicros int64          `json:"allocated_cost_usd_micros"`
+	BudgetAlerts           []BudgetAlert  `json:"budget_alerts"`
+}
+
+type UnattributedModelCall struct {
+	ID                     string    `json:"id"`
+	OccurredAt             time.Time `json:"occurred_at"`
+	Provider               string    `json:"provider"`
+	Model                  string    `json:"model"`
+	TotalTokens            int64     `json:"total_tokens"`
+	EstimatedCostUSDMicros int64     `json:"estimated_cost_usd_micros"`
+}
+
+type UnattributedSummary struct {
+	ModelCallCount         int64                   `json:"model_call_count"`
+	ObservedTokens         int64                   `json:"observed_tokens"`
+	EstimatedCostUSDMicros int64                   `json:"estimated_cost_usd_micros"`
+	ModelCalls             []UnattributedModelCall `json:"model_calls"`
+}
+
+type BudgetInput struct {
+	Scope                string
+	Target               string
+	MonthlyCostUSDMicros int64
+	AlertPercent         int64
+}
+
+type BudgetRecord struct {
+	ID                   string `json:"id"`
+	Scope                string `json:"scope"`
+	Target               string `json:"target"`
+	MonthlyCostUSDMicros int64  `json:"monthly_cost_usd_micros"`
+	AlertPercent         int64  `json:"alert_percent"`
+}
+
+type BudgetAlert struct {
+	BudgetRecord
+	AllocatedCostUSDMicros int64  `json:"allocated_cost_usd_micros"`
+	ThresholdUSDMicros     int64  `json:"threshold_usd_micros"`
+	Alert                  string `json:"alert"`
+}
+
 type PricingRuleRecord struct {
 	ID        string       `json:"id"`
 	Rule      pricing.Rule `json:"rule"`
@@ -410,6 +467,32 @@ func (s *Store) FinishTask(ctx context.Context, id, result string) error {
 	return nil
 }
 
+func (s *Store) TaskSummary(ctx context.Context, id string) (TaskSummary, error) {
+	var summary TaskSummary
+	var startedAt string
+	var finishedAt sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT t.id, COALESCE(p.slug, ''), t.title, t.task_type, t.status, t.result, t.started_at, t.finished_at,
+		(SELECT COUNT(*) FROM model_calls c WHERE c.task_id = t.id),
+		(SELECT COALESCE(SUM(c.total_tokens), 0) FROM model_calls c WHERE c.task_id = t.id),
+		(SELECT COALESCE(SUM(c.estimated_cost_usd_micros * a.allocation_basis_points / 10000), 0) FROM model_calls c JOIN usage_allocations a ON a.subject_type = 'model_call' AND a.subject_id = c.id WHERE c.task_id = t.id)
+		FROM tasks t LEFT JOIN projects p ON p.id = t.primary_project_id WHERE t.id = ?`, id).Scan(
+		&summary.ID, &summary.ProjectSlug, &summary.Title, &summary.TaskType, &summary.Status, &summary.Result, &startedAt, &finishedAt,
+		&summary.ModelCallCount, &summary.ObservedTokens, &summary.AllocatedCostUSDMicros,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return TaskSummary{}, fmt.Errorf("task %q not found", id)
+	}
+	if err != nil {
+		return TaskSummary{}, fmt.Errorf("read task summary: %w", err)
+	}
+	summary.StartedAt = parseTimestamp(startedAt)
+	if finishedAt.Valid {
+		value := parseTimestamp(finishedAt.String)
+		summary.FinishedAt = &value
+	}
+	return summary, nil
+}
+
 func (s *Store) ListTasks(ctx context.Context, projectSlug string) ([]TaskRecord, error) {
 	query := `SELECT t.id, p.slug, t.title, t.task_type, t.status, t.result, t.started_at, t.finished_at FROM tasks t LEFT JOIN projects p ON p.id = t.primary_project_id`
 	args := []any{}
@@ -480,6 +563,158 @@ func (s *Store) ProjectTags(ctx context.Context, projectID string) ([]ProjectTag
 		tags = append(tags, tag)
 	}
 	return tags, rows.Err()
+}
+
+func (s *Store) ProjectReport(ctx context.Context, slug string, now time.Time) (ProjectReport, error) {
+	project, _, found, err := s.ProjectBySlug(ctx, slug)
+	if err != nil {
+		return ProjectReport{}, err
+	}
+	if !found {
+		return ProjectReport{}, fmt.Errorf("project %q not found", slug)
+	}
+	projects, err := s.ListProjects(ctx)
+	if err != nil {
+		return ProjectReport{}, err
+	}
+	report := ProjectReport{Tags: make([]ProjectTag, 0), BudgetAlerts: make([]BudgetAlert, 0)}
+	for _, candidate := range projects {
+		if candidate.ID == project.ID {
+			report.Project = candidate
+			break
+		}
+	}
+	report.Tags, err = s.ProjectTags(ctx, project.ID)
+	if err != nil {
+		return ProjectReport{}, err
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT
+		(SELECT COUNT(*) FROM tasks WHERE primary_project_id = ? AND status = 'active'),
+		(SELECT COUNT(*) FROM model_calls WHERE primary_project_id = ?),
+		(SELECT COALESCE(SUM(total_tokens), 0) FROM model_calls WHERE primary_project_id = ?),
+		(SELECT COALESCE(SUM(c.estimated_cost_usd_micros * a.allocation_basis_points / 10000), 0) FROM model_calls c JOIN usage_allocations a ON a.subject_type = 'model_call' AND a.subject_id = c.id WHERE a.project_id = ?)`, project.ID, project.ID, project.ID, project.ID).Scan(
+		&report.ActiveTaskCount, &report.ObservedModelCallCount, &report.ObservedTokens, &report.AllocatedCostUSDMicros,
+	); err != nil {
+		return ProjectReport{}, fmt.Errorf("read project report: %w", err)
+	}
+	alerts, err := s.BudgetAlerts(ctx, now)
+	if err != nil {
+		return ProjectReport{}, err
+	}
+	for _, alert := range alerts {
+		if alert.Scope == "project" && alert.Target == project.ID {
+			report.BudgetAlerts = append(report.BudgetAlerts, alert)
+		}
+	}
+	return report, nil
+}
+
+// UnattributedSummary intentionally reports calls without allocations. A manual
+// repair or split removes a call from this queue without rewriting raw usage.
+func (s *Store) UnattributedSummary(ctx context.Context) (UnattributedSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT c.id, c.started_at, c.provider, c.model_id, c.total_tokens, c.estimated_cost_usd_micros
+		FROM model_calls c WHERE NOT EXISTS (SELECT 1 FROM usage_allocations a WHERE a.subject_type = 'model_call' AND a.subject_id = c.id)
+		ORDER BY c.started_at, c.id`)
+	if err != nil {
+		return UnattributedSummary{}, fmt.Errorf("list unattributed model calls: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	summary := UnattributedSummary{ModelCalls: make([]UnattributedModelCall, 0)}
+	for rows.Next() {
+		var call UnattributedModelCall
+		var occurredAt string
+		if err := rows.Scan(&call.ID, &occurredAt, &call.Provider, &call.Model, &call.TotalTokens, &call.EstimatedCostUSDMicros); err != nil {
+			return UnattributedSummary{}, fmt.Errorf("scan unattributed model call: %w", err)
+		}
+		call.OccurredAt = parseTimestamp(occurredAt)
+		summary.ModelCallCount++
+		summary.ObservedTokens += call.TotalTokens
+		summary.EstimatedCostUSDMicros += call.EstimatedCostUSDMicros
+		summary.ModelCalls = append(summary.ModelCalls, call)
+	}
+	return summary, rows.Err()
+}
+
+func (s *Store) SetBudget(ctx context.Context, input BudgetInput) (BudgetRecord, error) {
+	input.Scope = strings.ToLower(strings.TrimSpace(input.Scope))
+	input.Target = strings.ToLower(strings.TrimSpace(input.Target))
+	if input.Scope != "project" && input.Scope != "tag" {
+		return BudgetRecord{}, errors.New("budget scope must be project or tag")
+	}
+	if input.Target == "" || input.MonthlyCostUSDMicros <= 0 {
+		return BudgetRecord{}, errors.New("budget target and positive monthly cost are required")
+	}
+	if input.AlertPercent == 0 {
+		input.AlertPercent = 80
+	}
+	if input.AlertPercent < 1 || input.AlertPercent > 100 {
+		return BudgetRecord{}, errors.New("budget alert percent must be between 1 and 100")
+	}
+	record := BudgetRecord{ID: newID(), Scope: input.Scope, Target: input.Target, MonthlyCostUSDMicros: input.MonthlyCostUSDMicros, AlertPercent: input.AlertPercent}
+	now := timestamp(time.Now())
+	_, err := s.db.ExecContext(ctx, `INSERT INTO budgets (id, scope, target, monthly_cost_usd_micros, alert_percent, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(scope, target) DO UPDATE SET monthly_cost_usd_micros = excluded.monthly_cost_usd_micros, alert_percent = excluded.alert_percent, updated_at = excluded.updated_at`, record.ID, record.Scope, record.Target, record.MonthlyCostUSDMicros, record.AlertPercent, now, now)
+	if err != nil {
+		return BudgetRecord{}, fmt.Errorf("set budget: %w", err)
+	}
+	return record, nil
+}
+
+func (s *Store) BudgetAlerts(ctx context.Context, now time.Time) ([]BudgetAlert, error) {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	monthStart := time.Date(now.UTC().Year(), now.UTC().Month(), 1, 0, 0, 0, 0, time.UTC)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, scope, target, monthly_cost_usd_micros, alert_percent FROM budgets ORDER BY scope, target`)
+	if err != nil {
+		return nil, fmt.Errorf("list budgets: %w", err)
+	}
+	budgets := make([]BudgetAlert, 0)
+	for rows.Next() {
+		var alert BudgetAlert
+		if err := rows.Scan(&alert.ID, &alert.Scope, &alert.Target, &alert.MonthlyCostUSDMicros, &alert.AlertPercent); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("scan budget: %w", err)
+		}
+		budgets = append(budgets, alert)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	alerts := make([]BudgetAlert, 0, len(budgets))
+	for _, alert := range budgets {
+		var query string
+		args := []any{timestamp(monthStart)}
+		if alert.Scope == "project" {
+			query = `SELECT COALESCE(SUM(c.estimated_cost_usd_micros * a.allocation_basis_points / 10000), 0) FROM model_calls c JOIN usage_allocations a ON a.subject_type = 'model_call' AND a.subject_id = c.id WHERE c.started_at >= ? AND a.project_id = ?`
+			args = append(args, alert.Target)
+		} else {
+			parts := strings.SplitN(alert.Target, "=", 2)
+			if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+				return nil, fmt.Errorf("stored tag budget target %q is invalid", alert.Target)
+			}
+			query = `SELECT COALESCE(SUM(c.estimated_cost_usd_micros * a.allocation_basis_points / 10000), 0) FROM model_calls c JOIN usage_allocations a ON a.subject_type = 'model_call' AND a.subject_id = c.id JOIN project_tags t ON t.project_id = a.project_id WHERE c.started_at >= ? AND t.tag_key = ? AND t.tag_value = ?`
+			args = append(args, parts[0], parts[1])
+		}
+		if err := s.db.QueryRowContext(ctx, query, args...).Scan(&alert.AllocatedCostUSDMicros); err != nil {
+			return nil, fmt.Errorf("calculate budget usage: %w", err)
+		}
+		alert.ThresholdUSDMicros = alert.MonthlyCostUSDMicros * alert.AlertPercent / 100
+		switch {
+		case alert.AllocatedCostUSDMicros >= alert.MonthlyCostUSDMicros:
+			alert.Alert = "exceeded"
+		case alert.AllocatedCostUSDMicros >= alert.ThresholdUSDMicros:
+			alert.Alert = "warning"
+		default:
+			alert.Alert = "ok"
+		}
+		alerts = append(alerts, alert)
+	}
+	return alerts, rows.Err()
 }
 
 func (s *Store) RecordModelCall(ctx context.Context, input ModelCallInput) (string, error) {
