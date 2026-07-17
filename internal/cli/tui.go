@@ -39,7 +39,7 @@ func loadOverview(ctx context.Context, home string) (tui.OverviewData, error) {
 	if err != nil {
 		return tui.OverviewData{}, err
 	}
-	defer service.Close()
+	defer func() { _ = service.Close() }()
 
 	usage, err := service.Store.Usage(ctx, sqlite.UsageQuery{GroupBy: []string{"project", "provider", "model"}})
 	if err != nil {
