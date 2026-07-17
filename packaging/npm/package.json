@@ -1,9 +1,8 @@
 {
   "name": "@janpereira.dev/quantum-log",
-  "version": "0.0.0-development",
-  "description": "Template metadata for the QUANTUM_LOG thin binary distributor",
+  "version": "0.1.0",
+  "description": "Verified binary distributor for QUANTUM_LOG",
   "license": "MIT",
-  "private": true,
   "repository": {
     "type": "git",
     "url": "git+https://github.com/janpereira-dev/quantum_log.git"
@@ -12,9 +11,24 @@
   "bugs": {
     "url": "https://github.com/janpereira-dev/quantum_log/issues"
   },
-  "files": [],
+  "bin": {
+    "qlog": "bin/qlog.js"
+  },
+  "files": [
+    "bin/",
+    "scripts/",
+    "README.md"
+  ],
   "keywords": ["qlog", "quantum-log", "observability", "finops"],
   "engines": {
     "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js",
+    "test": "node --test tests/*.test.js",
+    "test:dry-run": "node scripts/postinstall.js --dry-run"
   }
 }
