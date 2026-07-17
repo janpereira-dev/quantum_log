@@ -332,7 +332,7 @@ func (s *Store) VerifyLedger(ctx context.Context, sessionID string) error {
 	if err != nil {
 		return fmt.Errorf("query ledger: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	previous := make(map[string]string)
 	for rows.Next() {
 		var source, session, eventType, occurredAt, resolutionMethod, resolutionConfidence, evidence, payload, previousHash, eventHash string
@@ -422,7 +422,7 @@ func (s *Store) ListTasks(ctx context.Context, projectSlug string) ([]TaskRecord
 	if err != nil {
 		return nil, fmt.Errorf("list tasks: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	tasks := make([]TaskRecord, 0)
 	for rows.Next() {
 		var task TaskRecord
@@ -451,7 +451,7 @@ func (s *Store) ListProjects(ctx context.Context) ([]ProjectSummary, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list projects: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	projects := make([]ProjectSummary, 0)
 	for rows.Next() {
 		var project ProjectSummary
@@ -470,7 +470,7 @@ func (s *Store) ProjectTags(ctx context.Context, projectID string) ([]ProjectTag
 	if err != nil {
 		return nil, fmt.Errorf("list project tags: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	tags := make([]ProjectTag, 0)
 	for rows.Next() {
 		var tag ProjectTag
@@ -581,7 +581,7 @@ func (s *Store) ModelCallAllocations(ctx context.Context, modelCallID string) ([
 	if err != nil {
 		return nil, fmt.Errorf("list model call allocations: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	allocations := make([]Allocation, 0)
 	for rows.Next() {
 		var allocation Allocation
@@ -614,7 +614,7 @@ func (s *Store) ListPricingRules(ctx context.Context) ([]PricingRuleRecord, erro
 	if err != nil {
 		return nil, fmt.Errorf("list pricing rules: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	rules := make([]PricingRuleRecord, 0)
 	for rows.Next() {
 		var record PricingRuleRecord
@@ -780,7 +780,7 @@ func (s *Store) Usage(ctx context.Context, query UsageQuery) (UsageReport, error
 	if err != nil {
 		return UsageReport{}, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	grouped := make(map[string]UsageRow)
 	var totalAllocated int64
 	for rows.Next() {
@@ -849,7 +849,7 @@ func (s *Store) RegisteredPaths(ctx context.Context) (map[string]string, error) 
 	if err != nil {
 		return nil, fmt.Errorf("query registered paths: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	paths := make(map[string]string)
 	for rows.Next() {
 		var path, slug string

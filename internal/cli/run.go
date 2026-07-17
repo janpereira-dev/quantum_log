@@ -15,7 +15,7 @@ func newRunCommand(home *string) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		defer service.Close()
+		defer func() { _ = service.Close() }()
 		result, err := wrapper.Run(command.Context(), service, wrapper.Config{Project: project, Agent: agent, Command: args, Input: command.InOrStdin(), Output: command.Root().OutOrStdout(), Errors: command.Root().ErrOrStderr()})
 		if err != nil {
 			return err

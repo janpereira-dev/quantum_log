@@ -38,7 +38,7 @@ func (r Receiver) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	request.Body = http.MaxBytesReader(writer, request.Body, maxBodyBytes)
-	defer request.Body.Close()
+	defer func() { _ = request.Body.Close() }()
 	var payload exportTraceServiceRequest
 	decoder := json.NewDecoder(request.Body)
 	if err := decoder.Decode(&payload); err != nil {
