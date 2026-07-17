@@ -4,7 +4,7 @@ QUANTUM_LOG includes source-controlled installer and package-manager templates. 
 
 ## Published Status
 
-No npm package, Homebrew tap, Scoop bucket, WinGet package, or AUR package is published by this repository. `packaging/npm/package.json` is marked `private` to prevent accidental publication. The `{{...}}` values in package templates must be populated from a real release's `checksums.txt` before submitting to an external registry.
+No npm package, Homebrew tap, Scoop bucket, WinGet package, or AUR package is published by this repository. `packaging/npm` is a publish-ready thin distributor for `@janpereira.dev/quantum-log` version `0.1.0`; it remains unpublished until a matching GitHub Release exists. Other `{{...}}` package templates must be populated from a real release's `checksums.txt` before submitting to an external registry.
 
 ## Native Installer
 
