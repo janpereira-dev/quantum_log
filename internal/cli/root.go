@@ -65,7 +65,7 @@ func newInitCommand(home *string) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		defer service.Close()
+		defer func() { _ = service.Close() }()
 		_, err = fmt.Fprintf(command.Root().OutOrStdout(), "initialized QUANTUM_LOG at %s\n", service.Paths.Home)
 		return err
 	}}
@@ -78,7 +78,7 @@ func newDoctorCommand(home *string) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		defer service.Close()
+		defer func() { _ = service.Close() }()
 		if err := service.Store.Doctor(command.Context()); err != nil {
 			return err
 		}
@@ -99,7 +99,7 @@ func newVerifyCommand(home *string) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		defer service.Close()
+		defer func() { _ = service.Close() }()
 		if err := service.Store.VerifyLedger(command.Context(), sessionID); err != nil {
 			return err
 		}
@@ -127,7 +127,7 @@ func newProjectTagCommand(home *string) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		defer service.Close()
+		defer func() { _ = service.Close() }()
 		project, _, found, err := service.Store.ProjectBySlug(command.Context(), projectSlug)
 		if err != nil {
 			return err
@@ -155,7 +155,7 @@ func newProjectTagListCommand(home *string) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		defer service.Close()
+		defer func() { _ = service.Close() }()
 		project, _, found, err := service.Store.ProjectBySlug(command.Context(), projectSlug)
 		if err != nil {
 			return err
@@ -190,7 +190,7 @@ func newProjectListCommand(home *string) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		defer service.Close()
+		defer func() { _ = service.Close() }()
 		projects, err := service.Store.ListProjects(command.Context())
 		if err != nil {
 			return err
@@ -216,7 +216,7 @@ func newProjectShowCommand(home *string) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		defer service.Close()
+		defer func() { _ = service.Close() }()
 		project, location, found, err := service.Store.ProjectBySlug(command.Context(), args[0])
 		if err != nil {
 			return err
@@ -258,7 +258,7 @@ func newProjectRegisterCommand(home *string) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		defer service.Close()
+		defer func() { _ = service.Close() }()
 		registered, location, err := service.Store.RegisterProject(command.Context(), name, slug, path)
 		if err != nil {
 			return err
@@ -280,7 +280,7 @@ func newProjectCurrentCommand(home *string, use string) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		defer service.Close()
+		defer func() { _ = service.Close() }()
 		resolution, err := service.ResolveCurrent(command.Context(), explicitProject)
 		if err != nil {
 			return err
@@ -318,7 +318,7 @@ func newIngestCommand(home *string) *cobra.Command {
 		if err != nil {
 			return fmt.Errorf("open NDJSON file: %w", err)
 		}
-		defer file.Close()
+		defer func() { _ = file.Close() }()
 		return importReader(command, home, file)
 	}})
 	ingest.AddCommand(&cobra.Command{Use: "stdin", Short: "Import NDJSON from standard input", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
@@ -332,7 +332,7 @@ func importReader(command *cobra.Command, home *string, reader io.Reader) error 
 	if err != nil {
 		return err
 	}
-	defer service.Close()
+	defer func() { _ = service.Close() }()
 	count, err := jsonl.Import(command.Context(), service.Store, reader)
 	if err != nil {
 		return err
@@ -357,7 +357,7 @@ func newUsagePeriodCommand(home *string, period string) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		defer service.Close()
+		defer func() { _ = service.Close() }()
 		now := time.Now().UTC()
 		from := now.AddDate(0, 0, -1)
 		if period == "week" {
@@ -427,7 +427,7 @@ func runReportSummary(command *cobra.Command, home *string, fromValue, toValue, 
 	if err != nil {
 		return err
 	}
-	defer service.Close()
+	defer func() { _ = service.Close() }()
 	report, err := service.Store.Usage(command.Context(), storeUsageQuery(from, to, groupBy))
 	if err != nil {
 		return err
@@ -451,7 +451,7 @@ func newAllocationCommand(home *string) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		defer service.Close()
+		defer func() { _ = service.Close() }()
 		allocations := make([]sqlite.AllocationInput, 0, len(args)-1)
 		for _, raw := range args[1:] {
 			parts := strings.SplitN(raw, "=", 2)
@@ -483,7 +483,7 @@ func newAllocationCommand(home *string) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		defer service.Close()
+		defer func() { _ = service.Close() }()
 		allocations, err := service.Store.ModelCallAllocations(command.Context(), args[0])
 		if err != nil {
 			return err
@@ -507,7 +507,7 @@ func newAllocationCommand(home *string) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		defer service.Close()
+		defer func() { _ = service.Close() }()
 		project, _, found, err := service.Store.ProjectBySlug(command.Context(), repairProject)
 		if err != nil {
 			return err
@@ -534,7 +534,7 @@ func newPricingCommand(home *string) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		defer file.Close()
+		defer func() { _ = file.Close() }()
 		if _, err := pricing.Load(file); err != nil {
 			return err
 		}
@@ -546,7 +546,7 @@ func newPricingCommand(home *string) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		defer file.Close()
+		defer func() { _ = file.Close() }()
 		rule, err := pricing.Load(file)
 		if err != nil {
 			return err
@@ -555,7 +555,7 @@ func newPricingCommand(home *string) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		defer service.Close()
+		defer func() { _ = service.Close() }()
 		record, err := service.Store.AddPricingRule(command.Context(), rule)
 		if err != nil {
 			return err
@@ -569,7 +569,7 @@ func newPricingCommand(home *string) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		defer service.Close()
+		defer func() { _ = service.Close() }()
 		rules, err := service.Store.ListPricingRules(command.Context())
 		if err != nil {
 			return err
@@ -596,7 +596,7 @@ func newPricingCommand(home *string) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		defer service.Close()
+		defer func() { _ = service.Close() }()
 		rules, err := service.Store.ListPricingRules(command.Context())
 		if err != nil {
 			return err
@@ -636,7 +636,7 @@ func newPricingCommand(home *string) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		defer service.Close()
+		defer func() { _ = service.Close() }()
 		count, err := service.Store.RecalculateCosts(command.Context(), sqlite.PricingRecalculateQuery{From: fromTime, To: toTime})
 		if err != nil {
 			return err
@@ -657,7 +657,7 @@ func newTaskCommand(home *string) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		defer service.Close()
+		defer func() { _ = service.Close() }()
 		project, _, found, err := service.Store.ProjectBySlug(command.Context(), projectSlug)
 		if err != nil {
 			return err
@@ -684,7 +684,7 @@ func newTaskCommand(home *string) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		defer service.Close()
+		defer func() { _ = service.Close() }()
 		if err := service.Store.FinishTask(command.Context(), args[0], result); err != nil {
 			return err
 		}
@@ -699,7 +699,7 @@ func newTaskCommand(home *string) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		defer service.Close()
+		defer func() { _ = service.Close() }()
 		tasks, err := service.Store.ListTasks(command.Context(), listProject)
 		if err != nil {
 			return err
@@ -736,7 +736,7 @@ func newExportCommand(home *string) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		defer service.Close()
+		defer func() { _ = service.Close() }()
 		records, err := service.Store.ExportModelCalls(command.Context(), sqlite.PricingRecalculateQuery{From: fromTime, To: toTime})
 		if err != nil {
 			return err

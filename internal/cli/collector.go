@@ -23,7 +23,7 @@ func newCollectorCommand(home *string) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		defer service.Close()
+		defer func() { _ = service.Close() }()
 		server := &http.Server{Addr: listen, Handler: otlp.NewHandler(service), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: time.Minute}
 		_, err = fmt.Fprintf(command.Root().OutOrStdout(), "OTLP/HTTP JSON receiver listening on http://%s/v1/traces\n", listen)
 		if err != nil {
