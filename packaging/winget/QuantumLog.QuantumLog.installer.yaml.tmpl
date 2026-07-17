@@ -1,0 +1,16 @@
+PackageIdentifier: {{PUBLISHER}}.QuantumLog
+PackageVersion: {{VERSION}}
+InstallerType: zip
+NestedInstallerType: portable
+NestedInstallerFiles:
+  - RelativeFilePath: qlog.exe
+    PortableCommandAlias: qlog
+Installers:
+  - Architecture: x64
+    InstallerUrl: {{WINDOWS_AMD64_URL}}
+    InstallerSha256: {{WINDOWS_AMD64_SHA256}}
+  - Architecture: arm64
+    InstallerUrl: {{WINDOWS_ARM64_URL}}
+    InstallerSha256: {{WINDOWS_ARM64_SHA256}}
+ManifestType: installer
+ManifestVersion: 1.10.0

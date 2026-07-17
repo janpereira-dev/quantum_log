@@ -1,0 +1,3 @@
+{"source":"fixture","session_id":"fixture-session-a-b-a","event_type":"work_context.opened","occurred_at":"2026-07-16T09:00:00Z","payload":{"fixture":true,"project_hint":"project-a","cwd":"C:/fixtures/project-a"}}
+{"source":"fixture","session_id":"fixture-session-a-b-a","event_type":"work_context.opened","occurred_at":"2026-07-16T09:41:00Z","payload":{"fixture":true,"project_hint":"project-b","cwd":"C:/fixtures/project-b"}}
+{"source":"fixture","session_id":"fixture-session-a-b-a","event_type":"work_context.opened","occurred_at":"2026-07-16T10:21:00Z","payload":{"fixture":true,"project_hint":"project-a","cwd":"C:/fixtures/project-a"}}

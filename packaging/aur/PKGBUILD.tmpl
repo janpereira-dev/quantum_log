@@ -1,0 +1,18 @@
+pkgname=quantum-log-bin
+pkgver={{VERSION}}
+pkgrel=1
+pkgdesc='Local-first observability and FinOps for AI coding agents'
+arch=('x86_64' 'aarch64')
+url='https://github.com/janpereira-dev/quantum_log'
+license=('MIT')
+provides=('quantum-log')
+conflicts=('quantum-log')
+source_x86_64=('{{LINUX_AMD64_URL}}')
+source_aarch64=('{{LINUX_ARM64_URL}}')
+sha256sums_x86_64=('{{LINUX_AMD64_SHA256}}')
+sha256sums_aarch64=('{{LINUX_ARM64_SHA256}}')
+
+package() {
+  install -Dm755 qlog "${pkgdir}/usr/bin/qlog"
+  install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

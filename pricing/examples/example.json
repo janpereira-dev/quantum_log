@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "provider": "example-provider",
+  "modelPattern": "example-model-pro",
+  "validFrom": "2026-07-01T00:00:00Z",
+  "billingMode": "token",
+  "currency": "USD",
+  "unitTokens": 1000000,
+  "prices": {
+    "inputMicros": 3000000,
+    "cachedInputMicros": 750000,
+    "cacheWriteMicros": 0,
+    "outputMicros": 15000000,
+    "reasoningMicros": 0
+  },
+  "version": "DEMO-2026.07.1"
+}

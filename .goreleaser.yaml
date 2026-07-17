@@ -1,0 +1,40 @@
+version: 2
+project_name: quantum-log
+before:
+  hooks:
+    - go mod tidy
+builds:
+  - id: qlog
+    main: ./cmd/qlog
+    binary: qlog
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    ldflags:
+      - -s -w -X main.version={{ .Version }} -X main.commit={{ .Commit }} -X main.date={{ .CommitDate }}
+archives:
+  - id: default
+    name_template: "qlog_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+checksum:
+  name_template: checksums.txt
+sboms:
+  - id: archive
+    artifacts: archive
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+release:
+  footer: |
+    Full project history: https://github.com/janpereira-dev/quantum_log/blob/{{ .Tag }}/CHANGELOG.md
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"

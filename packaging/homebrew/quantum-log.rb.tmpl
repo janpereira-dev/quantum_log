@@ -1,0 +1,35 @@
+class QuantumLog < Formula
+  desc "Local-first observability and FinOps for AI coding agents"
+  homepage "https://github.com/janpereira-dev/quantum_log"
+  version "{{VERSION}}"
+
+  on_macos do
+    on_arm do
+      url "{{DARWIN_ARM64_URL}}"
+      sha256 "{{DARWIN_ARM64_SHA256}}"
+    end
+    on_intel do
+      url "{{DARWIN_AMD64_URL}}"
+      sha256 "{{DARWIN_AMD64_SHA256}}"
+    end
+  end
+
+  on_linux do
+    on_arm do
+      url "{{LINUX_ARM64_URL}}"
+      sha256 "{{LINUX_ARM64_SHA256}}"
+    end
+    on_intel do
+      url "{{LINUX_AMD64_URL}}"
+      sha256 "{{LINUX_AMD64_SHA256}}"
+    end
+  end
+
+  def install
+    bin.install "qlog"
+  end
+
+  test do
+    assert_match version.to_s, shell_output("#{bin}/qlog --version")
+  end
+end

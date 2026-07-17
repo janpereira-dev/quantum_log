@@ -1,0 +1,18 @@
+{
+  "version": "{{VERSION}}",
+  "description": "Local-first observability and FinOps for AI coding agents",
+  "homepage": "https://github.com/janpereira-dev/quantum_log",
+  "license": "MIT",
+  "architecture": {
+    "64bit": {
+      "url": "{{WINDOWS_AMD64_URL}}",
+      "hash": "{{WINDOWS_AMD64_SHA256}}"
+    },
+    "arm64": {
+      "url": "{{WINDOWS_ARM64_URL}}",
+      "hash": "{{WINDOWS_ARM64_SHA256}}"
+    }
+  },
+  "bin": "qlog.exe",
+  "checkver": "github"
+}
