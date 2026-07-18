@@ -195,3 +195,46 @@ func TestMilestoneTwoCommandWorkflow(t *testing.T) {
 		t.Fatalf("export csv = %q, %v", output, err)
 	}
 }
+
+func TestMilestoneSixAgentCommands(t *testing.T) {
+	home := t.TempDir()
+	worktree := filepath.Join(t.TempDir(), "project")
+	run := func(args ...string) (string, error) {
+		command := New(Version{Version: "0.1.0"})
+		output := new(bytes.Buffer)
+		command.SetArgs(append([]string{"--home", home}, args...))
+		setOutput(command, output)
+		err := command.Execute()
+		return output.String(), err
+	}
+	if _, err := run("init"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, err := run("project", "register", "--path", worktree, "--name", "Project", "--slug", "project"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	taskID, err := run("task", "start", "--project", "project", "--title", "Agent task")
+	if err != nil {
+		t.Fatalf("task start: %v", err)
+	}
+	taskID = string(bytes.TrimSpace([]byte(taskID)))
+	if _, err := run("task", "finish", taskID, "--result", "complete"); err != nil {
+		t.Fatalf("task finish: %v", err)
+	}
+	if output, err := run("task", "summary", taskID, "--json"); err != nil || !json.Valid([]byte(output)) {
+		t.Fatalf("task summary = %q, %v", output, err)
+	}
+	if _, err := run("budget", "set-project", "project", "--monthly-usd-micros", "1000"); err != nil {
+		t.Fatalf("set project budget: %v", err)
+	}
+	if output, err := run("budget", "status", "--json"); err != nil || !json.Valid([]byte(output)) {
+		t.Fatalf("budget status = %q, %v", output, err)
+	}
+	if output, err := run("unattributed", "list", "--json"); err != nil || !json.Valid([]byte(output)) {
+		t.Fatalf("unattributed list = %q, %v", output, err)
+	}
+	command := New(Version{})
+	if found, _, err := command.Find([]string{"mcp", "serve"}); err != nil || found == nil || found.Name() != "serve" {
+		t.Fatalf("mcp serve command = %#v, %v", found, err)
+	}
+}

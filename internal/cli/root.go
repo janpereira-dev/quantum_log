@@ -55,7 +55,7 @@ func New(version Version) *cobra.Command {
 	}
 	root.PersistentFlags().StringVar(&home, "home", "", "override the local QUANTUM_LOG data directory")
 	root.SetVersionTemplate("{{.Version}}\n")
-	root.AddCommand(newInitCommand(&home), newDoctorCommand(&home), newVerifyCommand(&home), newProjectCommand(&home), newIngestCommand(&home), newUsageCommand(&home), newReportCommand(&home), newAllocationCommand(&home), newPricingCommand(&home), newTaskCommand(&home), newExportCommand(&home), newTUICommand(&home), newAdapterCommand(), newCollectorCommand(&home), newRunCommand(&home))
+	root.AddCommand(newInitCommand(&home), newDoctorCommand(&home), newVerifyCommand(&home), newProjectCommand(&home), newIngestCommand(&home), newUsageCommand(&home), newReportCommand(&home), newAllocationCommand(&home), newPricingCommand(&home), newTaskCommand(&home), newExportCommand(&home), newTUICommand(&home), newAdapterCommand(), newCollectorCommand(&home), newRunCommand(&home), newMCPCommand(&home, version), newUnattributedCommand(&home), newBudgetCommand(&home))
 	return root
 }
 
@@ -688,7 +688,11 @@ func newTaskCommand(home *string) *cobra.Command {
 		if err := service.Store.FinishTask(command.Context(), args[0], result); err != nil {
 			return err
 		}
-		_, err = fmt.Fprintln(command.Root().OutOrStdout(), "task: finished")
+		summary, err := service.Store.TaskSummary(command.Context(), args[0])
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintf(command.Root().OutOrStdout(), "task: finished | %d model call(s) | %d tokens | $%d micros\n", summary.ModelCallCount, summary.ObservedTokens, summary.AllocatedCostUSDMicros)
 		return err
 	}}
 	finish.Flags().StringVar(&result, "result", "", "task result")
@@ -716,7 +720,25 @@ func newTaskCommand(home *string) *cobra.Command {
 	}}
 	list.Flags().StringVar(&listProject, "project", "", "project slug")
 	list.Flags().BoolVar(&listJSON, "json", false, "output JSON")
-	task.AddCommand(start, finish, list)
+	var summaryJSON bool
+	summary := &cobra.Command{Use: "summary <task-id>", Short: "Show recorded task usage summary", Args: cobra.ExactArgs(1), RunE: func(command *cobra.Command, args []string) error {
+		service, err := app.Open(command.Context(), *home)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = service.Close() }()
+		result, err := service.Store.TaskSummary(command.Context(), args[0])
+		if err != nil {
+			return err
+		}
+		if summaryJSON {
+			return writeJSON(command.Root().OutOrStdout(), result)
+		}
+		_, err = fmt.Fprintf(command.Root().OutOrStdout(), "%s | %s | %d model call(s) | %d tokens | $%d micros\n", result.ID, result.Status, result.ModelCallCount, result.ObservedTokens, result.AllocatedCostUSDMicros)
+		return err
+	}}
+	summary.Flags().BoolVar(&summaryJSON, "json", false, "output JSON")
+	task.AddCommand(start, finish, list, summary)
 	return task
 }
 
