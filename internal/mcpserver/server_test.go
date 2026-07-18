@@ -55,6 +55,47 @@ func TestAgentToolHandlersManageProjectTaskAndUsage(t *testing.T) {
 	}
 }
 
+func TestAssignUsageRejectsModelCallsWithExistingAllocations(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	initialized, err := app.Initialize(ctx, home)
+	if err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+	if err := initialized.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	service, err := app.Open(ctx, home)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	source, _, err := service.Store.RegisterProject(ctx, "Source", "source", filepath.Join(t.TempDir(), "source"))
+	if err != nil {
+		t.Fatalf("RegisterProject(source) error = %v", err)
+	}
+	target, _, err := service.Store.RegisterProject(ctx, "Target", "target", filepath.Join(t.TempDir(), "target"))
+	if err != nil {
+		t.Fatalf("RegisterProject(target) error = %v", err)
+	}
+	callID, err := service.Store.RecordModelCall(ctx, sqlite.ModelCallInput{ProjectID: source.ID, Provider: "provider", ModelID: "model"})
+	if err != nil {
+		t.Fatalf("RecordModelCall() error = %v", err)
+	}
+
+	s := &server{home: home}
+	if _, _, err := s.assignUsage(ctx, nil, assignUsageInput{ModelCallID: callID, Project: target.Slug}); err == nil {
+		t.Fatal("assignUsage() accepted a model call with an existing allocation")
+	}
+	allocations, err := service.Store.ModelCallAllocations(ctx, callID)
+	if err != nil {
+		t.Fatalf("ModelCallAllocations() error = %v", err)
+	}
+	if len(allocations) != 1 || allocations[0].ProjectID != source.ID || allocations[0].BasisPoints != 10_000 || allocations[0].Method != "direct" {
+		t.Fatalf("allocations after assignUsage() = %#v", allocations)
+	}
+}
+
 func callRegister(s *server, ctx context.Context, input registerProjectInput) (registerProjectOutput, error) {
 	_, output, err := s.registerProject(ctx, nil, input)
 	return output, err

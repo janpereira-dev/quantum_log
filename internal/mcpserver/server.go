@@ -264,7 +264,7 @@ func (s *server) assignUsage(ctx context.Context, _ *mcp.CallToolRequest, input 
 	if !found {
 		return nil, allocationsOutput{}, fmt.Errorf("project %q not found", input.Project)
 	}
-	if err := service.Store.RepairModelCallAllocation(ctx, input.ModelCallID, project.ID); err != nil {
+	if err := service.Store.AssignUnattributedModelCall(ctx, input.ModelCallID, project.ID); err != nil {
 		return nil, allocationsOutput{}, err
 	}
 	allocations, err := service.Store.ModelCallAllocations(ctx, input.ModelCallID)

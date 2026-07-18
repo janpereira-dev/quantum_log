@@ -601,8 +601,13 @@ func (s *Store) ProjectReport(ctx context.Context, slug string, now time.Time) (
 	if err != nil {
 		return ProjectReport{}, err
 	}
+	tagTargets := make(map[string]struct{}, len(report.Tags))
+	for _, tag := range report.Tags {
+		tagTargets[tag.Key+"="+tag.Value] = struct{}{}
+	}
 	for _, alert := range alerts {
-		if alert.Scope == "project" && alert.Target == project.ID {
+		_, matchesTag := tagTargets[alert.Target]
+		if (alert.Scope == "project" && alert.Target == project.ID) || (alert.Scope == "tag" && matchesTag) {
 			report.BudgetAlerts = append(report.BudgetAlerts, alert)
 		}
 	}
@@ -641,6 +646,13 @@ func (s *Store) SetBudget(ctx context.Context, input BudgetInput) (BudgetRecord,
 	if input.Scope != "project" && input.Scope != "tag" {
 		return BudgetRecord{}, errors.New("budget scope must be project or tag")
 	}
+	if input.Scope == "tag" {
+		parts := strings.SplitN(input.Target, "=", 2)
+		if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+			return BudgetRecord{}, errors.New("tag budget target must use key=value")
+		}
+		input.Target = strings.ToLower(strings.TrimSpace(parts[0])) + "=" + strings.ToLower(strings.TrimSpace(parts[1]))
+	}
 	if input.Target == "" || input.MonthlyCostUSDMicros <= 0 {
 		return BudgetRecord{}, errors.New("budget target and positive monthly cost are required")
 	}
@@ -665,6 +677,7 @@ func (s *Store) BudgetAlerts(ctx context.Context, now time.Time) ([]BudgetAlert,
 		now = time.Now().UTC()
 	}
 	monthStart := time.Date(now.UTC().Year(), now.UTC().Month(), 1, 0, 0, 0, 0, time.UTC)
+	nextMonth := monthStart.AddDate(0, 1, 0)
 	rows, err := s.db.QueryContext(ctx, `SELECT id, scope, target, monthly_cost_usd_micros, alert_percent FROM budgets ORDER BY scope, target`)
 	if err != nil {
 		return nil, fmt.Errorf("list budgets: %w", err)
@@ -688,16 +701,16 @@ func (s *Store) BudgetAlerts(ctx context.Context, now time.Time) ([]BudgetAlert,
 	alerts := make([]BudgetAlert, 0, len(budgets))
 	for _, alert := range budgets {
 		var query string
-		args := []any{timestamp(monthStart)}
+		args := []any{timestamp(monthStart), timestamp(nextMonth)}
 		if alert.Scope == "project" {
-			query = `SELECT COALESCE(SUM(c.estimated_cost_usd_micros * a.allocation_basis_points / 10000), 0) FROM model_calls c JOIN usage_allocations a ON a.subject_type = 'model_call' AND a.subject_id = c.id WHERE c.started_at >= ? AND a.project_id = ?`
+			query = `SELECT COALESCE(SUM(c.estimated_cost_usd_micros * a.allocation_basis_points / 10000), 0) FROM model_calls c JOIN usage_allocations a ON a.subject_type = 'model_call' AND a.subject_id = c.id WHERE c.started_at >= ? AND c.started_at < ? AND a.project_id = ?`
 			args = append(args, alert.Target)
 		} else {
 			parts := strings.SplitN(alert.Target, "=", 2)
 			if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 				return nil, fmt.Errorf("stored tag budget target %q is invalid", alert.Target)
 			}
-			query = `SELECT COALESCE(SUM(c.estimated_cost_usd_micros * a.allocation_basis_points / 10000), 0) FROM model_calls c JOIN usage_allocations a ON a.subject_type = 'model_call' AND a.subject_id = c.id JOIN project_tags t ON t.project_id = a.project_id WHERE c.started_at >= ? AND t.tag_key = ? AND t.tag_value = ?`
+			query = `SELECT COALESCE(SUM(c.estimated_cost_usd_micros * a.allocation_basis_points / 10000), 0) FROM model_calls c JOIN usage_allocations a ON a.subject_type = 'model_call' AND a.subject_id = c.id JOIN project_tags t ON t.project_id = a.project_id WHERE c.started_at >= ? AND c.started_at < ? AND t.tag_key = ? AND t.tag_value = ?`
 			args = append(args, parts[0], parts[1])
 		}
 		if err := s.db.QueryRowContext(ctx, query, args...).Scan(&alert.AllocatedCostUSDMicros); err != nil {
@@ -774,6 +787,35 @@ func (s *Store) RepairModelCallAllocation(ctx context.Context, modelCallID, proj
 		return errors.New("repair project id is required")
 	}
 	return s.replaceAllocations(ctx, "model_call", modelCallID, []AllocationInput{{ProjectID: projectID, BasisPoints: 10000}}, "manual")
+}
+
+func (s *Store) AssignUnattributedModelCall(ctx context.Context, modelCallID, projectID string) error {
+	if strings.TrimSpace(modelCallID) == "" || strings.TrimSpace(projectID) == "" {
+		return errors.New("model call id and project id are required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+	var exists int
+	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM model_calls WHERE id = ?`, modelCallID).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("model call %q not found", modelCallID)
+		}
+		return fmt.Errorf("read model call allocation: %w", err)
+	}
+	var allocationCount int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_allocations WHERE subject_type = 'model_call' AND subject_id = ?`, modelCallID).Scan(&allocationCount); err != nil {
+		return fmt.Errorf("read model call allocations: %w", err)
+	}
+	if allocationCount > 0 {
+		return fmt.Errorf("model call %q already has allocations; use a split to replace them", modelCallID)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO usage_allocations (id, subject_type, subject_id, project_id, allocation_basis_points, allocation_method, confidence, created_at) VALUES (?, 'model_call', ?, ?, 10000, 'manual', 'high', ?)`, newID(), modelCallID, projectID, timestamp(time.Now())); err != nil {
+		return fmt.Errorf("insert allocation: %w", err)
+	}
+	return tx.Commit()
 }
 
 func (s *Store) replaceAllocations(ctx context.Context, subjectType, subjectID string, allocations []AllocationInput, method string) error {
