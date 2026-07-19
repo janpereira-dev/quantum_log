@@ -1,10 +1,10 @@
 # Distribution Release Process
 
-QUANTUM_LOG includes source-controlled installer and package-manager templates. They are not evidence that any release host, package, tap, bucket, publisher identifier, or AUR package currently exists.
+QUANTUM_LOG publishes signed release artifacts through GitHub Releases. Package-manager availability changes independently; verify the current channel status before relying on it in automation.
 
 ## Published Status
 
-No npm package, Homebrew tap, Scoop bucket, WinGet package, or AUR package is published by this repository. `packaging/npm` is a publish-ready thin distributor for `@janpereira.dev/quantum-log` version `0.1.0`; it remains unpublished until a matching GitHub Release exists. Other `{{...}}` package templates must be populated from a real release's `checksums.txt` before submitting to an external registry.
+GitHub Release `v0.1.0` is public and includes archives, checksums, SBOMs, and a Sigstore checksum bundle. The public npm package is `@janpereira.dev/quantum-log`; Homebrew is available through `janpereira-dev/tap/quantum-log`; Scoop is available through `https://github.com/janpereira-dev/scoop-bucket`. WinGet and AUR publication remain subject to their external review and validation workflows.
 
 ## Native Installer
 
