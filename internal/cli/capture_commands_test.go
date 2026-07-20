@@ -3,6 +3,9 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/janpereira-dev/quantum_log/internal/adapters"
@@ -87,5 +90,53 @@ func TestAdapterStatusTestAndUninstallCommands(t *testing.T) {
 	var uninstall adapters.InstallResult
 	if err := json.Unmarshal([]byte(output), &uninstall); err != nil || uninstall.Changed {
 		t.Fatalf("adapter uninstall output = %q, %#v, %v", output, uninstall, err)
+	}
+}
+
+func TestSetupCommandPlansInstallsAndIsIdempotent(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	run := func(args ...string) (string, error) {
+		command := New(Version{})
+		output := new(bytes.Buffer)
+		command.SetArgs(args)
+		setOutput(command, output)
+		err := command.Execute()
+		return output.String(), err
+	}
+
+	output, err := run("setup", "--dry-run", "--json")
+	if err != nil {
+		t.Fatalf("setup dry-run: %v", err)
+	}
+	var plans []adapters.SetupPlan
+	if err := json.Unmarshal([]byte(output), &plans); err != nil || len(plans) == 0 {
+		t.Fatalf("setup dry-run output = %q, %#v, %v", output, plans, err)
+	}
+
+	output, err = run("setup", "opencode", "--yes", "--json")
+	if err != nil {
+		t.Fatalf("setup opencode: %v", err)
+	}
+	var installed []adapters.SetupPlan
+	if err := json.Unmarshal([]byte(output), &installed); err != nil || len(installed) != 1 || installed[0].AdapterID != "opencode" {
+		t.Fatalf("setup opencode output = %q, %#v, %v", output, installed, err)
+	}
+	configPath := filepath.Join(configHome, ".config", "opencode", "AGENTS.md")
+	contents, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read opencode setup file: %v", err)
+	}
+	if !strings.Contains(string(contents), "qlog:begin agent-auto-capture") {
+		t.Fatalf("opencode setup file missing marker: %q", contents)
+	}
+
+	output, err = run("setup", "opencode", "--yes", "--json")
+	if err != nil {
+		t.Fatalf("setup opencode second run: %v", err)
+	}
+	var rerun []adapters.SetupPlan
+	if err := json.Unmarshal([]byte(output), &rerun); err != nil || len(rerun) != 1 || len(rerun[0].Changes) != 1 || rerun[0].Changes[0].Action != "unchanged" {
+		t.Fatalf("setup opencode rerun = %q, %#v, %v", output, rerun, err)
 	}
 }
