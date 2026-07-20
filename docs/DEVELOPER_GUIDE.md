@@ -23,7 +23,16 @@ Optional but recommended:
 - `make` if you want the shortcuts in the Makefile (not required).
 - `goreleaser` only if you cut a release.
 
-The project uses `modernc.org/sqlite`, so it compiles and runs without CGo with `CGO_ENABLED=0`.
+Demo: build and run one-liner with `go install` (after v0.2.0 tag is published):
+
+```bash
+go install github.com/janpereira-dev/quantum_log/cmd/qlog@v0.2.0
+qlog --version   # -> qlog 0.2.0 ...
+```
+
+No `GOFLAGS`, no `CGO_ENABLED`, no clone. Just Go 1.22+ and one command.
+
+The project uses `modernc.org/sqlite`, so it compiles and runs without CGo with `CGO_ENABLED=0` if you ever need CGo-free builds.
 
 ## 3. Clone and Build
 
