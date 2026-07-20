@@ -11,8 +11,8 @@ import (
 func TestDefaultRegistryDeclaresOnlyVerifiedCapabilities(t *testing.T) {
 	registry := Default()
 	items := registry.List()
-	if len(items) != 3 {
-		t.Fatalf("List() returned %d adapters, want 3", len(items))
+	if len(items) != 8 {
+		t.Fatalf("List() returned %d adapters, want 8", len(items))
 	}
 	generic, found := registry.Get("generic-jsonl")
 	if !found || !generic.Descriptor().Capabilities.StructuredEvents {
@@ -21,7 +21,7 @@ func TestDefaultRegistryDeclaresOnlyVerifiedCapabilities(t *testing.T) {
 	if generic.Descriptor().Capabilities.Costs || generic.Descriptor().Capabilities.InputTokens {
 		t.Fatal("generic JSONL must not claim metrics supplied only by callers")
 	}
-	for _, id := range []string{"opencode", "claude-code"} {
+	for _, id := range []string{"opencode", "claude-code", "codex", "pi", "copilot-vscode", "openclaw", "hermen"} {
 		adapter, found := registry.Get(id)
 		if !found {
 			t.Fatalf("missing %s adapter", id)
