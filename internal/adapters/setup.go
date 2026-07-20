@@ -1,6 +1,12 @@
 package adapters
 
-import "time"
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+)
 
 type CaptureQuality string
 
@@ -60,4 +66,77 @@ type TestResult struct {
 	CaptureQuality CaptureQuality `json:"capture_quality"`
 	Message        string         `json:"message"`
 	TestedAt       time.Time      `json:"tested_at"`
+}
+
+func ApplyMarkerBlock(path, marker, content string, dryRun bool) (SetupChange, error) {
+	begin, end := markerBounds(marker)
+	replacement := begin + "\n" + content + "\n" + end + "\n"
+	currentBytes, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return SetupChange{}, fmt.Errorf("read %s: %w", path, err)
+	}
+	current := string(currentBytes)
+	action := "created"
+	next := replacement
+	if err == nil {
+		action = "updated"
+		next = replaceOrAppendMarker(current, begin, end, replacement)
+	}
+	if current == next {
+		return SetupChange{Path: path, Action: "unchanged", Description: "qlog marker block already up to date"}, nil
+	}
+	if dryRun {
+		if err == nil {
+			action = "update"
+		} else {
+			action = "create"
+		}
+		return SetupChange{Path: path, Action: action, Description: "dry run: qlog marker block would be written"}, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return SetupChange{}, fmt.Errorf("create parent directory: %w", err)
+	}
+	change := SetupChange{Path: path, Action: action, Description: "qlog marker block written"}
+	if err == nil {
+		backupPath := fmt.Sprintf("%s.qlog-backup-%s", path, time.Now().UTC().Format("20060102150405"))
+		if err := os.WriteFile(backupPath, currentBytes, 0o600); err != nil {
+			return SetupChange{}, fmt.Errorf("write backup: %w", err)
+		}
+		change.BackupPath = backupPath
+	}
+	if err := os.WriteFile(path, []byte(next), 0o600); err != nil {
+		return SetupChange{}, fmt.Errorf("write %s: %w", path, err)
+	}
+	return change, nil
+}
+
+func HasMarkerBlock(path, marker string) bool {
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	begin, end := markerBounds(marker)
+	text := string(contents)
+	return strings.Contains(text, begin) && strings.Contains(text, end)
+}
+
+func markerBounds(marker string) (string, string) {
+	return "<!-- qlog:begin " + marker + " -->", "<!-- qlog:end " + marker + " -->"
+}
+
+func replaceOrAppendMarker(current, begin, end, replacement string) string {
+	start := strings.Index(current, begin)
+	finish := strings.Index(current, end)
+	if start >= 0 && finish >= start {
+		finish += len(end)
+		for finish < len(current) && (current[finish] == '\r' || current[finish] == '\n') {
+			finish++
+		}
+		return current[:start] + replacement + current[finish:]
+	}
+	separator := ""
+	if current != "" && !strings.HasSuffix(current, "\n") {
+		separator = "\n"
+	}
+	return current + separator + replacement
 }
