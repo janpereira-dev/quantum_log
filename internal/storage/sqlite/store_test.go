@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -29,6 +30,38 @@ func TestOpenMigratesAndConfiguresDatabase(t *testing.T) {
 		if err := store.db.QueryRow("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", table).Scan(&name); err != nil {
 			t.Fatalf("table %q missing: %v", table, err)
 		}
+	}
+}
+
+func TestProjectLocationMatchesNormalizedResolvedPath(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	project, _, err := store.RegisterProject(ctx, "Project", "project", filepath.Join(t.TempDir(), "first"))
+	if err != nil {
+		t.Fatalf("RegisterProject(first) error = %v", err)
+	}
+	_, expected, err := store.RegisterProject(ctx, "Project", project.Slug, filepath.Join(t.TempDir(), "second"))
+	if err != nil {
+		t.Fatalf("RegisterProject(second) error = %v", err)
+	}
+
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin lookup: %v", err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback() })
+	resolvedPath := strings.ToLower(filepath.ToSlash(expected.AbsolutePath))
+	gotProject, gotLocation, found, err := projectByLocation(ctx, tx, resolvedPath)
+	if err != nil {
+		t.Fatalf("projectByLocation() error = %v", err)
+	}
+	if !found || gotProject.ID != project.ID || gotLocation.ID != expected.ID {
+		t.Fatalf("projectByLocation(%q) = project=%#v location=%#v found=%t, want project=%q location=%q", resolvedPath, gotProject, gotLocation, found, project.ID, expected.ID)
 	}
 }
 

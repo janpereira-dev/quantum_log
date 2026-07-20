@@ -4,6 +4,7 @@ package cli
 import (
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -55,38 +56,45 @@ func New(version Version) *cobra.Command {
 	}
 	root.PersistentFlags().StringVar(&home, "home", "", "override the local QUANTUM_LOG data directory")
 	root.SetVersionTemplate("{{.Version}}\n")
-	root.AddCommand(newInitCommand(&home), newDoctorCommand(&home), newVerifyCommand(&home), newProjectCommand(&home), newIngestCommand(&home), newUsageCommand(&home), newReportCommand(&home), newAllocationCommand(&home), newPricingCommand(&home), newTaskCommand(&home), newExportCommand(&home), newTUICommand(&home), newAdapterCommand(), newCollectorCommand(&home), newRunCommand(&home), newMCPCommand(&home, version), newUnattributedCommand(&home), newBudgetCommand(&home))
+	root.AddCommand(newInitCommand(&home), newDoctorCommand(&home), newVerifyCommand(&home), newMaintenanceCommand(&home), newProjectCommand(&home), newIngestCommand(&home), newUsageCommand(&home), newReportCommand(&home), newAllocationCommand(&home), newPricingCommand(&home), newTaskCommand(&home), newExportCommand(&home), newTUICommand(&home), newAdapterCommand(), newCollectorCommand(&home), newRunCommand(&home), newMCPCommand(&home, version), newUnattributedCommand(&home), newBudgetCommand(&home), newAnchorCommand(&home))
 	return root
 }
 
 func newInitCommand(home *string) *cobra.Command {
-	return &cobra.Command{Use: "init", Short: "Initialize local configuration and ledger", RunE: func(command *cobra.Command, _ []string) error {
+	return &cobra.Command{Use: "init", Short: "Initialize local configuration and ledger", RunE: func(command *cobra.Command, _ []string) (result error) {
 		service, err := app.Initialize(command.Context(), *home)
 		if err != nil {
 			return err
 		}
-		defer func() { _ = service.Close() }()
-		_, err = fmt.Fprintf(command.Root().OutOrStdout(), "initialized QUANTUM_LOG at %s\n", service.Paths.Home)
-		return err
+		defer func() { result = errors.Join(result, service.Close()) }()
+		_, result = fmt.Fprintf(command.Root().OutOrStdout(), "initialized QUANTUM_LOG at %s\n", service.Paths.Home)
+		return result
 	}}
 }
 
 func newDoctorCommand(home *string) *cobra.Command {
 	var jsonOutput bool
-	command := &cobra.Command{Use: "doctor", Short: "Check local ledger health without modifying it", RunE: func(command *cobra.Command, _ []string) error {
-		service, err := app.Open(command.Context(), *home)
+	command := &cobra.Command{Use: "doctor", Short: "Check local ledger health without modifying it", RunE: func(command *cobra.Command, _ []string) (result error) {
+		service, err := app.OpenReadOnly(command.Context(), *home)
 		if err != nil {
 			return err
 		}
-		defer func() { _ = service.Close() }()
+		defer func() { result = errors.Join(result, service.Close()) }()
 		if err := service.Store.Doctor(command.Context()); err != nil {
 			return err
 		}
 		if jsonOutput {
-			return writeJSON(command.Root().OutOrStdout(), map[string]string{"status": "ok", "database": service.Paths.Database})
+			output := map[string]string{"status": "ok", "database": service.Paths.Database}
+			if warnings := service.Store.Warnings(); len(warnings) != 0 {
+				output["warning"] = strings.Join(warnings, "; ")
+			}
+			return writeJSON(command.Root().OutOrStdout(), output)
 		}
-		_, err = fmt.Fprintln(command.Root().OutOrStdout(), "doctor: ok")
-		return err
+		for _, warning := range service.Store.Warnings() {
+			_, _ = fmt.Fprintln(command.ErrOrStderr(), warning)
+		}
+		_, result = fmt.Fprintln(command.Root().OutOrStdout(), "doctor: ok")
+		return result
 	}}
 	command.Flags().BoolVar(&jsonOutput, "json", false, "output JSON")
 	return command
@@ -94,20 +102,47 @@ func newDoctorCommand(home *string) *cobra.Command {
 
 func newVerifyCommand(home *string) *cobra.Command {
 	var sessionID string
-	command := &cobra.Command{Use: "verify", Short: "Verify append-only ledger hash chains", RunE: func(command *cobra.Command, _ []string) error {
-		service, err := app.Open(command.Context(), *home)
+	command := &cobra.Command{Use: "verify", Short: "Verify append-only ledger hash chains", RunE: func(command *cobra.Command, _ []string) (result error) {
+		service, err := app.OpenReadOnly(command.Context(), *home)
 		if err != nil {
 			return err
 		}
-		defer func() { _ = service.Close() }()
+		defer func() { result = errors.Join(result, service.Close()) }()
 		if err := service.Store.VerifyLedger(command.Context(), sessionID); err != nil {
 			return err
 		}
-		_, err = fmt.Fprintln(command.Root().OutOrStdout(), "ledger: verified")
-		return err
+		for _, warning := range service.Store.Warnings() {
+			_, _ = fmt.Fprintln(command.ErrOrStderr(), warning)
+		}
+		_, result = fmt.Fprintln(command.Root().OutOrStdout(), "ledger: verified")
+		return result
 	}, Args: cobra.NoArgs}
 	command.Flags().StringVar(&sessionID, "session", "", "verify one session")
 	return command
+}
+
+func newMaintenanceCommand(home *string) *cobra.Command {
+	maintenance := &cobra.Command{Use: "maintenance", Short: "Manage controlled local ledger maintenance"}
+	maintenance.AddCommand(
+		&cobra.Command{Use: "status", Short: "Show maintenance availability", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+			_, err := fmt.Fprintln(command.OutOrStdout(), "maintenance status: checkpoint available; recover and rebuild-anchor blocked pending anchor task")
+			return err
+		}},
+		&cobra.Command{Use: "checkpoint", Short: "Validate and checkpoint a quiescent ledger", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+			if err := app.Checkpoint(command.Context(), *home); err != nil {
+				return err
+			}
+			_, err := fmt.Fprintln(command.OutOrStdout(), "maintenance checkpoint: WAL cleared")
+			return err
+		}},
+		&cobra.Command{Use: "recover", Short: "Recover a damaged ledger", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+			return errors.New("maintenance recover is not implemented; blocked pending anchor task")
+		}},
+		&cobra.Command{Use: "rebuild-anchor", Short: "Rebuild the ledger anchor", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+			return errors.New("maintenance rebuild-anchor is not implemented; blocked pending anchor task")
+		}},
+	)
+	return maintenance
 }
 
 func newProjectCommand(home *string) *cobra.Command {
@@ -281,20 +316,15 @@ func newProjectCurrentCommand(home *string, use string) *cobra.Command {
 			return err
 		}
 		defer func() { _ = service.Close() }()
-		resolution, err := service.ResolveCurrent(command.Context(), explicitProject)
+		resolved, err := service.ResolveProject(command.Context(), explicitProject, "", "")
 		if err != nil {
 			return err
 		}
+		resolution := resolved.Resolution
 		output := currentProjectOutput{ProjectSlug: resolution.ProjectSlug, Method: string(resolution.Method), Confidence: string(resolution.Confidence), Evidence: resolution.Evidence}
-		if resolution.ProjectSlug != "" {
-			_, location, found, err := service.Store.ProjectBySlug(command.Context(), resolution.ProjectSlug)
-			if err != nil {
-				return err
-			}
-			if found {
-				output.LocationID = location.ID
-				output.LocationPath = location.AbsolutePath
-			}
+		if resolved.LocationID != "" {
+			output.LocationID = resolved.LocationID
+			output.LocationPath = resolved.LocationPath
 		}
 		if jsonOutput {
 			return writeJSON(command.Root().OutOrStdout(), output)
@@ -830,4 +860,58 @@ func slugify(value string) string {
 	value = strings.ReplaceAll(value, " ", "-")
 	value = filepath.Base(value)
 	return strings.Trim(value, "-")
+}
+
+func newAnchorCommand(home *string) *cobra.Command {
+	anchor := &cobra.Command{Use: "anchor", Short: "Export and verify external ledger anchors for tamper and truncation detection"}
+	check := &cobra.Command{Use: "check", Short: "Verify current ledger against previously exported anchors (use --file <path>)", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) (result error) {
+		path, _ := command.Flags().GetString("file")
+		if strings.TrimSpace(path) == "" {
+			return errors.New("anchor check requires --file <path>")
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read anchor file: %w", err)
+		}
+		var expected []sqlite.LedgerAnchor
+		if err := json.Unmarshal(data, &expected); err != nil {
+			return fmt.Errorf("parse anchor file: %w", err)
+		}
+		service, err := app.OpenReadOnly(command.Context(), *home)
+		if err != nil {
+			return err
+		}
+		defer func() { result = errors.Join(result, service.Close()) }()
+		mismatches, err := service.Store.VerifyAnchors(command.Context(), expected)
+		if err != nil {
+			return err
+		}
+		if len(mismatches) == 0 {
+			_, result = fmt.Fprintln(command.OutOrStdout(), "anchors: ok")
+			return result
+		}
+		for _, m := range mismatches {
+			kind := "mismatch"
+			if m.Truncated {
+				kind = "truncation"
+			}
+			_, _ = fmt.Fprintf(command.OutOrStdout(), "anchor %s: source=%s session=%s expected=%s actual=%s\n", kind, m.Source, m.SessionID, m.Expected, m.Actual)
+		}
+		return errors.New("anchor verification failed")
+	}}
+	check.Flags().String("file", "", "path to anchor JSON file")
+	exportCmd := &cobra.Command{Use: "export", Short: "Export current ledger head anchors as JSON", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) (result error) {
+		service, err := app.OpenReadOnly(command.Context(), *home)
+		if err != nil {
+			return err
+		}
+		defer func() { result = errors.Join(result, service.Close()) }()
+		anchors, err := service.Store.LedgerAnchors(command.Context())
+		if err != nil {
+			return err
+		}
+		return writeJSON(command.OutOrStdout(), anchors)
+	}}
+	anchor.AddCommand(exportCmd, check)
+	return anchor
 }

@@ -7,47 +7,75 @@ func TestResolvePrecedence(t *testing.T) {
 
 	registered := map[string]string{"C:/repos/a": "project-a"}
 	tests := []struct {
-		name  string
-		input Input
-		want  ProjectResolution
+		name       string
+		input      Input
+		wantSlug   string
+		want       Method
+		confidence Confidence
+		evidence   string
 	}{
 		{
-			name:  "explicit wins over environment",
-			input: Input{ExplicitProject: "project-explicit", EnvironmentProject: "project-env", CWD: "C:/repos/a"},
-			want:  ProjectResolution{ProjectSlug: "project-explicit", Method: Explicit, Confidence: Exact},
+			name:       "explicit beats environment",
+			input:      Input{ExplicitProject: "project-explicit", EnvironmentProject: "project-env", CWD: "C:/repos/a"},
+			wantSlug:   "project-explicit",
+			want:       Explicit,
+			confidence: Exact,
+			evidence:   "explicit project",
 		},
 		{
-			name:  "explicit wins over adapter",
-			input: Input{ExplicitProject: "project-explicit", AdapterProject: "project-adapter"},
-			want:  ProjectResolution{ProjectSlug: "project-explicit", Method: Explicit, Confidence: Exact},
+			name:       "environment beats cwd",
+			input:      Input{EnvironmentProject: "project-env", CWD: "C:/repos/a"},
+			wantSlug:   "project-env",
+			want:       Environment,
+			confidence: High,
+			evidence:   "QLOG_PROJECT",
 		},
 		{
-			name:  "adapter signal wins over environment",
-			input: Input{AdapterProject: "project-adapter", EnvironmentProject: "project-env"},
-			want:  ProjectResolution{ProjectSlug: "project-adapter", Method: Adapter, Confidence: High},
+			name:       "cwd beats git root",
+			input:      Input{CWD: "C:/repos/a", GitRoot: "C:/repos/b"},
+			wantSlug:   "project-a",
+			want:       CWD,
+			confidence: High,
+			evidence:   "c:/repos/a",
 		},
 		{
-			name:  "environment wins over working directory",
-			input: Input{EnvironmentProject: "project-env", CWD: "C:/repos/a"},
-			want:  ProjectResolution{ProjectSlug: "project-env", Method: Environment, Confidence: High},
+			name:       "git root beats registered path fallback",
+			input:      Input{CWD: "C:/elsewhere", GitRoot: "C:/repos/a", AdapterProject: "project-adapter"},
+			wantSlug:   "project-a",
+			want:       GitRoot,
+			confidence: High,
+			evidence:   "c:/repos/a",
 		},
 		{
-			name:  "working directory resolves registered path",
-			input: Input{CWD: "C:/repos/a/subdir"},
-			want:  ProjectResolution{ProjectSlug: "project-a", Method: CWD, Confidence: High},
+			name:       "registered path beats adapter hint",
+			input:      Input{CWD: "C:/repos/a/nested", AdapterProject: "project-adapter"},
+			wantSlug:   "project-a",
+			want:       Path,
+			confidence: High,
+			evidence:   "c:/repos/a",
 		},
 		{
-			name:  "no evidence stays unattributed",
-			input: Input{CWD: "C:/elsewhere"},
-			want:  ProjectResolution{Method: Unresolved, Confidence: Unknown},
+			name:       "adapter is final hint",
+			input:      Input{AdapterProject: "project-adapter"},
+			wantSlug:   "project-adapter",
+			want:       Adapter,
+			confidence: High,
+			evidence:   "adapter project signal",
+		},
+		{
+			name:       "unknown is unattributed",
+			input:      Input{},
+			want:       Unresolved,
+			confidence: Unknown,
+			evidence:   "no project evidence",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := Resolve(tt.input, registered)
-			if got.ProjectSlug != tt.want.ProjectSlug || got.Method != tt.want.Method || got.Confidence != tt.want.Confidence {
-				t.Fatalf("Resolve() = %#v, want %#v", got, tt.want)
+			if got.ProjectSlug != tt.wantSlug || got.Method != tt.want || got.Confidence != tt.confidence || got.Evidence != tt.evidence {
+				t.Fatalf("Resolve() = %#v, want slug=%q method=%q confidence=%q evidence=%q", got, tt.wantSlug, tt.want, tt.confidence, tt.evidence)
 			}
 		})
 	}

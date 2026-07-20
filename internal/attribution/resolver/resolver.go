@@ -45,19 +45,42 @@ func Resolve(input Input, registeredPaths map[string]string) ProjectResolution {
 	if slug := strings.TrimSpace(input.ExplicitProject); slug != "" {
 		return ProjectResolution{ProjectSlug: slug, Method: Explicit, Confidence: Exact, Evidence: "explicit project"}
 	}
-	if slug := strings.TrimSpace(input.AdapterProject); slug != "" {
-		return ProjectResolution{ProjectSlug: slug, Method: Adapter, Confidence: High, Evidence: "adapter project signal"}
-	}
 	if slug := strings.TrimSpace(input.EnvironmentProject); slug != "" {
 		return ProjectResolution{ProjectSlug: slug, Method: Environment, Confidence: High, Evidence: "QLOG_PROJECT"}
 	}
-	if slug, path := longestMatch(input.CWD, registeredPaths); slug != "" {
+	if slug, path := exactMatch(input.CWD, registeredPaths); slug != "" {
 		return ProjectResolution{ProjectSlug: slug, Method: CWD, Confidence: High, Evidence: path}
 	}
-	if slug, path := longestMatch(input.GitRoot, registeredPaths); slug != "" {
+	if slug, path := exactMatch(input.GitRoot, registeredPaths); slug != "" {
 		return ProjectResolution{ProjectSlug: slug, Method: GitRoot, Confidence: High, Evidence: path}
 	}
+	if slug, path := longestRegisteredMatch(input.CWD, input.GitRoot, registeredPaths); slug != "" {
+		return ProjectResolution{ProjectSlug: slug, Method: Path, Confidence: High, Evidence: path}
+	}
+	if slug := strings.TrimSpace(input.AdapterProject); slug != "" {
+		return ProjectResolution{ProjectSlug: slug, Method: Adapter, Confidence: High, Evidence: "adapter project signal"}
+	}
 	return ProjectResolution{Method: Unresolved, Confidence: Unknown, Evidence: "no project evidence"}
+}
+
+func exactMatch(candidate string, registeredPaths map[string]string) (string, string) {
+	candidate = normalizePath(candidate)
+	for path, slug := range registeredPaths {
+		path = normalizePath(path)
+		if candidate == path {
+			return slug, path
+		}
+	}
+	return "", ""
+}
+
+func longestRegisteredMatch(cwd, gitRoot string, registeredPaths map[string]string) (string, string) {
+	cwdSlug, cwdPath := longestMatch(cwd, registeredPaths)
+	gitSlug, gitPath := longestMatch(gitRoot, registeredPaths)
+	if len(gitPath) > len(cwdPath) {
+		return gitSlug, gitPath
+	}
+	return cwdSlug, cwdPath
 }
 
 func longestMatch(candidate string, registeredPaths map[string]string) (string, string) {

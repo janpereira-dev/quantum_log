@@ -10,6 +10,7 @@ import (
 
 	"github.com/janpereira-dev/quantum_log/internal/attribution/resolver"
 	"github.com/janpereira-dev/quantum_log/internal/config"
+	"github.com/janpereira-dev/quantum_log/internal/domain"
 	storepkg "github.com/janpereira-dev/quantum_log/internal/storage/sqlite"
 )
 
@@ -20,11 +21,12 @@ type Service struct {
 
 // ResolvedProject keeps central project resolution separate from capture adapters.
 type ResolvedProject struct {
-	Resolution resolver.ProjectResolution
-	ProjectID  string
-	LocationID string
-	CWD        string
-	GitRoot    string
+	Resolution   resolver.ProjectResolution
+	ProjectID    string
+	LocationID   string
+	LocationPath string
+	CWD          string
+	GitRoot      string
 }
 
 func Initialize(ctx context.Context, home string) (*Service, error) {
@@ -57,6 +59,33 @@ func Open(ctx context.Context, home string) (*Service, error) {
 	return &Service{Paths: paths, Store: store}, nil
 }
 
+// OpenReadOnly opens an initialized local ledger without creating configuration or migrations.
+func OpenReadOnly(ctx context.Context, home string) (*Service, error) {
+	paths, err := config.Resolve(home)
+	if err != nil {
+		return nil, fmt.Errorf("resolve paths: %w", err)
+	}
+	if _, err := os.Stat(paths.Database); err != nil {
+		return nil, fmt.Errorf("open local database: %w; run qlog init first", err)
+	}
+	store, err := storepkg.OpenReadOnly(ctx, paths.Database)
+	if err != nil {
+		return nil, err
+	}
+	return &Service{Paths: paths, Store: store}, nil
+}
+
+func Checkpoint(ctx context.Context, home string) error {
+	paths, err := config.Resolve(home)
+	if err != nil {
+		return fmt.Errorf("resolve paths: %w", err)
+	}
+	if _, err := os.Stat(paths.Database); err != nil {
+		return fmt.Errorf("open local database: %w; run qlog init first", err)
+	}
+	return storepkg.Checkpoint(ctx, paths.Database)
+}
+
 func (s *Service) Close() error { return s.Store.Close() }
 
 func (s *Service) ResolveCurrent(ctx context.Context, explicitProject string) (resolver.ProjectResolution, error) {
@@ -85,7 +114,19 @@ func (s *Service) ResolveProject(ctx context.Context, explicitProject, adapterPr
 	if resolved.Resolution.ProjectSlug == "" {
 		return resolved, nil
 	}
-	project, location, found, err := s.Store.ProjectBySlug(ctx, resolved.Resolution.ProjectSlug)
+	var projectLocationLookup bool
+	switch resolved.Resolution.Method {
+	case resolver.CWD, resolver.GitRoot, resolver.Path:
+		projectLocationLookup = true
+	}
+	var project domain.Project
+	var location domain.ProjectLocation
+	var found bool
+	if projectLocationLookup {
+		project, location, found, err = s.Store.ProjectByLocation(ctx, resolved.Resolution.Evidence)
+	} else {
+		project, location, found, err = s.Store.ProjectBySlug(ctx, resolved.Resolution.ProjectSlug)
+	}
 	if err != nil {
 		return ResolvedProject{}, err
 	}
@@ -94,6 +135,7 @@ func (s *Service) ResolveProject(ctx context.Context, explicitProject, adapterPr
 	}
 	resolved.ProjectID = project.ID
 	resolved.LocationID = location.ID
+	resolved.LocationPath = location.AbsolutePath
 	return resolved, nil
 }
 
