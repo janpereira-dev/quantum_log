@@ -62,7 +62,7 @@ go run ./cmd/qlog anchor check --file /tmp/anchors.json
 ### From source (recommended today)
 
 ```bash
-GOFLAGS=-buildvcs=true go install github.com/janpereira-dev/quantum_log/cmd/qlog@v0.2.0
+go install github.com/janpereira-dev/quantum_log/cmd/qlog@v0.2.0
 ```
 
 ### Build locally
