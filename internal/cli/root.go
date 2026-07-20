@@ -864,56 +864,54 @@ func slugify(value string) string {
 
 func newAnchorCommand(home *string) *cobra.Command {
 	anchor := &cobra.Command{Use: "anchor", Short: "Export and verify external ledger anchors for tamper and truncation detection"}
-	anchor.AddCommand(
-		&cobra.Command{Use: "export", Short: "Export current ledger head anchors as JSON", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) (result error) {
-			service, err := app.OpenReadOnly(command.Context(), *home)
-			if err != nil {
-				return err
+	check := &cobra.Command{Use: "check", Short: "Verify current ledger against previously exported anchors (use --file <path>)", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) (result error) {
+		path, _ := command.Flags().GetString("file")
+		if strings.TrimSpace(path) == "" {
+			return errors.New("anchor check requires --file <path>")
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read anchor file: %w", err)
+		}
+		var expected []sqlite.LedgerAnchor
+		if err := json.Unmarshal(data, &expected); err != nil {
+			return fmt.Errorf("parse anchor file: %w", err)
+		}
+		service, err := app.OpenReadOnly(command.Context(), *home)
+		if err != nil {
+			return err
+		}
+		defer func() { result = errors.Join(result, service.Close()) }()
+		mismatches, err := service.Store.VerifyAnchors(command.Context(), expected)
+		if err != nil {
+			return err
+		}
+		if len(mismatches) == 0 {
+			_, result = fmt.Fprintln(command.OutOrStdout(), "anchors: ok")
+			return result
+		}
+		for _, m := range mismatches {
+			kind := "mismatch"
+			if m.Truncated {
+				kind = "truncation"
 			}
-			defer func() { result = errors.Join(result, service.Close()) }()
-			anchors, err := service.Store.LedgerAnchors(command.Context())
-			if err != nil {
-				return err
-			}
-			return writeJSON(command.OutOrStdout(), anchors)
-		}},
-		&cobra.Command{Use: "check --file <path>", Short: "Verify current ledger against previously exported anchors", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) (result error) {
-			path, _ := command.Flags().GetString("file")
-			if strings.TrimSpace(path) == "" {
-				return errors.New("anchor check requires --file <path>")
-			}
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return fmt.Errorf("read anchor file: %w", err)
-			}
-			var expected []sqlite.LedgerAnchor
-			if err := json.Unmarshal(data, &expected); err != nil {
-				return fmt.Errorf("parse anchor file: %w", err)
-			}
-			service, err := app.OpenReadOnly(command.Context(), *home)
-			if err != nil {
-				return err
-			}
-			defer func() { result = errors.Join(result, service.Close()) }()
-			mismatches, err := service.Store.VerifyAnchors(command.Context(), expected)
-			if err != nil {
-				return err
-			}
-			if len(mismatches) == 0 {
-				_, result = fmt.Fprintln(command.OutOrStdout(), "anchors: ok")
-				return result
-			}
-			for _, m := range mismatches {
-				kind := "mismatch"
-				if m.Truncated {
-					kind = "truncation"
-				}
-				_, _ = fmt.Fprintf(command.OutOrStdout(), "anchor %s: source=%s session=%s expected=%s actual=%s\n", kind, m.Source, m.SessionID, m.Expected, m.Actual)
-			}
-			return errors.New("anchor verification failed")
-		}},
-	)
-	checkCmd := anchor.Commands()[1]
-	checkCmd.Flags().String("file", "", "path to anchor JSON file")
+			_, _ = fmt.Fprintf(command.OutOrStdout(), "anchor %s: source=%s session=%s expected=%s actual=%s\n", kind, m.Source, m.SessionID, m.Expected, m.Actual)
+		}
+		return errors.New("anchor verification failed")
+	}}
+	check.Flags().String("file", "", "path to anchor JSON file")
+	exportCmd := &cobra.Command{Use: "export", Short: "Export current ledger head anchors as JSON", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) (result error) {
+		service, err := app.OpenReadOnly(command.Context(), *home)
+		if err != nil {
+			return err
+		}
+		defer func() { result = errors.Join(result, service.Close()) }()
+		anchors, err := service.Store.LedgerAnchors(command.Context())
+		if err != nil {
+			return err
+		}
+		return writeJSON(command.OutOrStdout(), anchors)
+	}}
+	anchor.AddCommand(exportCmd, check)
 	return anchor
 }
