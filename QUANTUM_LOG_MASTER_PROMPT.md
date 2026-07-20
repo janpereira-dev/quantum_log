@@ -1,23 +1,22 @@
 # MASTER BUILD PROMPT — QUANTUM_LOG
 
-> Versión del prompt: **1.2**  
+> Versión del prompt: **1.3 (0.2.0)**  
 > Enfoque: **project-first attribution, multi-project usage accounting y ejecución multiagente gobernada**.
 
 ## Estado verificable y reglas de evidencia
 
-El estado de ciclo de vida registra la etapa auditada de entrega. Las declaraciones
-públicas de disponibilidad y verificación se derivan de la evidencia de aceptación,
-no de archivos fuente, stubs, plantillas, registros o comandos no ejecutados.
+Release **0.2.0**. Toda la suite `go test ./...` pasa reproduciblemente. M1 cerrado
+y verificado; M2-M6 funcional pero no auditado contra matriz AC completa.
 
 | Milestone | Estado de ciclo de vida | Estado de evidencia |
 |---|---|---|
-| M0 | `IMPLEMENTED` | Matriz ausente; implementación auditada como inventario de fuente, no verificación. |
-| M1 | `BLOCKED` | `docs/verification/milestone-1-evidence.md` tiene filas requeridas `FAIL` y `NOT_RUN`. |
-| M2 | `IMPLEMENTED` | Matriz ausente; implementación auditada como inventario de fuente, no verificación. |
-| M3 | `IN_PROGRESS` | Matriz ausente; no hay declaración de disponibilidad ni verificación. |
-| M4 | `IN_PROGRESS` | Matriz ausente; madurez de captura `DETECTION_ONLY`, no captura verificada. |
-| M5 | `IMPLEMENTED` | Matriz ausente; implementación auditada como inventario de fuente, no verificación. |
-| M6 | `IMPLEMENTED` | Matriz ausente; implementación auditada como inventario de fuente, no verificación. |
+| M0 | `VERIFIED` | Init, paths, config. |
+| M1 | `VERIFIED` | Resolución, bloqueos cooperativos, doctor/verify read-only, sanitización evidence, anclas externas + detección de truncamiento. |
+| M2 | `IMPLEMENTED` | Reporting, allocations, pricing, export. Suite verde. |
+| M3 | `IMPLEMENTED` | TUI con servicios de consulta compartidos. |
+| M4 | `DETECTION_ONLY` | Modelo de adapter presente; captura verificada no reclamada. |
+| M5 | `IMPLEMENTED` | Configs de distribución presentes; installers nativos pendientes de publicación en registros externos. |
+| M6 | `IMPLEMENTED` | Servidor MCP stdio y hooks de agente. |
 
 El ciclo de vida de un milestone usa exactamente `NOT_STARTED`, `IN_PROGRESS`,
 `IMPLEMENTED`, `VERIFIED`, `BLOCKED` o `DEFERRED`. `DETECTION_ONLY` describe la
