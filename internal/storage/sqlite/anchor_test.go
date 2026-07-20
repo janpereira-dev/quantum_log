@@ -14,7 +14,7 @@ func TestLedgerAnchorsAndTruncationDetection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	now := time.Now().UTC()
 	for i := 0; i < 3; i++ {
 		if _, err := store.AppendRawEvent(context.Background(), RawEventInput{

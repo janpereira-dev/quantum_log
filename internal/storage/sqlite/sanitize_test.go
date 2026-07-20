@@ -58,7 +58,7 @@ func TestAppendRawEventStripsSensitiveKeysFromEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	raw := `{"prompt":"hi","keep":"ok","authorization":"bearer xyz"}`
 	id, err := store.AppendRawEvent(context.Background(), RawEventInput{
 		Source:       "test",
