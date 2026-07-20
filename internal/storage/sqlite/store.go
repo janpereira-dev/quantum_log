@@ -31,11 +31,11 @@ import (
 var migrations embed.FS
 
 type Store struct {
-	db          *sql.DB
-	quiescence  *storelock.Handle
-	writerLock  *storelock.Handle
-	writable    bool
-	warnings    []string
+	db         *sql.DB
+	quiescence *storelock.Handle
+	writerLock *storelock.Handle
+	writable   bool
+	warnings   []string
 }
 
 type WorkContextInput struct {
@@ -546,11 +546,11 @@ func (s *Store) VerifyLedger(ctx context.Context, sessionID string) error {
 }
 
 type LedgerAnchor struct {
-	Source       string `json:"source"`
-	SessionID    string `json:"session_id"`
-	HeadHash     string `json:"head_hash"`
-	Events       int64  `json:"events"`
-	LastSeenAt   string `json:"last_seen_at"`
+	Source     string `json:"source"`
+	SessionID  string `json:"session_id"`
+	HeadHash   string `json:"head_hash"`
+	Events     int64  `json:"events"`
+	LastSeenAt string `json:"last_seen_at"`
 }
 
 func (s *Store) LedgerAnchors(ctx context.Context) ([]LedgerAnchor, error) {
@@ -578,11 +578,11 @@ func (s *Store) LedgerAnchors(ctx context.Context) ([]LedgerAnchor, error) {
 }
 
 type AnchorMismatch struct {
-	Source     string
-	SessionID  string
-	Expected   string
-	Actual     string
-	Truncated  bool
+	Source    string
+	SessionID string
+	Expected  string
+	Actual    string
+	Truncated bool
 }
 
 func (s *Store) VerifyAnchors(ctx context.Context, expected []LedgerAnchor) ([]AnchorMismatch, error) {

@@ -61,12 +61,12 @@ func TestAppendRawEventStripsSensitiveKeysFromEvidence(t *testing.T) {
 	defer store.Close()
 	raw := `{"prompt":"hi","keep":"ok","authorization":"bearer xyz"}`
 	id, err := store.AppendRawEvent(context.Background(), RawEventInput{
-		Source:        "test",
-		SessionID:     "s1",
-		EventType:     "tool",
-		Payload:       []byte("{}"),
-		OccurredAt:    time.Now().UTC(),
-		EvidenceJSON:  raw,
+		Source:       "test",
+		SessionID:    "s1",
+		EventType:    "tool",
+		Payload:      []byte("{}"),
+		OccurredAt:   time.Now().UTC(),
+		EvidenceJSON: raw,
 	})
 	if err != nil {
 		t.Fatalf("append: %v", err)
