@@ -336,9 +336,18 @@ func makeSchemaPending(t *testing.T, databasePath string) {
 }
 
 func TestProjectCurrentSelectsLocationMatchingWorkingDirectory(t *testing.T) {
-	home := t.TempDir()
-	firstLocation := t.TempDir()
-	matchingLocation := t.TempDir()
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve home symlinks: %v", err)
+	}
+	firstLocation, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve first location symlinks: %v", err)
+	}
+	matchingLocation, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve matching location symlinks: %v", err)
+	}
 	t.Setenv("QLOG_PROJECT", "")
 	originalWorkingDirectory, err := os.Getwd()
 	if err != nil {
@@ -400,8 +409,14 @@ func TestProjectCurrentSelectsLocationMatchingWorkingDirectory(t *testing.T) {
 }
 
 func TestProjectRegisterIsIdempotentForCurrentDirectory(t *testing.T) {
-	home := t.TempDir()
-	projectDirectory := t.TempDir()
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve home symlinks: %v", err)
+	}
+	projectDirectory, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve project directory symlinks: %v", err)
+	}
 	originalWorkingDirectory, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("get working directory: %v", err)
