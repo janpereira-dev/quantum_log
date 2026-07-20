@@ -10,7 +10,7 @@ Think of it as a tamper-evident local SQLite ledger plus a CLI/TUI/MCP surface.
 
 ## 1. What version is this?
 
-`0.2.0` — first functional release. M1 (integrity and attribution) is verified. M2–M6 are functional (tests green, commands work) but not yet audited against a full acceptance matrix.
+`0.3.0` — first setup-first M4 release. It remains compatible with v0.2.0 local homes and databases, then adds `qlog setup` for agent capture configuration.
 
 ## 2. Prerequisites
 
@@ -23,14 +23,16 @@ Optional but recommended:
 - `make` if you want the shortcuts in the Makefile (not required).
 - `goreleaser` only if you cut a release.
 
-Demo: build and run one-liner with `go install` (after v0.2.0 tag is published):
+Demo: build and run one-liner with `go install` (after v0.3.0 tag is published):
 
 ```bash
-go install github.com/janpereira-dev/quantum_log/cmd/qlog@v0.2.0
-qlog --version   # -> qlog 0.2.0 ...
+go install github.com/janpereira-dev/quantum_log/cmd/qlog@v0.3.0
+qlog --version   # -> qlog 0.3.0 ...
 ```
 
 No `GOFLAGS`, no `CGO_ENABLED`, no clone. Just Go 1.22+ and one command.
+
+If you already installed v0.2.0, run the same `go install ...@v0.3.0` command. It upgrades the binary and keeps your existing qlog home, database, project registrations, tasks, raw events, and anchors.
 
 The project uses `modernc.org/sqlite`, so it compiles and runs without CGo with `CGO_ENABLED=0` if you ever need CGo-free builds.
 
@@ -43,7 +45,7 @@ go build -o qlog ./cmd/qlog
 ./qlog --version
 ```
 
-You should see `qlog 0.2.0 (...)`.
+You should see `qlog 0.3.0 (...)`.
 
 ## 4. Run the Tests
 
@@ -179,7 +181,28 @@ If the head hash changed → mismatch (possible tampering). If the session is go
 
 Allocations must sum to 10000 basis points (100%). The CLI rejects invalid splits.
 
-## 13. Pricing and Budgets
+## 13. Setup Agent Capture
+
+Run setup after installation to configure qlog-owned capture instructions for supported agents:
+
+```bash
+./qlog setup --dry-run
+./qlog setup opencode --yes
+./qlog adapter status --json
+./qlog adapter test opencode
+```
+
+Setup targets: `opencode`, `claude-code`, `codex`, `pi`, `copilot-vscode`, `openclaw`, and `hermen`.
+
+Rules:
+- `--dry-run` shows planned file changes without writing.
+- `--yes` applies setup changes without an interactive prompt.
+- Existing files are backed up before qlog writes a marker block.
+- Re-running setup is idempotent.
+- Token capture is only reported when a provider, agent, OTLP event, or structured event exposes real token data.
+- If no real token source exists, qlog labels the activity as `lifecycle_only` or another explicit `capture_quality`; it does not invent token counts.
+
+## 14. Pricing and Budgets
 
 ```bash
 ./qlog pricing list
@@ -189,7 +212,7 @@ Allocations must sum to 10000 basis points (100%). The CLI rejects invalid split
 
 Pricing tables drive estimated cost micros per model call. Budget alerts compare monthly usage to the configured cap per project or tag.
 
-## 14. Tasks
+## 15. Tasks
 
 ```bash
 ./qlog task create --title "M2 report drill-down"
@@ -198,7 +221,7 @@ Pricing tables drive estimated cost micros per model call. Budget alerts compare
 
 Tasks group model calls under a work unit for reporting.
 
-## 15. Export
+## 16. Export
 
 ```bash
 ./qlog export --format csv > usage.csv
@@ -207,7 +230,7 @@ Tasks group model calls under a work unit for reporting.
 
 Columns cover tokens, cost, allocation, project slug, and capture quality.
 
-## 16. TUI
+## 17. TUI
 
 ```bash
 ./qlog tui
@@ -217,7 +240,7 @@ Or just run `./qlog` in a terminal (it launches the TUI by default).
 
 The TUI shows projects, sessions, usage, and tasks using the same query services as the CLI.
 
-## 17. MCP Server (for agent integration)
+## 18. MCP Server (for agent integration)
 
 ```bash
 ./qlog mcp stdio
@@ -225,7 +248,7 @@ The TUI shows projects, sessions, usage, and tasks using the same query services
 
 Run this inside an agent harness or a standalone wrapper that pipes MCP JSON-RPC over stdio. The MCP server exposes tools for project attribution, model-call reporting, usage queries, and ledger verification.
 
-## 18. Maintenance Commands
+## 19. Maintenance Commands
 
 Mutating explicit operations (not read-only):
 ```bash
@@ -237,7 +260,7 @@ Mutating explicit operations (not read-only):
 
 `recover` and `rebuild-anchor` are reserved commands that currently return blocked. Do not rely on them in 0.2.0.
 
-## 19. File Layout (What Lives Where)
+## 20. File Layout (What Lives Where)
 
 ```
 cmd/qlog/                      CLI entrypoint (main.go)
@@ -261,7 +284,7 @@ migrations/*.sql               Embedded schema migrations
 fixtures/                      Test fixtures (explicitly test data)
 ```
 
-## 20. SQLite Lock Protocol (If You Touch the Database)
+## 21. SQLite Lock Protocol (If You Touch the Database)
 
 QUANTUM_LOG owns the SQLite database via a cooperative lock protocol (ADR-004). Do not open it with external SQLite editors — they bypass the protocol.
 
@@ -274,7 +297,7 @@ QUANTUM_LOG owns the SQLite database via a cooperative lock protocol (ADR-004). 
 
 If a command errors with "quiescence lock is held by ...", exit the other qlog process and retry.
 
-## 21. Adding a New CLI Command
+## 22. Adding a New CLI Command
 
 1. Add a `func newXxxCommand(home *string) *cobra.Command` in `internal/cli/`.
 2. Register it in the `root.AddCommand(...)` line in `internal/cli/root.go`.
@@ -284,14 +307,14 @@ If a command errors with "quiescence lock is held by ...", exit the other qlog p
 
 Do not add commands that mutate the database without first acquiring the writer lock via `app.Open`. Read-only commands should use `app.OpenReadOnly`.
 
-## 22. Adding a New Store Method
+## 23. Adding a New Store Method
 
 1. Declare the method on `*Store` in `internal/storage/sqlite/store.go`.
 2. If it mutates, it must run inside an `Open` context (writer lock acquired). If it is read-only, prefer `OpenReadOnly` callers and no `Exec`.
 3. Add a migration file `internal/storage/sqlite/migrations/NNN_description.sql` if you need schema changes. Migrations are embedded and run in lexical order on `Open`.
 4. Add tests in `internal/storage/sqlite/`.
 
-## 23. Adding a Test
+## 24. Adding a Test
 
 We follow standard Go testing plus table-driven cases when there are many variants. Every test that opens a store uses `t.TempDir()` for isolation. Never depend on a shared database file.
 
@@ -305,7 +328,7 @@ func TestMyFeature(t *testing.T) {
 }
 ```
 
-## 24. Troubleshooting
+## 25. Troubleshooting
 
 | Symptom | Fix |
 |---|---|
@@ -318,7 +341,7 @@ func TestMyFeature(t *testing.T) {
 | `project <slug> not found` | Register it first with `qlog project register`. |
 | `allocation basis points total X, want 10000` | Adjust allocations so they sum to 10000. |
 
-## 25. Contributing
+## 26. Contributing
 
 1. Branch from `main`.
 2. Write tests first (TDD when adding new behavior). Run `go test ./...` and confirm red, then implement, then green.
@@ -329,7 +352,7 @@ func TestMyFeature(t *testing.T) {
 7. Commit messages use Conventional Commits (`feat(scope): ...`, `fix(scope): ...`, `docs: ...`). No "Co-Authored-By" or AI attribution.
 8. Never claim `VERIFIED` for a milestone without the evidence matrix fully `PASS` in `docs/verification/milestone-<n>-evidence.md`.
 
-## 26. Cutting a Release (Maintainers Only)
+## 27. Cutting a Release (Maintainers Only)
 
 1. Confirm `go test -count=1 ./...` and `go vet ./...` are green.
 2. Confirm `README.md` and `docs/DEVELOPER_GUIDE.md` reflect the new version.
@@ -339,11 +362,11 @@ func TestMyFeature(t *testing.T) {
 
 Do not publish native installers before their target registry endpoints exist.
 
-## 27. Where to Ask for Help
+## 28. Where to Ask for Help
 
 Open an issue at <https://github.com/janpereira-dev/quantum_log/issues> with: qlog version (`qlog --version`), OS, `qlog doctor --json` output (redact paths if needed), and the exact command you ran.
 
-## 28. Final Checklist Before You Commit
+## 29. Final Checklist Before You Commit
 
 - [ ] `go test -count=1 ./...` green
 - [ ] `go vet ./...` clean

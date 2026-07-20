@@ -6,9 +6,9 @@ Local-first observability and FinOps for AI coding agents. QUANTUM_LOG records v
 
 ## Version
 
-`qlog 0.2.0`
+`qlog 0.3.0`
 
-This is the first functional release. All acceptance evidence runs reproducibly via `go test ./...`. The release closes the M1 recovery arc (integrity, attribution, locks, sanitization, external anchors) and provides working M2–M6 commands for everyday use. Capabilities without recorded acceptance evidence are marked `IMPLEMENTED` (not `VERIFIED`) — they work but have not been audited against a full AC matrix.
+This release keeps the v0.2.0 local ledger and CLI contract compatible while adding the first setup-first M4 auto-capture surface. Users on v0.2.0 can upgrade with `go install github.com/janpereira-dev/quantum_log/cmd/qlog@v0.3.0` and keep the same local qlog home, database, projects, tasks, anchors, and events.
 
 ## Status
 
@@ -18,7 +18,7 @@ This is the first functional release. All acceptance evidence runs reproducibly 
 | M1 | `VERIFIED` | Resolver precedence, cooperative SQLite locks, read-only diagnostics, evidence sanitization, external anchors + truncation detection. |
 | M2 | `IMPLEMENTED` | Reporting, allocations, pricing, export. Test suite green. |
 | M3 | `IMPLEMENTED` | TUI backed by shared query services. |
-| M4 | `DETECTION_ONLY` | Capture adapter model present; verified capture not claimed. |
+| M4 | `IMPLEMENTED` | `qlog setup`, adapter status/test, and setup-capable agent targets. Token capture remains quality-labeled and is not claimed when agents do not expose reported usage. |
 | M5 | `IMPLEMENTED` | Distribution configs present; native installers pending external registry publication. |
 | M6 | `IMPLEMENTED` | stdio MCP server and agent hooks. |
 
@@ -62,8 +62,25 @@ go run ./cmd/qlog anchor check --file /tmp/anchors.json
 ### From source (recommended today)
 
 ```bash
-go install github.com/janpereira-dev/quantum_log/cmd/qlog@v0.2.0
+go install github.com/janpereira-dev/quantum_log/cmd/qlog@v0.3.0
 ```
+
+If you already have v0.2.0 installed, this command replaces the binary only. Your local qlog data stays in the same `QLOG_HOME` or default platform directory.
+
+## Setup Agent Capture
+
+Use setup after installation to configure supported agents with qlog-owned, idempotent instructions or config markers.
+
+```bash
+qlog setup --dry-run
+qlog setup opencode --yes
+qlog adapter status --json
+qlog adapter test opencode
+```
+
+Supported setup targets are `opencode`, `claude-code`, `codex`, `pi`, `copilot-vscode`, `openclaw`, and `hermen`. Setup creates backups before editing existing files and only writes qlog-owned marker blocks.
+
+Capture quality stays explicit. When an agent exposes real provider or agent-reported token usage, qlog can record it through structured events. When it does not, qlog records lifecycle/setup evidence as `lifecycle_only` instead of inventing token counts.
 
 ### Build locally
 
@@ -98,7 +115,7 @@ See [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md) for a step-by-step "idiot
 
 1. M1: integrity and project attribution — **closed in 0.2.0**.
 2. M2: reporting, allocations, pricing, export — functional.
-3. M4: technical capture beyond detection-only maturity — pending.
+3. M4: setup-first agent auto-capture — functional with honest capture-quality labels.
 4. M3: TUI backed by shared query services — functional.
 5. M5: distribution and clean-runner installation — configs ready, external registries pending.
 6. M6: MCP and agent integration — functional.

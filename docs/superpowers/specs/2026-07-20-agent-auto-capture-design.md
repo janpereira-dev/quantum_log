@@ -21,6 +21,14 @@ The project must not claim universal metering unless the source exposes real usa
 
 Build M4 around a setup-first adapter system modeled after Engram's agent setup flow.
 
+This ships as the next minor release, `v0.3.0`. Machines already using `v0.2.0` must be able to upgrade with:
+
+```bash
+go install github.com/janpereira-dev/quantum_log/cmd/qlog@v0.3.0
+```
+
+The upgrade must preserve existing local homes, databases, project registrations, tasks, raw events, anchors, and config files. New setup behavior is additive and idempotent.
+
 The primary command is `qlog setup`. It detects supported agents, presents a simple selection flow, writes the correct per-agent configuration, and verifies the capture path. Per-agent setup commands are also available for scripts and documentation.
 
 ```bash
@@ -199,6 +207,8 @@ Add detection and setup only after identifying stable config, hook, log, plugin,
 
 ## Acceptance Criteria
 
+- A user on `v0.2.0` can install `v0.3.0` with `go install github.com/janpereira-dev/quantum_log/cmd/qlog@v0.3.0` and keep using the same local qlog home.
+- Existing v0.2.0 commands keep working: `init`, `project register/current`, `doctor`, `verify`, `anchor export/check`, `ingest`, `usage`, `report`, `mcp`, and `tui`.
 - `qlog setup --dry-run --json` lists detected agents, planned changes, backup paths, and capture-quality expectations.
 - `qlog setup opencode --yes` is idempotent and creates backups before modifying existing files.
 - `qlog adapter status --json` distinguishes `available`, `installed`, `partial`, `drifted`, and `unavailable`.
