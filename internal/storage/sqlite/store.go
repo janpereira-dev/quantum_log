@@ -545,6 +545,70 @@ func (s *Store) VerifyLedger(ctx context.Context, sessionID string) error {
 	return rows.Err()
 }
 
+type LedgerAnchor struct {
+	Source       string `json:"source"`
+	SessionID    string `json:"session_id"`
+	HeadHash     string `json:"head_hash"`
+	Events       int64  `json:"events"`
+	LastSeenAt   string `json:"last_seen_at"`
+}
+
+func (s *Store) LedgerAnchors(ctx context.Context) ([]LedgerAnchor, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT source, COALESCE(session_id,''), event_hash, COUNT(*) OVER (PARTITION BY source, COALESCE(session_id,'')) AS event_count, MAX(created_at) OVER (PARTITION BY source, COALESCE(session_id,'')) AS last_seen FROM raw_events ORDER BY source, COALESCE(session_id,''), created_at DESC, id DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("query ledger anchors: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	seen := make(map[string]bool)
+	var out []LedgerAnchor
+	for rows.Next() {
+		var source, session, head, lastSeen string
+		var count int64
+		if err := rows.Scan(&source, &session, &head, &count, &lastSeen); err != nil {
+			return nil, fmt.Errorf("scan anchor: %w", err)
+		}
+		key := source + "\x00" + session
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, LedgerAnchor{Source: source, SessionID: session, HeadHash: head, Events: count, LastSeenAt: lastSeen})
+	}
+	return out, rows.Err()
+}
+
+type AnchorMismatch struct {
+	Source     string
+	SessionID  string
+	Expected   string
+	Actual     string
+	Truncated  bool
+}
+
+func (s *Store) VerifyAnchors(ctx context.Context, expected []LedgerAnchor) ([]AnchorMismatch, error) {
+	current, err := s.LedgerAnchors(ctx)
+	if err != nil {
+		return nil, err
+	}
+	currentMap := make(map[string]LedgerAnchor, len(current))
+	for _, a := range current {
+		currentMap[a.Source+"\x00"+a.SessionID] = a
+	}
+	var mismatches []AnchorMismatch
+	for _, exp := range expected {
+		key := exp.Source + "\x00" + exp.SessionID
+		got, ok := currentMap[key]
+		if !ok {
+			mismatches = append(mismatches, AnchorMismatch{Source: exp.Source, SessionID: exp.SessionID, Expected: exp.HeadHash, Actual: "", Truncated: true})
+			continue
+		}
+		if got.HeadHash != exp.HeadHash {
+			mismatches = append(mismatches, AnchorMismatch{Source: exp.Source, SessionID: exp.SessionID, Expected: exp.HeadHash, Actual: got.HeadHash, Truncated: got.Events < exp.Events})
+		}
+	}
+	return mismatches, nil
+}
+
 func ValidateAllocations(allocations []AllocationInput) error {
 	if len(allocations) == 0 {
 		return errors.New("at least one allocation is required")
