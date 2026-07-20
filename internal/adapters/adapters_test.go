@@ -30,6 +30,26 @@ func TestDefaultRegistryDeclaresOnlyVerifiedCapabilities(t *testing.T) {
 	}
 }
 
+func TestDefaultRegistryAdaptersExposeSetupLifecycle(t *testing.T) {
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
+	for _, adapter := range Default().List() {
+		status, err := adapter.Status(context.Background())
+		if err != nil {
+			t.Fatalf("%s status: %v", adapter.Descriptor().ID, err)
+		}
+		if status.AdapterID != adapter.Descriptor().ID || status.State == "" || status.CaptureQuality == "" {
+			t.Fatalf("%s status = %#v", adapter.Descriptor().ID, status)
+		}
+		result, err := adapter.Test(context.Background())
+		if err != nil {
+			t.Fatalf("%s test: %v", adapter.Descriptor().ID, err)
+		}
+		if result.AdapterID != adapter.Descriptor().ID || result.CaptureQuality == "" {
+			t.Fatalf("%s test = %#v", adapter.Descriptor().ID, result)
+		}
+	}
+}
+
 func TestMinimalAdapterDryRunIsIdempotentAndDoesNotWrite(t *testing.T) {
 	adapter, _ := Default().Get("opencode")
 	first, err := adapter.Install(context.Background(), InstallOptions{DryRun: true})

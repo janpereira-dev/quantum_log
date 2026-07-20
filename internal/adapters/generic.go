@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"time"
 )
 
 // GenericJSONL imports caller-supplied normalized records. It does not infer metrics.
@@ -21,6 +22,18 @@ func (GenericJSONL) Detect(context.Context) (Detection, error) {
 
 func (GenericJSONL) Install(_ context.Context, _ InstallOptions) (InstallResult, error) {
 	return InstallResult{Actions: []string{"no installation required"}}, nil
+}
+
+func (GenericJSONL) PlanInstall(context.Context, SetupOptions) (SetupPlan, error) {
+	return SetupPlan{AdapterID: "generic-jsonl", State: SetupInstalled, CaptureQuality: CaptureManualImport, Notes: []string{"built-in importer; no setup required"}}, nil
+}
+
+func (GenericJSONL) Status(context.Context) (SetupStatus, error) {
+	return SetupStatus{AdapterID: "generic-jsonl", Available: true, Installed: true, State: SetupInstalled, CaptureQuality: CaptureManualImport, Evidence: "built-in JSONL importer"}, nil
+}
+
+func (GenericJSONL) Test(context.Context) (TestResult, error) {
+	return TestResult{AdapterID: "generic-jsonl", Passed: true, CaptureQuality: CaptureManualImport, Message: "built-in JSONL importer available", TestedAt: time.Now().UTC()}, nil
 }
 
 func (GenericJSONL) Uninstall(_ context.Context, _ InstallOptions) (InstallResult, error) {

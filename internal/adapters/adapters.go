@@ -70,6 +70,9 @@ type Adapter interface {
 	Detect(context.Context) (Detection, error)
 	Install(context.Context, InstallOptions) (InstallResult, error)
 	Uninstall(context.Context, InstallOptions) (InstallResult, error)
+	PlanInstall(context.Context, SetupOptions) (SetupPlan, error)
+	Status(context.Context) (SetupStatus, error)
+	Test(context.Context) (TestResult, error)
 	HealthCheck(context.Context) error
 	Ingest(context.Context, io.Reader) ([]RawRecord, error)
 	Normalize(RawRecord) (RawRecord, error)
