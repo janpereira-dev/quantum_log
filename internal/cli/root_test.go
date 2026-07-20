@@ -2,12 +2,18 @@ package cli
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/janpereira-dev/quantum_log/internal/app"
 	"github.com/spf13/cobra"
 )
 
@@ -62,6 +68,379 @@ func TestCoreCommandsInitializeAndReportProject(t *testing.T) {
 	}
 	if _, err := run("verify"); err != nil {
 		t.Fatalf("qlog verify: %v", err)
+	}
+}
+
+func TestDoctorIsReadOnly(t *testing.T) {
+	parent := t.TempDir()
+	home := filepath.Join(parent, "uninitialized")
+	before := snapshotTree(t, home)
+	if _, err := runQLog(t, home, "doctor", "--json"); err == nil || !strings.Contains(err.Error(), "qlog init") {
+		t.Fatalf("qlog doctor uninitialized error = %v", err)
+	}
+	assertTreeEqual(t, before, snapshotTree(t, home))
+
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatalf("qlog init: %v", err)
+	}
+	before = snapshotTree(t, home)
+	if _, err := runQLog(t, home, "doctor", "--json"); err != nil {
+		t.Fatalf("qlog doctor: %v", err)
+	}
+	assertTreeEqual(t, before, snapshotTree(t, home))
+
+	makeSchemaPending(t, filepath.Join(home, "qlog.db"))
+	before = snapshotTree(t, home)
+	if _, err := runQLog(t, home, "doctor", "--json"); err == nil || !strings.Contains(err.Error(), "pending migration") || !strings.Contains(err.Error(), "qlog init") {
+		t.Fatalf("qlog doctor pending schema error = %v", err)
+	}
+	assertTreeEqual(t, before, snapshotTree(t, home))
+}
+
+func TestVerifyIsReadOnly(t *testing.T) {
+	parent := t.TempDir()
+	home := filepath.Join(parent, "uninitialized")
+	before := snapshotTree(t, home)
+	if _, err := runQLog(t, home, "verify"); err == nil || !strings.Contains(err.Error(), "qlog init") {
+		t.Fatalf("qlog verify uninitialized error = %v", err)
+	}
+	assertTreeEqual(t, before, snapshotTree(t, home))
+
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatalf("qlog init: %v", err)
+	}
+	before = snapshotTree(t, home)
+	if _, err := runQLog(t, home, "verify"); err != nil {
+		t.Fatalf("qlog verify: %v", err)
+	}
+	assertTreeEqual(t, before, snapshotTree(t, home))
+
+	makeSchemaPending(t, filepath.Join(home, "qlog.db"))
+	before = snapshotTree(t, home)
+	if _, err := runQLog(t, home, "verify"); err == nil || !strings.Contains(err.Error(), "pending migration") || !strings.Contains(err.Error(), "qlog init") {
+		t.Fatalf("qlog verify pending schema error = %v", err)
+	}
+	assertTreeEqual(t, before, snapshotTree(t, home))
+}
+
+func TestDiagnosticsRejectActiveWriter(t *testing.T) {
+	home := t.TempDir()
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatalf("qlog init: %v", err)
+	}
+	service, err := app.Open(t.Context(), home)
+	if err != nil {
+		t.Fatalf("open active writer: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	if _, _, err := service.Store.RegisterProject(t.Context(), "Writer", "writer", t.TempDir()); err != nil {
+		t.Fatalf("write active WAL: %v", err)
+	}
+	if info, err := os.Stat(service.Paths.Database + "-wal"); err != nil || info.Size() == 0 {
+		t.Fatalf("active WAL missing or empty: info=%#v err=%v", info, err)
+	}
+
+	for _, args := range [][]string{{"doctor", "--json"}, {"verify"}} {
+		if _, err := runQLog(t, home, args...); err == nil || !strings.Contains(err.Error(), "quiescence lock is held") {
+			t.Fatalf("qlog %s active writer error = %v", strings.Join(args, " "), err)
+		}
+	}
+}
+
+func TestDiagnosticsBlockWhileReadOnlyClientHoldsQuiescence(t *testing.T) {
+	home := t.TempDir()
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatalf("qlog init: %v", err)
+	}
+	service, err := app.OpenReadOnly(t.Context(), home)
+	if err != nil {
+		t.Fatalf("open read-only client: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+
+	for _, args := range [][]string{{"doctor", "--json"}, {"verify"}} {
+		if _, err := runQLog(t, home, args...); err == nil || !strings.Contains(err.Error(), "quiescence lock is held") {
+			t.Fatalf("qlog %s active reader error = %v", strings.Join(args, " "), err)
+		}
+	}
+}
+
+func TestDoctorBlocksPendingWALWithoutMutation(t *testing.T) {
+	home := t.TempDir()
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatalf("qlog init: %v", err)
+	}
+	databasePath := filepath.Join(home, "qlog.db")
+	if err := os.WriteFile(databasePath+"-wal", []byte("pending WAL"), 0o600); err != nil {
+		t.Fatalf("write pending WAL: %v", err)
+	}
+	before := snapshotTree(t, home)
+	if _, err := runQLog(t, home, "doctor", "--json"); err == nil || !strings.Contains(err.Error(), "active WAL") {
+		t.Fatalf("qlog doctor pending WAL error = %v", err)
+	}
+	assertTreeEqual(t, before, snapshotTree(t, home))
+}
+
+func TestDoctorWarnsForIsolatedSHMWithoutMutation(t *testing.T) {
+	home := t.TempDir()
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatalf("qlog init: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "qlog.db-shm"), []byte("stale SHM"), 0o600); err != nil {
+		t.Fatalf("write isolated SHM: %v", err)
+	}
+	before := snapshotTree(t, home)
+	output, err := runQLog(t, home, "doctor", "--json")
+	if err != nil {
+		t.Fatalf("qlog doctor isolated SHM: %v", err)
+	}
+	var result struct {
+		Warning string `json:"warning"`
+	}
+	if err := json.Unmarshal([]byte(output), &result); err != nil || !strings.Contains(result.Warning, "isolated SQLite SHM") {
+		t.Fatalf("qlog doctor isolated SHM output = %q, %v", output, err)
+	}
+	assertTreeEqual(t, before, snapshotTree(t, home))
+}
+
+func TestVerifyWarnsForIsolatedSHMWithoutMutation(t *testing.T) {
+	home := t.TempDir()
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatalf("qlog init: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "qlog.db-shm"), []byte("stale SHM"), 0o600); err != nil {
+		t.Fatalf("write isolated SHM: %v", err)
+	}
+	before := snapshotTree(t, home)
+	output, err := runQLog(t, home, "verify")
+	if err != nil {
+		t.Fatalf("qlog verify isolated SHM: %v", err)
+	}
+	if !strings.Contains(output, "isolated SQLite SHM") || !strings.Contains(output, "ledger: verified") {
+		t.Fatalf("qlog verify isolated SHM output = %q", output)
+	}
+	assertTreeEqual(t, before, snapshotTree(t, home))
+}
+
+func TestMaintenanceCommandSurface(t *testing.T) {
+	home := t.TempDir()
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatalf("qlog init: %v", err)
+	}
+	if _, err := runQLog(t, home, "maintenance", "status"); err != nil {
+		t.Fatalf("qlog maintenance status: %v", err)
+	}
+	if _, err := runQLog(t, home, "maintenance", "checkpoint"); err != nil {
+		t.Fatalf("qlog maintenance checkpoint: %v", err)
+	}
+	for _, operation := range []string{"recover", "rebuild-anchor"} {
+		if _, err := runQLog(t, home, "maintenance", operation); err == nil || !strings.Contains(err.Error(), "not implemented") {
+			t.Fatalf("qlog maintenance %s error = %v", operation, err)
+		}
+	}
+}
+
+func TestSnapshotTreeRecordsModificationTimes(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "fixture")
+	if err := os.WriteFile(path, []byte("content"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	if err := os.Chtimes(path, time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC), time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("set initial fixture time: %v", err)
+	}
+	before := snapshotTree(t, root)
+	if err := os.Chtimes(path, time.Date(2020, time.January, 1, 0, 0, 1, 0, time.UTC), time.Date(2020, time.January, 1, 0, 0, 1, 0, time.UTC)); err != nil {
+		t.Fatalf("set changed fixture time: %v", err)
+	}
+	after := snapshotTree(t, root)
+	if before["fixture"] == after["fixture"] {
+		t.Fatal("snapshot did not record fixture modification time")
+	}
+}
+
+type treeSnapshot map[string]string
+
+func runQLog(t *testing.T, home string, args ...string) (string, error) {
+	t.Helper()
+	command := New(Version{Version: "0.1.0", Commit: "test", BuildDate: "2026-07-16"})
+	output := new(bytes.Buffer)
+	command.SetArgs(append([]string{"--home", home}, args...))
+	setOutput(command, output)
+	err := command.Execute()
+	return output.String(), err
+}
+
+func snapshotTree(t *testing.T, root string) treeSnapshot {
+	t.Helper()
+	snapshot := treeSnapshot{}
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		relativePath, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			snapshot[relativePath] = "directory:" + info.Mode().String() + ":" + info.ModTime().UTC().Format(time.RFC3339Nano)
+			return nil
+		}
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		hash := sha256.Sum256(contents)
+		snapshot[relativePath] = "file:" + info.Mode().String() + ":" + hex.EncodeToString(hash[:]) + ":" + info.ModTime().UTC().Format(time.RFC3339Nano)
+		return nil
+	})
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("snapshot %s: %v", root, err)
+	}
+	return snapshot
+}
+
+func assertTreeEqual(t *testing.T, want, got treeSnapshot) {
+	t.Helper()
+	if len(want) != len(got) {
+		t.Fatalf("filesystem snapshot count = %d, want %d; got=%#v want=%#v", len(got), len(want), got, want)
+	}
+	for path, wantEntry := range want {
+		if gotEntry, found := got[path]; !found || gotEntry != wantEntry {
+			t.Fatalf("filesystem snapshot %q = %q, want %q", path, gotEntry, wantEntry)
+		}
+	}
+}
+
+func makeSchemaPending(t *testing.T, databasePath string) {
+	t.Helper()
+	database, err := sql.Open("sqlite", "file:"+filepath.ToSlash(databasePath))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	result, err := database.Exec(`DELETE FROM schema_migrations WHERE version = (SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1)`)
+	if err != nil {
+		t.Fatalf("remove migration: %v", err)
+	}
+	if deleted, err := result.RowsAffected(); err != nil || deleted != 1 {
+		t.Fatalf("remove migration rows = %d, %v", deleted, err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatalf("close pending database: %v", err)
+	}
+}
+
+func TestProjectCurrentSelectsLocationMatchingWorkingDirectory(t *testing.T) {
+	home := t.TempDir()
+	firstLocation := t.TempDir()
+	matchingLocation := t.TempDir()
+	t.Setenv("QLOG_PROJECT", "")
+	originalWorkingDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get working directory: %v", err)
+	}
+
+	run := func(args ...string) (string, error) {
+		command := New(Version{Version: "0.1.0", Commit: "test", BuildDate: "2026-07-16"})
+		output := new(bytes.Buffer)
+		command.SetArgs(append([]string{"--home", home}, args...))
+		setOutput(command, output)
+		err := command.Execute()
+		return output.String(), err
+	}
+
+	if _, err := run("init"); err != nil {
+		t.Fatalf("qlog init: %v", err)
+	}
+	if _, err := run("project", "register", "--path", firstLocation, "--name", "Project"); err != nil {
+		t.Fatalf("register first location: %v", err)
+	}
+	if _, err := run("project", "register", "--path", matchingLocation, "--name", "Project"); err != nil {
+		t.Fatalf("register matching location: %v", err)
+	}
+	service, err := app.Open(t.Context(), home)
+	if err != nil {
+		t.Fatalf("open project store: %v", err)
+	}
+	_, expectedLocation, found, err := service.Store.ProjectByLocation(t.Context(), matchingLocation)
+	if closeErr := service.Close(); closeErr != nil {
+		t.Fatalf("close project store: %v", closeErr)
+	}
+	if err != nil || !found {
+		t.Fatalf("find matching location: found=%t err=%v", found, err)
+	}
+	if err := os.Chdir(matchingLocation); err != nil {
+		t.Fatalf("change working directory: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(originalWorkingDirectory) })
+
+	output, err := run("project", "current", "--json")
+	if err != nil {
+		t.Fatalf("qlog project current: %v", err)
+	}
+	var current struct {
+		ProjectSlug  string `json:"project_slug"`
+		LocationID   string `json:"project_location_id"`
+		LocationPath string `json:"location_path"`
+		Method       string `json:"method"`
+		Confidence   string `json:"confidence"`
+		Evidence     string `json:"evidence"`
+	}
+	if err := json.Unmarshal([]byte(output), &current); err != nil {
+		t.Fatalf("project current JSON: %v; output=%q", err, output)
+	}
+	if current.ProjectSlug != "project" || current.LocationID != expectedLocation.ID || current.LocationPath != matchingLocation || current.Method != "cwd" || current.Confidence != "high" || current.Evidence != strings.ToLower(filepath.ToSlash(matchingLocation)) {
+		t.Fatalf("project current = %#v", current)
+	}
+}
+
+func TestProjectRegisterIsIdempotentForCurrentDirectory(t *testing.T) {
+	home := t.TempDir()
+	projectDirectory := t.TempDir()
+	originalWorkingDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get working directory: %v", err)
+	}
+	if err := os.Chdir(projectDirectory); err != nil {
+		t.Fatalf("change working directory: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(originalWorkingDirectory) })
+
+	run := func(args ...string) (string, error) {
+		command := New(Version{Version: "0.1.0", Commit: "test", BuildDate: "2026-07-16"})
+		output := new(bytes.Buffer)
+		command.SetArgs(append([]string{"--home", home}, args...))
+		setOutput(command, output)
+		err := command.Execute()
+		return output.String(), err
+	}
+
+	if _, err := run("init"); err != nil {
+		t.Fatalf("qlog init: %v", err)
+	}
+	for range 2 {
+		if _, err := run("project", "register", "--path", ".", "--name", "Project"); err != nil {
+			t.Fatalf("qlog project register: %v", err)
+		}
+	}
+	output, err := run("project", "list", "--json")
+	if err != nil {
+		t.Fatalf("qlog project list: %v", err)
+	}
+	var projects []struct {
+		Slug          string `json:"slug"`
+		LocationCount int64  `json:"location_count"`
+	}
+	if err := json.Unmarshal([]byte(output), &projects); err != nil {
+		t.Fatalf("project list JSON: %v; output=%q", err, output)
+	}
+	if len(projects) != 1 || projects[0].Slug != "project" || projects[0].LocationCount != 1 {
+		t.Fatalf("project list = %#v, want one project location", projects)
 	}
 }
 

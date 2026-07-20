@@ -3,6 +3,30 @@
 > Versión del prompt: **1.2**  
 > Enfoque: **project-first attribution, multi-project usage accounting y ejecución multiagente gobernada**.
 
+## Estado verificable y reglas de evidencia
+
+El estado de ciclo de vida registra la etapa auditada de entrega. Las declaraciones
+públicas de disponibilidad y verificación se derivan de la evidencia de aceptación,
+no de archivos fuente, stubs, plantillas, registros o comandos no ejecutados.
+
+| Milestone | Estado de ciclo de vida | Estado de evidencia |
+|---|---|---|
+| M0 | `IMPLEMENTED` | Matriz ausente; implementación auditada como inventario de fuente, no verificación. |
+| M1 | `BLOCKED` | `docs/verification/milestone-1-evidence.md` tiene filas requeridas `FAIL` y `NOT_RUN`. |
+| M2 | `IMPLEMENTED` | Matriz ausente; implementación auditada como inventario de fuente, no verificación. |
+| M3 | `IN_PROGRESS` | Matriz ausente; no hay declaración de disponibilidad ni verificación. |
+| M4 | `IN_PROGRESS` | Matriz ausente; madurez de captura `DETECTION_ONLY`, no captura verificada. |
+| M5 | `IMPLEMENTED` | Matriz ausente; implementación auditada como inventario de fuente, no verificación. |
+| M6 | `IMPLEMENTED` | Matriz ausente; implementación auditada como inventario de fuente, no verificación. |
+
+El ciclo de vida de un milestone usa exactamente `NOT_STARTED`, `IN_PROGRESS`,
+`IMPLEMENTED`, `VERIFIED`, `BLOCKED` o `DEFERRED`. `DETECTION_ONLY` describe la
+madurez de captura de M4, no un séptimo estado del ciclo de vida. Un milestone solo
+puede ser `VERIFIED` cuando cada criterio requerido es `PASS` en
+`docs/verification/milestone-<n>-evidence.md`; cualquier `FAIL`, `NOT_RUN` o
+`BLOCKED` lo impide. Las secciones posteriores que describen entregables son
+objetivos de recuperación, no afirmaciones de disponibilidad actual.
+
 ## Rol
 
 Actúa como un equipo senior coordinado, compuesto por:
@@ -1423,7 +1447,7 @@ Resumen:
 ```text
 PROJECTS  06 ACTIVE   AGENTS  04 OK     EVENTS  18,420
 TOKENS    2.1M IN / 1.8M OUT             UNATTRIBUTED  0.7%
-COST      $12.43 / €11.39   LEDGER VERIFIED   CAPTURE 83% EXACT
+COST      $12.43 / €11.39   LEDGER: PENDING EVIDENCE   CAPTURE: EXAMPLE ONLY
 ```
 
 Trace line canónica:
@@ -1473,7 +1497,7 @@ gpt-x              61.4%
 claude-example     27.2%
 local-llama        11.4%
 
-CAPTURE
+CAPTURE (EJEMPLO, NO EVIDENCIA)
 exact              84.0%
 estimated          13.2%
 unattributed        2.8%
@@ -1936,7 +1960,7 @@ PROJECT TOTAL                    | 25,450 tokens |  5m08s | $0.31 / €0.28
 UNATTRIBUTED
 OPENCODE    | local/qwen        | 8,441 tokens | €0.00 | INFERRED
 
-GRAND TOTAL | 107,725 tokens | 19m11s | $1.21 / €1.10 | ledger VERIFIED
+GRAND TOTAL | 107,725 tokens | 19m11s | $1.21 / €1.10 | ledger: pending evidence
 ```
 
 Debe soportar otras vistas sin cambiar los datos almacenados:
@@ -2332,10 +2356,12 @@ La regla central del producto es:
 Construye infraestructura de confianza. No construyas solamente una pantalla bonita.
 
 ---
-Contexto ultimo:
-# QUANTUM_LOG Master Prompt actualizado ✅
+## Contexto histórico no verificable
 
-He actualizado el archivo completo incorporando:
+# Snapshot histórico del Master Prompt
+
+El siguiente snapshot conserva requisitos y propuestas históricas; no demuestra
+implementación ni verificación de M0-M6:
 
 * **1 orquestador + 6 subagentes especializados**, con activación progresiva por milestone.
 * Atribución **project-first** como parte central del producto.
@@ -4283,7 +4309,7 @@ Resumen:
 
 ```text
 AGENTS  04 OK     EVENTS  18,420     TOKENS  2.1M IN / 1.8M OUT
-COST    $12.43 / €11.39   LEDGER  VERIFIED   CAPTURE  83% EXACT
+COST    $12.43 / €11.39   LEDGER: PENDING EVIDENCE   CAPTURE: EXAMPLE ONLY
 ```
 
 Trace line canónica:
@@ -4646,7 +4672,7 @@ AI USAGE · ngAutoPilot · BUILD · task:qlog_01J...
 CODEX       | gpt-x          | in 42,180 | out 8,420 | cache 12,300 | tools 18 | 12m41s | $0.84 | EXACT
 CLAUDE CODE | claude-example | in  9,110 | out 1,824 | cache      0 | tools  3 |  1m22s | $0.06 | ESTIMATED
 
-TOTAL       | 73,834 tokens | 14m03s | $0.90 / €0.82 | ledger VERIFIED
+TOTAL       | 73,834 tokens | 14m03s | $0.90 / €0.82 | ledger: pending evidence
 ```
 
 La salida JSON debe conservar todos los campos sin redondear.

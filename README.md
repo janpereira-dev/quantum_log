@@ -6,7 +6,28 @@ Local-first observability and FinOps for AI coding agents. QUANTUM_LOG records v
 
 ## Status
 
-Milestones 0 through 6 are implemented in source. Current commands provide local initialization, SQLite ledger integrity checks, project registration/tags/resolution, NDJSON model-call normalization, task lifecycle/summaries, allocation repair/splits, versioned pricing persistence and recalculation, usage/report summaries, JSON/CSV export, accessible terminal dashboard, OTLP capture, stdio MCP agent integration, guided unattributed repair, budget alerts, and verified distribution scripts. No public release host or external package-manager package is claimed as published.
+Lifecycle state records the audited delivery stage. Public availability and verification
+claims derive from acceptance evidence, not from source presence, stubs, templates,
+registrations, or unexecuted commands.
+
+| Milestone | Lifecycle state | Evidence status |
+|---|---|---|
+| M0 | `IMPLEMENTED` | Matrix absent; implementation is audited source inventory, not verification. |
+| M1 | `BLOCKED` | [M1 evidence matrix](docs/verification/milestone-1-evidence.md) has required `FAIL` and `NOT_RUN` rows. |
+| M2 | `IMPLEMENTED` | Matrix absent; implementation is audited source inventory, not verification. |
+| M3 | `IN_PROGRESS` | Matrix absent; no availability or verification claim. |
+| M4 | `IN_PROGRESS` | Matrix absent; capture maturity is `DETECTION_ONLY`, not verified capture. |
+| M5 | `IMPLEMENTED` | Matrix absent; implementation is audited source inventory, not verification. |
+| M6 | `IMPLEMENTED` | Matrix absent; implementation is audited source inventory, not verification. |
+
+Milestone lifecycle states are `NOT_STARTED`, `IN_PROGRESS`, `IMPLEMENTED`,
+`VERIFIED`, `BLOCKED`, and `DEFERRED`. `DETECTION_ONLY` is M4 capture maturity,
+not a seventh lifecycle state. A milestone is `VERIFIED` only after every required
+acceptance criterion is `PASS` in `docs/verification/milestone-<n>-evidence.md`.
+Any `FAIL`, `NOT_RUN`, or `BLOCKED` row prevents verification.
+
+While M1 is `BLOCKED`, every command, path, and behavior description below is
+unverified source inventory unless it links to recorded acceptance evidence.
 
 ## Concepts
 
@@ -16,7 +37,7 @@ Milestones 0 through 6 are implemented in source. Current commands provide local
 - A session may move A -> B -> A. Each event keeps its own resolved project, method, evidence, and confidence.
 - Unknown ownership remains `unattributed`; QUANTUM_LOG never guesses from provider, model, or agent name.
 
-Resolution precedence is explicit `--project`, `QLOG_PROJECT`, current working directory, Git root, registered path, then `unattributed`.
+Resolution precedence is explicit `--project`, `QLOG_PROJECT`, current working directory, Git root, registered path, adapter hint, then `unattributed`.
 
 ## Privacy
 
@@ -24,7 +45,10 @@ Data remains local by default. Prompt content, response content, tool arguments,
 
 Capture quality is explicit. Provider-reported, observed, inferred, manual, and unavailable data must not be presented as equivalent.
 
-## Quick Start
+## Unverified Command Examples
+
+M1 is `BLOCKED`. These commands are source-inventory examples, not supported
+current behavior or acceptance evidence.
 
 ```bash
 go run ./cmd/qlog init
@@ -34,7 +58,12 @@ go run ./cmd/qlog ingest file fixtures/session-a-b-a.ndjson
 go run ./cmd/qlog verify
 ```
 
-Run `qlog tui` for the dashboard. With no arguments, `qlog` opens it only when stdout is an interactive terminal; piped or redirected output keeps command help. Navigation supports Left/Right, Tab, and 1-4; `Esc` returns to Overview, `?` toggles keyboard help, and `q` or `Ctrl+C` quits. Set `NO_COLOR=1` for plain text. Agent integrations run through `qlog mcp serve` using stdio. MCP exposes project registration/resolution/switching, tags, tasks, summaries, unattributed repair, and cost allocation tools. `qlog unattributed list` prints repair commands; `qlog budget set-project|set-tag` persists monthly allocated-cost alerts without blocking usage. Available commands include `qlog task start|finish|list|summary`, `qlog project list|show|tag list`, `qlog allocation show|split|repair`, `qlog pricing add|list|show|recalculate`, `qlog report summary`, `qlog export --format json|csv`, and `qlog usage month --group-by project,provider,model --json`.
+## Unaudited Source Inventory
+
+The repository contains source inventory for a TUI, stdio MCP, tasks, project
+operations, allocations, pricing, reports, exports, unattributed repair, and
+budgets. These M2-M6 interfaces are neither verified nor supported capability
+claims; consult their acceptance evidence before relying on any command or behavior.
 
 ## Local Paths
 
@@ -62,14 +91,16 @@ The domain has no dependency on Cobra or SQLite. Migrations are embedded. SQLite
 
 Run `qlog doctor --json` for local database health and `qlog verify` for ledger integrity. See [SECURITY.md](SECURITY.md). No example usage data is represented as real activity; fixtures are explicitly test data.
 
-## Roadmap
+## Recovery Sequence
 
-1. Milestone 1: complete project/core ledger APIs and multi-project fixtures.
-2. Milestone 2: usage reports, allocations, tags, pricing, and JSON output.
-3. Milestone 3: accessible TUI.
-4. Milestone 4: verified capture adapters and OTLP.
-5. Milestone 5: signed releases and installers.
-6. Milestone 6: agent MCP integration, task summaries, unattributed repair, and budget alerts.
+This sequence is delivery planning, not evidence of availability.
+
+1. M1: integrity and project attribution.
+2. M2: reporting, allocations, pricing, and export correctness.
+3. M4: technical capture beyond detection-only maturity.
+4. M3: TUI backed by shared query services.
+5. M5: distribution and clean-runner installation.
+6. M6: MCP and agent integration.
 
 ## License
 

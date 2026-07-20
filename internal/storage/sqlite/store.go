@@ -23,6 +23,7 @@ import (
 	"github.com/janpereira-dev/quantum_log/internal/audit"
 	"github.com/janpereira-dev/quantum_log/internal/domain"
 	"github.com/janpereira-dev/quantum_log/internal/pricing"
+	storelock "github.com/janpereira-dev/quantum_log/internal/storage/lock"
 	_ "modernc.org/sqlite"
 )
 
@@ -30,7 +31,11 @@ import (
 var migrations embed.FS
 
 type Store struct {
-	db *sql.DB
+	db          *sql.DB
+	quiescence  *storelock.Handle
+	writerLock  *storelock.Handle
+	writable    bool
+	warnings    []string
 }
 
 type WorkContextInput struct {
@@ -244,22 +249,147 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	if err := ensureParent(absolutePath); err != nil {
 		return nil, err
 	}
+	quiescence, err := storelock.AcquireSharedCreate(quiescenceLockPath(absolutePath))
+	if err != nil {
+		return nil, writerQuiescenceError(err)
+	}
+	writerLock, err := storelock.AcquireExclusive(writerLockPath(absolutePath))
+	if err != nil {
+		_ = quiescence.Close()
+		return nil, writerLockError(err)
+	}
 	// modernc accepts a SQLite URI with a Windows-safe forward-slash path.
 	dsn := "file:" + filepath.ToSlash(absolutePath) + "?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
+		_ = writerLock.Close()
+		_ = quiescence.Close()
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	store := &Store{db: db}
+	store := &Store{db: db, quiescence: quiescence, writerLock: writerLock, writable: true}
 	if err := store.migrate(ctx); err != nil {
-		_ = db.Close()
+		_ = store.Close()
 		return nil, err
 	}
 	return store, nil
 }
 
-func (s *Store) Close() error { return s.db.Close() }
+// OpenReadOnly opens an initialized database without creating files or applying migrations.
+func OpenReadOnly(ctx context.Context, path string) (*Store, error) {
+	absolutePath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve database path: %w", err)
+	}
+	if _, err := os.Stat(absolutePath); err != nil {
+		return nil, fmt.Errorf("open local database: %w; run qlog init first", err)
+	}
+	quiescence, err := storelock.AcquireExclusiveExisting(quiescenceLockPath(absolutePath))
+	if err != nil {
+		return nil, readerQuiescenceError(err)
+	}
+	if _, err := os.Stat(writerLockPath(absolutePath)); err != nil {
+		_ = quiescence.Close()
+		return nil, readerWriterLockError(err)
+	}
+	if err := rejectActiveWAL(absolutePath); err != nil {
+		_ = quiescence.Close()
+		return nil, err
+	}
+	dsn := "file:" + filepath.ToSlash(absolutePath) + "?mode=ro&immutable=1&_pragma=query_only(1)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		_ = quiescence.Close()
+		return nil, fmt.Errorf("open read-only sqlite: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		_ = quiescence.Close()
+		return nil, fmt.Errorf("open read-only sqlite: %w", err)
+	}
+	store := &Store{db: db, quiescence: quiescence, warnings: isolatedSHMWarning(absolutePath)}
+	if err := store.validateSchema(ctx); err != nil {
+		_ = store.Close()
+		return nil, err
+	}
+	return store, nil
+}
+
+func (s *Store) Close() error {
+	var result error
+	if s.writable {
+		if err := s.checkpointWAL(context.Background()); err != nil {
+			result = errors.Join(result, err)
+		}
+	}
+	if err := s.db.Close(); err != nil {
+		result = errors.Join(result, err)
+	}
+	if s.writerLock != nil {
+		result = errors.Join(result, s.writerLock.Close())
+	}
+	if s.quiescence != nil {
+		result = errors.Join(result, s.quiescence.Close())
+	}
+	return result
+}
+
+func (s *Store) Warnings() []string { return append([]string(nil), s.warnings...) }
+
+// Checkpoint validates and checkpoints a quiescent local ledger without migrations.
+func Checkpoint(ctx context.Context, path string) (result error) {
+	absolutePath, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("resolve database path: %w", err)
+	}
+	if _, err := os.Stat(absolutePath); err != nil {
+		return fmt.Errorf("open local database: %w; run qlog init first", err)
+	}
+	quiescence, err := storelock.AcquireExclusiveExisting(quiescenceLockPath(absolutePath))
+	if err != nil {
+		return maintenanceQuiescenceError(err)
+	}
+	defer func() { result = errors.Join(result, quiescence.Close()) }()
+	writerLock, err := storelock.AcquireExclusiveExisting(writerLockPath(absolutePath))
+	if err != nil {
+		return maintenanceWriterLockError(err)
+	}
+	defer func() { result = errors.Join(result, writerLock.Close()) }()
+
+	dsn := "file:" + filepath.ToSlash(absolutePath) + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return fmt.Errorf("open sqlite for maintenance: %w", err)
+	}
+	defer func() { result = errors.Join(result, db.Close()) }()
+	db.SetMaxOpenConns(1)
+	if err := db.PingContext(ctx); err != nil {
+		return fmt.Errorf("open sqlite for maintenance: %w", err)
+	}
+	store := &Store{db: db}
+	if err := store.VerifyLedger(ctx, ""); err != nil {
+		return fmt.Errorf("validate ledger before checkpoint: %w", err)
+	}
+	if err := store.checkpointWAL(ctx); err != nil {
+		return err
+	}
+	if err := rejectActiveWAL(absolutePath); err != nil {
+		return fmt.Errorf("confirm cleared WAL: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) checkpointWAL(ctx context.Context) error {
+	var busy, logFrames, checkpointedFrames int
+	if err := s.db.QueryRowContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &logFrames, &checkpointedFrames); err != nil {
+		return fmt.Errorf("checkpoint WAL: %w", err)
+	}
+	if busy != 0 {
+		return fmt.Errorf("WAL checkpoint busy: busy=%d log_frames=%d checkpointed_frames=%d", busy, logFrames, checkpointedFrames)
+	}
+	return nil
+}
 
 func (s *Store) RegisterProject(ctx context.Context, name, slug, path string) (domain.Project, domain.ProjectLocation, error) {
 	slug = normalizeSlug(slug)
@@ -1161,6 +1291,15 @@ func (s *Store) ProjectBySlug(ctx context.Context, slug string) (domain.Project,
 	return project, location, true, nil
 }
 
+func (s *Store) ProjectByLocation(ctx context.Context, path string) (domain.Project, domain.ProjectLocation, bool, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return domain.Project{}, domain.ProjectLocation{}, false, err
+	}
+	defer rollback(tx)
+	return projectByLocation(ctx, tx, path)
+}
+
 func (s *Store) Doctor(ctx context.Context) error {
 	var result string
 	if err := s.db.QueryRowContext(ctx, "PRAGMA integrity_check").Scan(&result); err != nil {
@@ -1168,6 +1307,27 @@ func (s *Store) Doctor(ctx context.Context) error {
 	}
 	if result != "ok" {
 		return fmt.Errorf("sqlite integrity check failed: %s", result)
+	}
+	return nil
+}
+
+func (s *Store) validateSchema(ctx context.Context) error {
+	entries, err := fs.ReadDir(migrations, "migrations")
+	if err != nil {
+		return fmt.Errorf("read embedded migrations: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
+			continue
+		}
+		var applied string
+		err := s.db.QueryRowContext(ctx, "SELECT version FROM schema_migrations WHERE version = ?", entry.Name()).Scan(&applied)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("database schema has pending migration %s; run qlog init", entry.Name())
+		}
+		if err != nil {
+			return fmt.Errorf("database schema is not initialized; run qlog init first: %w", err)
+		}
 	}
 	return nil
 }
@@ -1220,7 +1380,8 @@ func projectByLocation(ctx context.Context, tx *sql.Tx, path string) (domain.Pro
 	var project domain.Project
 	var location domain.ProjectLocation
 	var projectCreatedAt, locationCreatedAt string
-	err := tx.QueryRowContext(ctx, `SELECT p.id, p.slug, p.name, p.canonical_key, p.created_at, l.id, l.project_id, l.absolute_path, l.path_hash, l.created_at FROM project_locations l JOIN projects p ON p.id = l.project_id WHERE l.absolute_path = ?`, path).Scan(&project.ID, &project.Slug, &project.Name, &project.CanonicalKey, &projectCreatedAt, &location.ID, &location.ProjectID, &location.AbsolutePath, &location.PathHash, &locationCreatedAt)
+	path = normalizeLocationPath(path)
+	err := tx.QueryRowContext(ctx, `SELECT p.id, p.slug, p.name, p.canonical_key, p.created_at, l.id, l.project_id, l.absolute_path, l.path_hash, l.created_at FROM project_locations l JOIN projects p ON p.id = l.project_id WHERE LOWER(REPLACE(l.absolute_path, '\', '/')) = ?`, path).Scan(&project.ID, &project.Slug, &project.Name, &project.CanonicalKey, &projectCreatedAt, &location.ID, &location.ProjectID, &location.AbsolutePath, &location.PathHash, &locationCreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return project, location, false, nil
 	}
@@ -1230,6 +1391,11 @@ func projectByLocation(ctx context.Context, tx *sql.Tx, path string) (domain.Pro
 	project.CreatedAt = parseTimestamp(projectCreatedAt)
 	location.CreatedAt = parseTimestamp(locationCreatedAt)
 	return project, location, true, nil
+}
+
+func normalizeLocationPath(value string) string {
+	value = filepath.ToSlash(filepath.Clean(strings.TrimSpace(value)))
+	return strings.TrimSuffix(strings.ToLower(value), "/")
 }
 
 func projectBySlug(ctx context.Context, tx *sql.Tx, slug string) (domain.Project, bool, error) {
@@ -1295,6 +1461,82 @@ func sensitiveKey(key string) bool {
 func ensureParent(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create database directory: %w", err)
+	}
+	return nil
+}
+
+func quiescenceLockPath(databasePath string) string { return databasePath + ".quiescence.lock" }
+
+func writerLockPath(databasePath string) string { return databasePath + ".writer.lock" }
+
+func writerQuiescenceError(err error) error {
+	if errors.Is(err, storelock.ErrContended) {
+		return errors.New("quiescence lock is held by an active diagnostic; retry after it exits")
+	}
+	return fmt.Errorf("acquire quiescence lock: %w", err)
+}
+
+func writerLockError(err error) error {
+	if errors.Is(err, storelock.ErrContended) {
+		return errors.New("writer lock is held by an active qlog process; retry after it exits")
+	}
+	return fmt.Errorf("acquire writer lock: %w", err)
+}
+
+func readerQuiescenceError(err error) error {
+	if errors.Is(err, storelock.ErrMissing) {
+		return errors.New("quiescence lock is missing; run qlog init to restore it")
+	}
+	if errors.Is(err, storelock.ErrContended) {
+		return errors.New("quiescence lock is held by an active qlog client; retry after it exits")
+	}
+	return fmt.Errorf("acquire quiescence lock: %w", err)
+}
+
+func readerWriterLockError(err error) error {
+	if errors.Is(err, os.ErrNotExist) {
+		return errors.New("writer lock is missing; run qlog init to restore it")
+	}
+	return fmt.Errorf("inspect writer lock: %w", err)
+}
+
+func maintenanceQuiescenceError(err error) error {
+	if errors.Is(err, storelock.ErrMissing) {
+		return errors.New("quiescence lock is missing; run qlog init to restore it")
+	}
+	if errors.Is(err, storelock.ErrContended) {
+		return errors.New("quiescence lock is held by an active qlog client; retry after it exits")
+	}
+	return fmt.Errorf("acquire maintenance quiescence lock: %w", err)
+}
+
+func maintenanceWriterLockError(err error) error {
+	if errors.Is(err, storelock.ErrMissing) {
+		return errors.New("writer lock is missing; run qlog init to restore it")
+	}
+	if errors.Is(err, storelock.ErrContended) {
+		return errors.New("writer lock is held by an active qlog writer; retry after it exits")
+	}
+	return fmt.Errorf("acquire maintenance writer lock: %w", err)
+}
+
+func rejectActiveWAL(databasePath string) error {
+	info, err := os.Stat(databasePath + "-wal")
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect database WAL: %w", err)
+	}
+	if info.Size() > 0 {
+		return errors.New("database has an active WAL; close active qlog writers and retry")
+	}
+	return nil
+}
+
+func isolatedSHMWarning(databasePath string) []string {
+	if _, err := os.Stat(databasePath + "-shm"); err == nil {
+		return []string{"warning: isolated SQLite SHM file detected; diagnostics did not modify it"}
 	}
 	return nil
 }
