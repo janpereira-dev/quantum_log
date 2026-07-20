@@ -483,6 +483,11 @@ func (s *Store) AppendRawEvent(ctx context.Context, input RawEventInput) (string
 	if input.EvidenceJSON == "" {
 		input.EvidenceJSON = "{}"
 	}
+	sanitizedEvidence, err := sanitizeEvidence(input.EvidenceJSON)
+	if err != nil {
+		return "", fmt.Errorf("sanitize evidence: %w", err)
+	}
+	input.EvidenceJSON = sanitizedEvidence
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", fmt.Errorf("begin raw event: %w", err)
@@ -1431,6 +1436,19 @@ func sanitizePayload(payload []byte) ([]byte, error) {
 	return json.Marshal(value)
 }
 
+func sanitizeEvidence(evidence string) (string, error) {
+	var value any
+	if err := json.Unmarshal([]byte(evidence), &value); err != nil {
+		value = map[string]any{"sanitized": "[REDACTED]"}
+	}
+	sanitizeValue(value)
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return "{}", nil
+	}
+	return string(encoded), nil
+}
+
 func sanitizeValue(value any) {
 	switch typed := value.(type) {
 	case map[string]any:
@@ -1451,7 +1469,7 @@ func sanitizeValue(value any) {
 func sensitiveKey(key string) bool {
 	key = strings.ToLower(strings.ReplaceAll(key, "-", "_"))
 	switch key {
-	case "prompt", "response", "content", "authorization", "api_key", "access_token", "secret", "password", "tool_arguments", "tool_results":
+	case "prompt", "response", "content", "authorization", "api_key", "access_token", "secret", "password", "tool_arguments", "tool_results", "cookie", "token", "bearer", "apikey", "private_key", "credentials":
 		return true
 	default:
 		return false
