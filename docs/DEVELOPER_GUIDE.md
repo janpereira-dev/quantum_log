@@ -188,11 +188,18 @@ Run setup after installation to configure qlog-owned capture integrations for su
 ```bash
 ./qlog setup --dry-run
 ./qlog setup opencode --yes
+./qlog collector install
+./qlog collector start
+./qlog adapter verify copilot-vscode
 ./qlog collector status --json
 ./qlog collector serve
 ./qlog adapter status --json
 ./qlog adapter test opencode
+./qlog usage project QUANTUM_LOG
+./qlog collector logs
 ```
+
+`qlog collector serve` remains the foreground debug path. Use `qlog collector start` for managed background capture on supported platforms.
 
 Setup targets: `opencode`, `claude-code`, `codex`, `pi`, `copilot-vscode`, `openclaw`, and `hermes`.
 
