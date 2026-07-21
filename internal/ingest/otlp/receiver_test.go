@@ -9,9 +9,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/janpereira-dev/quantum_log/internal/app"
 	storepkg "github.com/janpereira-dev/quantum_log/internal/storage/sqlite"
+	collectortracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
+	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestReceiverImportsStandardOTLPJSONThroughCentralResolver(t *testing.T) {
@@ -84,6 +90,60 @@ func TestReceiverImportsCopilotOTLPTokensCacheReasoningAndProjectMetadata(t *tes
 	}
 }
 
+func TestReceiverAcceptsOTLPProtobuf(t *testing.T) {
+	ctx := context.Background()
+	service, err := app.Initialize(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("initialize service: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	worktree := filepath.Join(t.TempDir(), "project")
+	project, _, err := service.Store.RegisterProject(ctx, "Project", "project", worktree)
+	if err != nil {
+		t.Fatalf("register project: %v", err)
+	}
+
+	payload := &collectortracepb.ExportTraceServiceRequest{ResourceSpans: []*tracepb.ResourceSpans{{
+		Resource: &resourcepb.Resource{Attributes: []*commonpb.KeyValue{
+			{Key: "service.name", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "copilot-chat"}}},
+			{Key: "session.id", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "window-1"}}},
+		}},
+		ScopeSpans: []*tracepb.ScopeSpans{{Spans: []*tracepb.Span{{
+			TraceId:           []byte{1, 2, 3},
+			StartTimeUnixNano: uint64(time.Date(2026, 7, 21, 1, 0, 0, 0, time.UTC).UnixNano()),
+			Attributes: []*commonpb.KeyValue{
+				{Key: "qlog.project", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: project.Slug}}},
+				{Key: "gen_ai.operation.name", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "chat"}}},
+				{Key: "gen_ai.provider.name", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "github"}}},
+				{Key: "gen_ai.request.model", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "gpt-5"}}},
+				{Key: "gen_ai.response.model", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "gpt-5-resolved"}}},
+				{Key: "gen_ai.usage.input_tokens", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: 11}}},
+				{Key: "gen_ai.usage.output_tokens", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: 13}}},
+			},
+		}}}},
+	}}}
+	body, err := proto.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/traces", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/x-protobuf")
+	response := httptest.NewRecorder()
+	NewHandler(service).ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	report, err := service.Store.Usage(ctx, storepkg.UsageQuery{GroupBy: []string{"project", "agent", "capture_quality"}})
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	if len(report.Rows) != 1 || report.Rows[0].AgentName != "copilot-chat" || report.Rows[0].TotalTokens != 24 || report.Rows[0].CaptureQuality != "otel_reported" {
+		t.Fatalf("usage rows = %#v", report.Rows)
+	}
+}
+
 func TestReceiverRejectsNonJSON(t *testing.T) {
 	service, err := app.Initialize(context.Background(), t.TempDir())
 	if err != nil {
@@ -91,7 +151,7 @@ func TestReceiverRejectsNonJSON(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = service.Close() })
 	request := httptest.NewRequest(http.MethodPost, "/v1/traces", bytes.NewBufferString("ignored"))
-	request.Header.Set("Content-Type", "application/x-protobuf")
+	request.Header.Set("Content-Type", "text/plain")
 	response := httptest.NewRecorder()
 	NewHandler(service).ServeHTTP(response, request)
 	if response.Code != http.StatusUnsupportedMediaType {
