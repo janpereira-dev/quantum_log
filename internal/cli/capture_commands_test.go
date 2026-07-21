@@ -159,7 +159,7 @@ func TestSetupCommandPlansInstallsAndIsIdempotent(t *testing.T) {
 		return output.String(), err
 	}
 
-	output, err := run("setup", "--dry-run", "--json")
+	output, err := run("setup", "opencode", "--dry-run", "--json")
 	if err != nil {
 		t.Fatalf("setup dry-run: %v", err)
 	}
