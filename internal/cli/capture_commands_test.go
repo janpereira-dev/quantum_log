@@ -39,6 +39,82 @@ func TestAdapterCommandsExposeCapabilitiesAndSafeDryRun(t *testing.T) {
 	}
 }
 
+func TestAdapterVerifyCopilotReportsMissingEvidence(t *testing.T) {
+	home := t.TempDir()
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	command := New(Version{})
+	output := new(bytes.Buffer)
+	command.SetArgs([]string{"--home", home, "adapter", "verify", "copilot-vscode", "--json"})
+	setOutput(command, output)
+	if err := command.Execute(); err != nil {
+		t.Fatalf("adapter verify: %v", err)
+	}
+	var result struct {
+		AdapterID string `json:"adapter_id"`
+		Ready     bool   `json:"ready"`
+		Stages    []struct {
+			Name   string `json:"name"`
+			Passed bool   `json:"passed"`
+		} `json:"stages"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &result); err != nil {
+		t.Fatalf("output = %s: %v", output.String(), err)
+	}
+	if result.AdapterID != "copilot-vscode" || result.Ready || len(result.Stages) == 0 {
+		t.Fatalf("verify result = %#v", result)
+	}
+}
+
+func TestAdapterVerifyCopilotInstalledSettingsAreNotEnough(t *testing.T) {
+	home := t.TempDir()
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	run := func(args ...string) (string, error) {
+		command := New(Version{})
+		output := new(bytes.Buffer)
+		command.SetArgs(append([]string{"--home", home}, args...))
+		setOutput(command, output)
+		err := command.Execute()
+		return output.String(), err
+	}
+	if _, err := run("init"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, err := run("adapter", "install", "copilot-vscode", "--json"); err != nil {
+		t.Fatalf("install copilot-vscode: %v", err)
+	}
+	output, err := run("adapter", "verify", "copilot-vscode", "--since", "1h", "--json")
+	if err != nil {
+		t.Fatalf("adapter verify: %v", err)
+	}
+	var result struct {
+		Ready  bool `json:"ready"`
+		Stages []struct {
+			Name   string `json:"name"`
+			Passed bool   `json:"passed"`
+		} `json:"stages"`
+	}
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatalf("output = %s: %v", output, err)
+	}
+	if result.Ready {
+		t.Fatalf("installed settings verified without local Copilot evidence: %#v", result)
+	}
+	foundEvidenceStage := false
+	for _, stage := range result.Stages {
+		if stage.Name == "copilot_model_call" {
+			foundEvidenceStage = true
+			if stage.Passed {
+				t.Fatalf("copilot evidence stage passed without local evidence: %#v", result)
+			}
+		}
+	}
+	if !foundEvidenceStage {
+		t.Fatalf("verify result missing evidence stage: %#v", result)
+	}
+}
+
 func TestCollectorRejectsPublicBindingWithoutExplicitOptIn(t *testing.T) {
 	if err := validateListenAddress("0.0.0.0:4318", false); err == nil {
 		t.Fatal("public binding was accepted")
