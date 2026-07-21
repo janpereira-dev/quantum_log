@@ -70,6 +70,25 @@ func TestCollectorStatusShowsLocalEndpoints(t *testing.T) {
 	}
 }
 
+func TestCollectorLifecycleCommandsExist(t *testing.T) {
+	command := New(Version{})
+	collector, _, err := command.Find([]string{"collector"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"install", "start", "stop", "restart", "logs", "uninstall"} {
+		found := false
+		for _, child := range collector.Commands() {
+			if child.Name() == name {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("collector command %q not found", name)
+		}
+	}
+}
+
 func TestHookClaudeCodePostsLifecycleEvent(t *testing.T) {
 	var received []byte
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

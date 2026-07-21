@@ -52,8 +52,43 @@ func newCollectorCommand(home *string) *cobra.Command {
 	}}
 	serve.Flags().StringVar(&listen, "listen", "127.0.0.1:4318", "OTLP/HTTP listen address")
 	serve.Flags().BoolVar(&allowNonLoopback, "allow-non-loopback", false, "allow a non-loopback listen address")
-	collector.AddCommand(status, serve)
+	collector.AddCommand(
+		status,
+		serve,
+		collectorLifecycleCommand("install", "Install managed collector", func(manager collectorManager, home, listen string) (string, error) {
+			return manager.Install(home, listen)
+		}, home, &listen),
+		collectorLifecycleCommand("start", "Start managed collector", func(manager collectorManager, home, listen string) (string, error) {
+			return manager.Start(home, listen)
+		}, home, &listen),
+		collectorLifecycleCommand("stop", "Stop managed collector", func(manager collectorManager, _, _ string) (string, error) { return manager.Stop() }, home, &listen),
+		collectorLifecycleCommand("restart", "Restart managed collector", func(manager collectorManager, home, listen string) (string, error) {
+			return manager.Restart(home, listen)
+		}, home, &listen),
+		collectorLifecycleCommand("logs", "Show managed collector logs", func(manager collectorManager, _, _ string) (string, error) { return manager.Logs() }, home, &listen),
+		collectorLifecycleCommand("uninstall", "Uninstall managed collector", func(manager collectorManager, _, _ string) (string, error) { return manager.Uninstall() }, home, &listen),
+	)
 	return collector
+}
+
+type collectorManager interface {
+	Install(home, listen string) (string, error)
+	Start(home, listen string) (string, error)
+	Stop() (string, error)
+	Restart(home, listen string) (string, error)
+	Logs() (string, error)
+	Uninstall() (string, error)
+}
+
+func collectorLifecycleCommand(name, short string, run func(collectorManager, string, string) (string, error), home *string, listen *string) *cobra.Command {
+	return &cobra.Command{Use: name, Short: short, Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+		message, err := run(newCollectorManager(), *home, *listen)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(command.Root().OutOrStdout(), message)
+		return err
+	}}
 }
 
 func validateListenAddress(address string, allowNonLoopback bool) error {
