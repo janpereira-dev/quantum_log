@@ -115,6 +115,91 @@ func TestAdapterVerifyCopilotInstalledSettingsAreNotEnough(t *testing.T) {
 	}
 }
 
+func TestAdapterVerifyCopilotRejectsGenericIngestedUsage(t *testing.T) {
+	home := t.TempDir()
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, err := runQLog(t, home, "adapter", "install", "copilot-vscode"); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if _, err := runQLog(t, home, "project", "register", "--path", t.TempDir(), "--name", "Project", "--slug", "project"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	projectOutput, err := runQLog(t, home, "project", "show", "project", "--json")
+	if err != nil {
+		t.Fatalf("project show: %v", err)
+	}
+	var project struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(projectOutput), &project); err != nil {
+		t.Fatalf("decode project: %v", err)
+	}
+	fixture := filepath.Join(t.TempDir(), "fake-copilot.ndjson")
+	event := `{"source":"fixture","session_id":"session","event_type":"model.call","project_id":"` + project.ID + `","payload":{"provider":"github","model":"gpt-5","agent_name":"GitHub Copilot Chat","input_tokens":1,"output_tokens":2,"capture_quality":"otel_reported"}}` + "\n"
+	if err := os.WriteFile(fixture, []byte(event), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	if _, err := runQLog(t, home, "ingest", "file", fixture); err != nil {
+		t.Fatalf("ingest fake copilot: %v", err)
+	}
+
+	output, err := runQLog(t, home, "adapter", "verify", "copilot-vscode", "--project", "project", "--json")
+	if err != nil {
+		t.Fatalf("adapter verify: %v", err)
+	}
+	var result struct {
+		Ready bool `json:"ready"`
+	}
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatalf("decode verify: %v", err)
+	}
+	if result.Ready {
+		t.Fatalf("generic ingested usage verified Copilot: %s", output)
+	}
+}
+
+func TestAdapterVerifyCopilotAcceptsOTLPHTTPUsage(t *testing.T) {
+	home := t.TempDir()
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	worktree := filepath.Join(t.TempDir(), "project")
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, err := runQLog(t, home, "adapter", "install", "copilot-vscode"); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if _, err := runQLog(t, home, "project", "register", "--path", worktree, "--name", "Project", "--slug", "project"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/traces", strings.NewReader(`{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"copilot-chat"}}]},"scopeSpans":[{"spans":[{"traceId":"trace-copilot","attributes":[{"key":"qlog.project","value":{"stringValue":"project"}},{"key":"gen_ai.provider.name","value":{"stringValue":"github"}},{"key":"gen_ai.agent.name","value":{"stringValue":"GitHub Copilot Chat"}},{"key":"gen_ai.request.model","value":{"stringValue":"gpt-5"}},{"key":"gen_ai.usage.input_tokens","value":{"intValue":"1"}},{"key":"gen_ai.usage.output_tokens","value":{"intValue":"2"}}]}]}]}]}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	newCollectorMux(home).ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("collector response = %d: %s", response.Code, response.Body.String())
+	}
+
+	output, err := runQLog(t, home, "adapter", "verify", "copilot-vscode", "--project", "project", "--json")
+	if err != nil {
+		t.Fatalf("adapter verify: %v", err)
+	}
+	var result struct {
+		Ready bool `json:"ready"`
+	}
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatalf("decode verify: %v", err)
+	}
+	if !result.Ready {
+		t.Fatalf("OTLP Copilot usage did not verify: %s", output)
+	}
+}
+
 func TestCollectorRejectsPublicBindingWithoutExplicitOptIn(t *testing.T) {
 	if err := validateListenAddress("0.0.0.0:4318", false); err == nil {
 		t.Fatal("public binding was accepted")

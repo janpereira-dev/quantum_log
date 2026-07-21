@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/janpereira-dev/quantum_log/internal/adapters"
@@ -233,19 +232,12 @@ func verifyAdapter(ctx context.Context, home string, adapter adapters.Adapter, p
 	}
 	defer func() { _ = service.Close() }()
 	now := time.Now().UTC()
-	report, err := service.Store.Usage(ctx, sqlite.UsageQuery{From: now.Add(-duration), To: now, ProjectSlug: projectSlug, GroupBy: []string{"project", "agent", "provider", "model", "capture_quality"}})
+	foundCopilot, err := service.Store.HasRecentCopilotOTLPModelCall(ctx, sqlite.CopilotOTLPEvidenceQuery{From: now.Add(-duration), To: now, ProjectSlug: projectSlug})
 	if err != nil {
 		stages = append(stages, adapterVerifyStage{Name: "usage", Passed: false, Message: err.Error()})
 		return adapterVerifyResult{AdapterID: "copilot-vscode", Stages: stages, Message: "usage query failed"}
 	}
-	foundCopilot := false
-	for _, row := range report.Rows {
-		if row.CaptureQuality == string(adapters.CaptureOTELReported) && strings.Contains(strings.ToLower(row.AgentName), "copilot") && row.TotalTokens > 0 {
-			foundCopilot = true
-			break
-		}
-	}
-	stages = append(stages, adapterVerifyStage{Name: "copilot_model_call", Passed: foundCopilot, Message: "requires recent Copilot-originated otel_reported model call with tokens in local storage"})
+	stages = append(stages, adapterVerifyStage{Name: "copilot_model_call", Passed: foundCopilot, Message: "requires recent otlp-http Copilot model.call with otel_reported tokens in local storage"})
 	ready := status.Installed && foundCopilot
 	message := "Copilot capture is not verified yet"
 	if ready {

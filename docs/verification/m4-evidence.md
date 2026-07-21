@@ -83,3 +83,30 @@ Manual VS Code Copilot E2E is still required before M4 can move out of `IN_PROGR
 Expected close criteria remain unchanged: `adapter verify` must return `ready=true`, and usage rows must include `capture_quality=otel_reported`, `agent_name` containing `copilot`, `provider=github`, a model, and non-zero tokens.
 
 Project attribution result: pending. No real Copilot-originated OTLP model call was captured in this CLI-only attempt, so attribution could not be proven as `quantum-log` or `unattributed`.
+
+### 2026-07-21 Post-Review Readiness Fix Verification
+
+M4 remains `IN_PROGRESS`. This pass verifies the final review fixes without claiming real Copilot E2E.
+
+| Command | Result |
+|---|---|
+| `go test -count=1 ./...` | PASS. |
+| `go vet ./...` | PASS. |
+| `golangci-lint run` | PASS. |
+| `git diff --check` | PASS. |
+| `go run ./cmd/qlog --home C:\Users\cowbo\AppData\Local\Temp\opencode\quantum-log-v031-verify init` | PASS. Initialized isolated ledger. |
+| `go run ./cmd/qlog --home C:\Users\cowbo\AppData\Local\Temp\opencode\quantum-log-v031-verify project register --path . --name QUANTUM_LOG` | PASS. Registered `quantum-log` at this worktree path. |
+| `go run ./cmd/qlog --home C:\Users\cowbo\AppData\Local\Temp\opencode\quantum-log-v031-verify setup copilot-vscode --yes` | PASS. Reported `capture=experimental` and preserved `github.copilot.chat.otel.captureContent=false`. |
+| `go run ./cmd/qlog --home C:\Users\cowbo\AppData\Local\Temp\opencode\quantum-log-v031-verify collector install` | PASS. Installed managed collector. |
+| `go run ./cmd/qlog --home C:\Users\cowbo\AppData\Local\Temp\opencode\quantum-log-v031-verify collector start` | PASS. Started collector with pid `42736`. |
+| `go run ./cmd/qlog --home C:\Users\cowbo\AppData\Local\Temp\opencode\quantum-log-v031-verify adapter verify copilot-vscode --json` while collector was running | PASS. Completed without SQLite lock contention. Returned `ready=false` because no real Copilot event exists yet. |
+| `go run ./cmd/qlog --home C:\Users\cowbo\AppData\Local\Temp\opencode\quantum-log-v031-verify usage project quantum-log --json` while collector was running | PASS. Completed without SQLite lock contention. Returned no rows and `total_tokens=0`. |
+| `go run ./cmd/qlog --home C:\Users\cowbo\AppData\Local\Temp\opencode\quantum-log-v031-verify collector logs` | PASS. Current collector logs include `/v1/traces OTLP JSON/protobuf`. |
+| `go run ./cmd/qlog --home C:\Users\cowbo\AppData\Local\Temp\opencode\quantum-log-v031-verify collector stop` | PASS. Stopped collector. |
+
+Additional automated coverage now verifies:
+
+- `adapter verify copilot-vscode` does not pass from generic ingested fake Copilot usage.
+- `adapter verify copilot-vscode` requires raw `otlp-http` Copilot `model.call` evidence with `otel_reported` tokens.
+- OTLP receiver does not use `github.copilot.git.repository` or `copilot_chat.repo.remote_url` as `working_directory`, avoiding credential leakage from remote URLs.
+- Collector opens the ledger per request, so the collector process no longer holds the writer lock between requests.
