@@ -195,7 +195,7 @@ func TestReceiverDoesNotUseRemoteRepositoryURLAsWorkingDirectory(t *testing.T) {
 	line, err := Receiver{service: service}.event(context.Background(), map[string]string{}, map[string]string{
 		"gen_ai.provider.name":          "github",
 		"gen_ai.request.model":          "gpt-5",
-		"copilot_chat.repo.remote_url":   "https://oauth:secret@example.com/org/private.git?token=leak",
+		"copilot_chat.repo.remote_url":  "https://oauth:secret@example.com/org/private.git?token=leak",
 		"github.copilot.git.repository": "https://oauth:secret@example.com/org/private.git?token=leak",
 	}, span{})
 	if err != nil {
