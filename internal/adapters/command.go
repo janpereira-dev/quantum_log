@@ -46,7 +46,7 @@ func (a commandAdapter) Install(_ context.Context, options InstallOptions) (Inst
 	if options.DryRun {
 		change.Description = "dry run: " + change.Description
 	}
-	return InstallResult{Changed: change.Action == "created" || change.Action == "updated", Actions: []string{formatChange(change)}}, nil
+	return InstallResult{Changed: !options.DryRun && (change.Action == "created" || change.Action == "updated"), Actions: []string{formatChange(change)}}, nil
 }
 
 func (a commandAdapter) PlanInstall(_ context.Context, options SetupOptions) (SetupPlan, error) {

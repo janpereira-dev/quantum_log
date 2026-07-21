@@ -119,13 +119,13 @@ func (r *Registry) List() []Adapter {
 func Default() *Registry {
 	registry, err := NewRegistry(
 		GenericJSONL{},
-		newCommandAdapter("opencode", "OpenCode", "opencode", ".config/opencode/AGENTS.md"),
-		newCommandAdapter("claude-code", "Claude Code", "claude", ".claude/QUANTUM_LOG.md"),
-		newCommandAdapter("codex", "Codex", "codex", ".codex/qlog-instructions.md"),
+		newOpenCodeAdapter(),
+		newClaudeCodeAdapter(),
+		newCodexAdapter(),
 		newCommandAdapter("pi", "Pi", "pi", ".config/pi/qlog.md"),
-		newCommandAdapter("copilot-vscode", "GitHub Copilot for VS Code", "code", "Code/User/prompts/qlog.instructions.md"),
+		newVSCodeCopilotAdapter(),
 		newCommandAdapter("openclaw", "OpenClaw", "openclaw", ".config/openclaw/qlog.md"),
-		newCommandAdapter("hermen", "Hermen", "hermen", ".config/hermen/qlog.md"),
+		newCommandAdapter("hermes", "Hermes", "hermes", ".config/hermes/qlog.md"),
 	)
 	if err != nil {
 		panic(err)

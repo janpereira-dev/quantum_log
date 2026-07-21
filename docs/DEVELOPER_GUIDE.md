@@ -10,7 +10,7 @@ Think of it as a tamper-evident local SQLite ledger plus a CLI/TUI/MCP surface.
 
 ## 1. What version is this?
 
-`0.3.0` — first setup-first M4 release. It remains compatible with v0.2.0 local homes and databases, then adds `qlog setup` for agent capture configuration.
+`0.3.0` — first M4 auto-capture release. It remains compatible with v0.2.0 local homes and databases, then adds `qlog setup`, collector endpoints, agent hooks/plugins, and project-first usage reporting.
 
 ## 2. Prerequisites
 
@@ -171,8 +171,8 @@ If the head hash changed → mismatch (possible tampering). If the session is go
 ## 12. Reports, Usage, Allocations
 
 ```bash
-./qlog usage
-./qlog usage --project MY_PROJECT
+./qlog usage today
+./qlog usage project MY_PROJECT
 ./qlog report --from 2026-07-01 --to 2026-07-31
 ./qlog allocation list
 ./qlog allocation set --project MY_PROJECT --basis-points 7000
@@ -183,21 +183,33 @@ Allocations must sum to 10000 basis points (100%). The CLI rejects invalid split
 
 ## 13. Setup Agent Capture
 
-Run setup after installation to configure qlog-owned capture instructions for supported agents:
+Run setup after installation to configure qlog-owned capture integrations for supported agents:
 
 ```bash
 ./qlog setup --dry-run
 ./qlog setup opencode --yes
+./qlog collector status --json
+./qlog collector serve
 ./qlog adapter status --json
 ./qlog adapter test opencode
 ```
 
-Setup targets: `opencode`, `claude-code`, `codex`, `pi`, `copilot-vscode`, `openclaw`, and `hermen`.
+Setup targets: `opencode`, `claude-code`, `codex`, `pi`, `copilot-vscode`, `openclaw`, and `hermes`.
+
+Current adapter evidence:
+
+| Adapter | Capture path | Capture quality |
+|---|---|---|
+| `copilot-vscode` | GitHub Copilot VS Code OpenTelemetry to local `/v1/traces`, with content capture disabled. | `otel_reported` when usage fields exist. |
+| `opencode` | Global OpenCode plugin posts sanitized events to local `/v1/events`. | `agent_reported` when usage exists; otherwise `lifecycle_only`. |
+| `codex` | Codex app-server `rawResponse/completed` events can be forwarded to `/v1/events`. | `agent_reported` only for non-null usage. |
+| `claude-code` | Claude Code lifecycle hooks call `qlog hook claude-code`. | `lifecycle_only`; no token support claimed. |
+| `pi`, `openclaw`, `hermes` | Setup-capable fallback targets while source verification continues. | `lifecycle_only` or `unavailable`. |
 
 Rules:
 - `--dry-run` shows planned file changes without writing.
 - `--yes` applies setup changes without an interactive prompt.
-- Existing files are backed up before qlog writes a marker block.
+- Existing files are backed up before qlog writes qlog-owned files, settings, or marker blocks.
 - Re-running setup is idempotent.
 - Token capture is only reported when a provider, agent, OTLP event, or structured event exposes real token data.
 - If no real token source exists, qlog labels the activity as `lifecycle_only` or another explicit `capture_quality`; it does not invent token counts.

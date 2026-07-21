@@ -39,7 +39,7 @@ qlog setup codex
 qlog setup pi
 qlog setup copilot-vscode
 qlog setup openclaw
-qlog setup hermen
+qlog setup hermes
 qlog adapter status
 qlog adapter test opencode
 ```
@@ -82,13 +82,13 @@ Tradeoff: more work per agent, but it matches the user goal and the Engram usabi
 
 | Agent | Initial target | Capture quality goal | Notes |
 |---|---|---|---|
-| OpenCode | Native plugin or config hook plus qlog collector/MCP registration | Reported tokens when exposed; otherwise lifecycle plus session metadata | First priority because the current project already runs inside OpenCode and Engram has a proven plugin pattern. |
-| Claude Code | Plugin or hook setup, plus optional MCP registration | Reported tokens when exposed by hook/plugin data; otherwise lifecycle plus session metadata | Must support Windows carefully because hook shells can vary. |
-| Codex | Config + instruction/hook/plugin path if available | Reported usage if Codex exposes it; otherwise lifecycle plus session metadata | Follow Engram's config-file pattern for `~/.codex/config.toml`. |
+| OpenCode | Global plugin posts sanitized events to qlog `/v1/events` | `agent_reported` when usage exists; otherwise `lifecycle_only` | Plugin must never block normal OpenCode work if qlog is not running. |
+| Claude Code | `.claude/settings.json` lifecycle hooks call `qlog hook claude-code` | `lifecycle_only` | Hooks do not have verified exact token usage; do not claim token capture. |
+| Codex | App-server `rawResponse/completed` events forwarded to qlog `/v1/events` | `agent_reported` only when `usage` is non-null | Requires `experimentalRawEvents`; null usage remains unavailable, not estimated. |
 | Pi | Package/plugin path inspired by Engram Pi setup | Reported usage if Pi extension can observe it | Good candidate for early rich capture because Pi extension surface can emit events directly. |
-| GitHub Copilot in VS Code | VS Code MCP/config first, VS Code extension later | Initially setup guidance plus lifecycle/context; extension needed for richer capture | Copilot token usage may not be directly exposed through native MCP. Do not promise full token capture until verified. |
+| GitHub Copilot in VS Code | Native VS Code GitHub Copilot OTel settings to qlog `/v1/traces` | `otel_reported` when usage fields exist | Content capture stays disabled by default. |
 | OpenClaw | Detect CLI/config/log surface, then adapter | Unknown until explored | Treat as supported only after a real data source is identified. |
-| Hermen | Detect CLI/config/log surface, then adapter | Unknown until explored | Treat as supported only after a real data source is identified. |
+| Hermes | Detect CLI/config/log surface, then adapter | Unknown until explored | Treat as supported only after a real data source is identified. |
 
 ## Capture Quality Model
 
@@ -201,7 +201,7 @@ Follow Engram-style config for Codex and package/plugin integration for Pi. Pres
 
 Start with MCP/config/instructions setup for VS Code and document that full Copilot token capture likely requires a VS Code extension. Then design the extension only after verifying available VS Code/Copilot APIs.
 
-### Slice 6: OpenClaw and Hermen Exploration
+### Slice 6: OpenClaw and Hermes Exploration
 
 Add detection and setup only after identifying stable config, hook, log, plugin, or telemetry surfaces. Do not add fake support.
 
@@ -223,7 +223,7 @@ Add detection and setup only after identifying stable config, hook, log, plugin,
 - Mandatory model proxying for all users.
 - Cloud sync or SaaS ingestion.
 - Billing-provider reconciliation.
-- Full GitHub Copilot token capture without verified extension/API evidence.
+- GitHub Copilot CLI capture without verified CLI telemetry or hook evidence.
 - Fake adapters that only detect a binary and claim support.
 
 ## Next Step

@@ -632,3 +632,47 @@ func TestMilestoneSixAgentCommands(t *testing.T) {
 		t.Fatalf("mcp serve command = %#v, %v", found, err)
 	}
 }
+
+func TestUsageProjectReportsAgentAndCaptureQuality(t *testing.T) {
+	home := t.TempDir()
+	worktree := filepath.Join(t.TempDir(), "project")
+	run := func(args ...string) (string, error) {
+		command := New(Version{Version: "0.3.0"})
+		output := new(bytes.Buffer)
+		command.SetArgs(append([]string{"--home", home}, args...))
+		setOutput(command, output)
+		err := command.Execute()
+		return output.String(), err
+	}
+	if _, err := run("init"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, err := run("project", "register", "--path", worktree, "--name", "Project", "--slug", "project"); err != nil {
+		t.Fatalf("register project: %v", err)
+	}
+	projectOutput, err := run("project", "show", "project", "--json")
+	if err != nil {
+		t.Fatalf("show project: %v", err)
+	}
+	var project struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(projectOutput), &project); err != nil {
+		t.Fatalf("decode project: %v", err)
+	}
+	fixture := filepath.Join(t.TempDir(), "calls.ndjson")
+	event := `{"source":"fixture","session_id":"session","event_type":"model.call","project_id":"` + project.ID + `","occurred_at":"2026-07-20T12:00:00Z","payload":{"provider":"anthropic","model":"claude-sonnet","agent_name":"opencode","input_tokens":10,"output_tokens":20,"capture_quality":"agent_reported"}}` + "\n"
+	if err := os.WriteFile(fixture, []byte(event), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	if _, err := run("ingest", "file", fixture); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+	output, err := run("usage", "project", "project")
+	if err != nil {
+		t.Fatalf("usage project: %v", err)
+	}
+	if !strings.Contains(output, "project | opencode | anthropic/claude-sonnet | agent_reported | 30 tokens") {
+		t.Fatalf("usage project output = %q", output)
+	}
+}

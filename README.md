@@ -18,7 +18,7 @@ This release keeps the v0.2.0 local ledger and CLI contract compatible while add
 | M1 | `VERIFIED` | Resolver precedence, cooperative SQLite locks, read-only diagnostics, evidence sanitization, external anchors + truncation detection. |
 | M2 | `IMPLEMENTED` | Reporting, allocations, pricing, export. Test suite green. |
 | M3 | `IMPLEMENTED` | TUI backed by shared query services. |
-| M4 | `IMPLEMENTED` | `qlog setup`, adapter status/test, and setup-capable agent targets. Token capture remains quality-labeled and is not claimed when agents do not expose reported usage. |
+| M4 | `IMPLEMENTED` | Passive setup and capture paths for Copilot VS Code OTel, OpenCode plugin events, Codex app-server usage events, and Claude Code lifecycle hooks. Other agents remain quality-labeled setup targets until token sources are verified. |
 | M5 | `IMPLEMENTED` | Distribution configs present; native installers pending external registry publication. |
 | M6 | `IMPLEMENTED` | stdio MCP server and agent hooks. |
 
@@ -69,16 +69,27 @@ If you already have v0.2.0 installed, this command replaces the binary only. You
 
 ## Setup Agent Capture
 
-Use setup after installation to configure supported agents with qlog-owned, idempotent instructions or config markers.
+Use setup after installation to configure supported agents with qlog-owned, idempotent plugins, hooks, collector settings, or fallback instructions.
 
 ```bash
 qlog setup --dry-run
 qlog setup opencode --yes
+qlog collector status --json
+qlog collector serve
 qlog adapter status --json
 qlog adapter test opencode
+qlog usage project QUANTUM_LOG
 ```
 
-Supported setup targets are `opencode`, `claude-code`, `codex`, `pi`, `copilot-vscode`, `openclaw`, and `hermen`. Setup creates backups before editing existing files and only writes qlog-owned marker blocks.
+Supported setup targets are `opencode`, `claude-code`, `codex`, `pi`, `copilot-vscode`, `openclaw`, and `hermes`. Setup creates backups before editing existing files and only writes qlog-owned files, settings, or marker blocks.
+
+| Adapter | Current capture path | Capture quality |
+|---|---|---|
+| `copilot-vscode` | VS Code GitHub Copilot OTel settings to local `/v1/traces`, content capture disabled. | `otel_reported` when OTel usage fields exist. |
+| `opencode` | Global OpenCode plugin posts sanitized events to local `/v1/events`. | `agent_reported` when plugin payload includes usage; otherwise `lifecycle_only`. |
+| `codex` | Codex app-server `rawResponse/completed` events can be forwarded to `/v1/events`. | `agent_reported` only when `usage` is non-null. |
+| `claude-code` | `.claude/settings.json` lifecycle hooks call `qlog hook claude-code`. | `lifecycle_only`; no token capability is claimed. |
+| `pi`, `openclaw`, `hermes` | Setup-capable fallback targets. | `lifecycle_only` or `unavailable` until verified token sources exist. |
 
 Capture quality stays explicit. When an agent exposes real provider or agent-reported token usage, qlog can record it through structured events. When it does not, qlog records lifecycle/setup evidence as `lifecycle_only` instead of inventing token counts.
 

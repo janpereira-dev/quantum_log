@@ -3,6 +3,9 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,6 +45,57 @@ func TestCollectorRejectsPublicBindingWithoutExplicitOptIn(t *testing.T) {
 	}
 	if err := validateListenAddress("127.0.0.1:4318", false); err != nil {
 		t.Fatalf("loopback binding rejected: %v", err)
+	}
+}
+
+func TestCollectorStatusShowsLocalEndpoints(t *testing.T) {
+	run := func(args ...string) (string, error) {
+		command := New(Version{})
+		output := new(bytes.Buffer)
+		command.SetArgs(args)
+		setOutput(command, output)
+		err := command.Execute()
+		return output.String(), err
+	}
+	output, err := run("collector", "status", "--json")
+	if err != nil {
+		t.Fatalf("collector status: %v", err)
+	}
+	var status struct {
+		Listen    string   `json:"listen"`
+		Endpoints []string `json:"endpoints"`
+	}
+	if err := json.Unmarshal([]byte(output), &status); err != nil || status.Listen != "127.0.0.1:4318" || len(status.Endpoints) != 2 {
+		t.Fatalf("collector status output = %q, %#v, %v", output, status, err)
+	}
+}
+
+func TestHookClaudeCodePostsLifecycleEvent(t *testing.T) {
+	var received []byte
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/events" {
+			t.Fatalf("path = %s", request.URL.Path)
+		}
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		received = body
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"accepted":1}`))
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("QLOG_COLLECTOR_URL", server.URL+"/v1/events")
+	command := New(Version{})
+	output := new(bytes.Buffer)
+	command.SetArgs([]string{"hook", "claude-code"})
+	command.SetIn(strings.NewReader(`{"session_id":"session-1","hook_event_name":"Stop","cwd":"C:/repo","transcript_path":"must-not-forward"}`))
+	setOutput(command, output)
+	if err := command.Execute(); err != nil {
+		t.Fatalf("hook claude-code: %v output=%q", err, output.String())
+	}
+	if !bytes.Contains(received, []byte(`"source":"claude-code-hook"`)) || !bytes.Contains(received, []byte(`"capture_quality":"lifecycle_only"`)) || bytes.Contains(received, []byte("transcript_path")) {
+		t.Fatalf("posted body = %s", received)
 	}
 }
 
@@ -122,13 +176,13 @@ func TestSetupCommandPlansInstallsAndIsIdempotent(t *testing.T) {
 	if err := json.Unmarshal([]byte(output), &installed); err != nil || len(installed) != 1 || installed[0].AdapterID != "opencode" {
 		t.Fatalf("setup opencode output = %q, %#v, %v", output, installed, err)
 	}
-	configPath := filepath.Join(configHome, ".config", "opencode", "AGENTS.md")
+	configPath := filepath.Join(configHome, ".config", "opencode", "plugins", "quantum-log.ts")
 	contents, err := os.ReadFile(configPath)
 	if err != nil {
-		t.Fatalf("read opencode setup file: %v", err)
+		t.Fatalf("read opencode plugin file: %v", err)
 	}
-	if !strings.Contains(string(contents), "qlog:begin agent-auto-capture") {
-		t.Fatalf("opencode setup file missing marker: %q", contents)
+	if !strings.Contains(string(contents), "/v1/events") || !strings.Contains(string(contents), "QuantumLogPlugin") {
+		t.Fatalf("opencode plugin missing event forwarding: %q", contents)
 	}
 
 	output, err = run("setup", "opencode", "--yes", "--json")

@@ -93,17 +93,23 @@ type ModelCallInput struct {
 }
 
 type UsageQuery struct {
-	From    time.Time
-	To      time.Time
-	GroupBy []string
+	From        time.Time
+	To          time.Time
+	ProjectSlug string
+	GroupBy     []string
 }
 
 type UsageRow struct {
 	ProjectSlug            string `json:"project_slug"`
+	AgentName              string `json:"agent_name"`
 	Provider               string `json:"provider"`
 	Model                  string `json:"model"`
+	CaptureQuality         string `json:"capture_quality"`
 	InputTokens            int64  `json:"input_tokens"`
 	OutputTokens           int64  `json:"output_tokens"`
+	ReasoningTokens        int64  `json:"reasoning_tokens"`
+	CachedInputTokens      int64  `json:"cached_input_tokens"`
+	CacheWriteTokens       int64  `json:"cache_write_tokens"`
 	TotalTokens            int64  `json:"total_tokens"`
 	AllocatedCostUSDMicros int64  `json:"allocated_cost_usd_micros"`
 }
@@ -1249,10 +1255,14 @@ func (s *Store) Usage(ctx context.Context, query UsageQuery) (UsageReport, error
 	}
 	where, args := usageWindow(query)
 	var totalTokens int64
-	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(total_tokens), 0) FROM model_calls c`+where, args...).Scan(&totalTokens); err != nil {
+	totalQuery := `SELECT COALESCE(SUM(total_tokens), 0) FROM model_calls c` + where
+	if query.ProjectSlug != "" {
+		totalQuery = `SELECT COALESCE(SUM(c.total_tokens), 0) FROM model_calls c JOIN usage_allocations a ON a.subject_type = 'model_call' AND a.subject_id = c.id LEFT JOIN projects p ON p.id = a.project_id` + where
+	}
+	if err := s.db.QueryRowContext(ctx, totalQuery, args...).Scan(&totalTokens); err != nil {
 		return UsageReport{}, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT COALESCE(p.slug, 'unattributed'), c.provider, c.model_id, c.input_tokens, c.output_tokens, c.total_tokens, c.estimated_cost_usd_micros, a.allocation_basis_points FROM model_calls c JOIN usage_allocations a ON a.subject_type = 'model_call' AND a.subject_id = c.id LEFT JOIN projects p ON p.id = a.project_id`+where+` ORDER BY p.slug, c.provider, c.model_id`, args...)
+	rows, err := s.db.QueryContext(ctx, `SELECT COALESCE(p.slug, 'unattributed'), c.agent_name, c.provider, c.model_id, c.capture_quality, c.input_tokens, c.output_tokens, c.reasoning_tokens, c.cached_input_tokens, c.cache_write_tokens, c.total_tokens, c.estimated_cost_usd_micros, a.allocation_basis_points FROM model_calls c JOIN usage_allocations a ON a.subject_type = 'model_call' AND a.subject_id = c.id LEFT JOIN projects p ON p.id = a.project_id`+where+` ORDER BY p.slug, c.agent_name, c.provider, c.model_id, c.capture_quality`, args...)
 	if err != nil {
 		return UsageReport{}, err
 	}
@@ -1262,15 +1272,18 @@ func (s *Store) Usage(ctx context.Context, query UsageQuery) (UsageReport, error
 	for rows.Next() {
 		var row UsageRow
 		var cost, basisPoints int64
-		if err := rows.Scan(&row.ProjectSlug, &row.Provider, &row.Model, &row.InputTokens, &row.OutputTokens, &row.TotalTokens, &cost, &basisPoints); err != nil {
+		if err := rows.Scan(&row.ProjectSlug, &row.AgentName, &row.Provider, &row.Model, &row.CaptureQuality, &row.InputTokens, &row.OutputTokens, &row.ReasoningTokens, &row.CachedInputTokens, &row.CacheWriteTokens, &row.TotalTokens, &cost, &basisPoints); err != nil {
 			return UsageReport{}, err
 		}
 		row.AllocatedCostUSDMicros = cost * basisPoints / 10000
 		totalAllocated += row.AllocatedCostUSDMicros
-		key := row.ProjectSlug + "\x00" + row.Provider + "\x00" + row.Model
+		key := row.ProjectSlug + "\x00" + row.AgentName + "\x00" + row.Provider + "\x00" + row.Model + "\x00" + row.CaptureQuality
 		if existing, found := grouped[key]; found {
 			existing.InputTokens += row.InputTokens
 			existing.OutputTokens += row.OutputTokens
+			existing.ReasoningTokens += row.ReasoningTokens
+			existing.CachedInputTokens += row.CachedInputTokens
+			existing.CacheWriteTokens += row.CacheWriteTokens
 			existing.TotalTokens += row.TotalTokens
 			existing.AllocatedCostUSDMicros += row.AllocatedCostUSDMicros
 			grouped[key] = existing
@@ -1286,7 +1299,9 @@ func (s *Store) Usage(ctx context.Context, query UsageQuery) (UsageReport, error
 		report.Rows = append(report.Rows, row)
 	}
 	sort.Slice(report.Rows, func(i, j int) bool {
-		return report.Rows[i].ProjectSlug+report.Rows[i].Provider+report.Rows[i].Model < report.Rows[j].ProjectSlug+report.Rows[j].Provider+report.Rows[j].Model
+		left := report.Rows[i].ProjectSlug + report.Rows[i].AgentName + report.Rows[i].Provider + report.Rows[i].Model + report.Rows[i].CaptureQuality
+		right := report.Rows[j].ProjectSlug + report.Rows[j].AgentName + report.Rows[j].Provider + report.Rows[j].Model + report.Rows[j].CaptureQuality
+		return left < right
 	})
 	return report, nil
 }
@@ -1295,7 +1310,7 @@ func validateGroupBy(groupBy []string) error {
 	if len(groupBy) == 0 {
 		return errors.New("at least one group-by dimension is required")
 	}
-	allowed := map[string]bool{"project": true, "provider": true, "model": true}
+	allowed := map[string]bool{"project": true, "agent": true, "provider": true, "model": true, "capture_quality": true}
 	seen := make(map[string]bool)
 	for _, dimension := range groupBy {
 		if !allowed[dimension] || seen[dimension] {
@@ -1316,6 +1331,10 @@ func usageWindow(query UsageQuery) (string, []any) {
 	if !query.To.IsZero() {
 		where += " AND c.started_at < ?"
 		args = append(args, timestamp(query.To))
+	}
+	if query.ProjectSlug != "" {
+		where += " AND p.slug = ?"
+		args = append(args, normalizeSlug(query.ProjectSlug))
 	}
 	return where, args
 }

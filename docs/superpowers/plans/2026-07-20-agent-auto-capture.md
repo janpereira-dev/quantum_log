@@ -4,7 +4,7 @@
 
 **Goal:** Build the M4 setup-first adapter surface so developers can run `qlog setup`, install safe qlog-owned agent integrations, verify capture readiness, and see honest capture quality.
 
-**Architecture:** Add a focused setup package that plans and applies idempotent file/config changes through qlog-owned marker blocks. Keep agent-specific setup inside adapters; keep project resolution, storage, sanitizer, and reporting unchanged. First PR finishes safe setup/status/test capability and supports OpenCode, Claude Code, Codex, Pi, VS Code Copilot, OpenClaw, and Hermen with honest capability labels.
+**Architecture:** Add a focused setup package that plans and applies idempotent file/config changes through qlog-owned files, settings, or marker blocks. Keep agent-specific setup inside adapters; keep project resolution, storage, sanitizer, and reporting shared. First PR finishes safe setup/status/test capability and supports OpenCode, Claude Code, Codex, Pi, VS Code Copilot, OpenClaw, and Hermes with honest capability labels.
 
 **Tech Stack:** Go 1.26, Cobra, standard library file I/O, existing `internal/adapters`, existing CLI test helpers.
 
@@ -244,12 +244,12 @@ git commit -m "feat(adapters): add safe marker writes"
 - Test: `internal/adapters/adapters_test.go`
 
 **Interfaces:**
-- Produces: default adapters for `opencode`, `claude-code`, `codex`, `pi`, `copilot-vscode`, `openclaw`, `hermen`.
+- Produces: default adapters for `opencode`, `claude-code`, `codex`, `pi`, `copilot-vscode`, `openclaw`, `hermes`.
 - Consumes: marker helpers from Task 2.
 
 - [ ] **Step 1: Write failing registry tests**
 
-Update registry test to expect 8 adapters: `generic-jsonl`, `opencode`, `claude-code`, `codex`, `pi`, `copilot-vscode`, `openclaw`, `hermen`.
+Update registry test to expect 8 adapters: `generic-jsonl`, `opencode`, `claude-code`, `codex`, `pi`, `copilot-vscode`, `openclaw`, `hermes`.
 
 - [ ] **Step 2: Run failing test**
 
@@ -268,7 +268,7 @@ Resolve config home with `QLOG_ADAPTER_CONFIG_HOME` for tests, otherwise use `os
 - Pi: `.config/pi/qlog.md`
 - VS Code Copilot: `Code/User/prompts/qlog.instructions.md`
 - OpenClaw: `.config/openclaw/qlog.md`
-- Hermen: `.config/hermen/qlog.md`
+- Hermes: `.config/hermes/qlog.md`
 
 Each setup text must instruct agent to emit qlog-compatible local events when supported and use `qlog run`/OTLP/JSONL fallback otherwise. Do not claim prompt capture.
 

@@ -2,6 +2,7 @@ package adapters
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,7 +22,23 @@ func TestDefaultRegistryDeclaresOnlyVerifiedCapabilities(t *testing.T) {
 	if generic.Descriptor().Capabilities.Costs || generic.Descriptor().Capabilities.InputTokens {
 		t.Fatal("generic JSONL must not claim metrics supplied only by callers")
 	}
-	for _, id := range []string{"opencode", "claude-code", "codex", "pi", "copilot-vscode", "openclaw", "hermen"} {
+	copilot, found := registry.Get("copilot-vscode")
+	if !found || !copilot.Descriptor().Capabilities.InputTokens || !copilot.Descriptor().Capabilities.CacheTokens || !copilot.Descriptor().Capabilities.MCPCalls {
+		t.Fatalf("copilot-vscode must declare verified OTel token/cache/MCP capabilities")
+	}
+	opencode, found := registry.Get("opencode")
+	if !found || !opencode.Descriptor().Capabilities.ToolCalls || !opencode.Descriptor().Capabilities.SessionLifecycle || !opencode.Descriptor().Capabilities.StructuredEvents {
+		t.Fatalf("opencode must declare plugin lifecycle/tool capture capabilities")
+	}
+	codex, found := registry.Get("codex")
+	if !found || !codex.Descriptor().Capabilities.InputTokens || !codex.Descriptor().Capabilities.OutputTokens || !codex.Descriptor().Capabilities.CacheTokens || !codex.Descriptor().Capabilities.ReasoningTokens || !codex.Descriptor().Capabilities.StructuredEvents {
+		t.Fatalf("codex must declare app-server rawResponse usage capabilities")
+	}
+	claude, found := registry.Get("claude-code")
+	if !found || !claude.Descriptor().Capabilities.SessionLifecycle || !claude.Descriptor().Capabilities.StructuredEvents || claude.Descriptor().Capabilities.InputTokens {
+		t.Fatalf("claude-code must declare lifecycle hooks without token capability")
+	}
+	for _, id := range []string{"pi", "openclaw", "hermes"} {
 		adapter, found := registry.Get(id)
 		if !found {
 			t.Fatalf("missing %s adapter", id)
@@ -29,6 +46,111 @@ func TestDefaultRegistryDeclaresOnlyVerifiedCapabilities(t *testing.T) {
 		if adapter.Descriptor().Capabilities != (Capabilities{}) {
 			t.Fatalf("%s minimal adapter claimed unsupported capture capability", id)
 		}
+	}
+}
+
+func TestCopilotVSCodeInstallConfiguresNativeOTelWithoutContentCapture(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	adapter, found := Default().Get("copilot-vscode")
+	if !found {
+		t.Fatal("missing copilot-vscode adapter")
+	}
+	result, err := adapter.Install(context.Background(), InstallOptions{})
+	if err != nil {
+		t.Fatalf("Install() error = %v", err)
+	}
+	if !result.Changed {
+		t.Fatalf("Install() changed = false, actions = %#v", result.Actions)
+	}
+	settingsPath := filepath.Join(configHome, "Code", "User", "settings.json")
+	contents, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(contents, &settings); err != nil {
+		t.Fatalf("settings JSON invalid: %v\n%s", err, contents)
+	}
+	assertSetting(t, settings, "github.copilot.chat.otel.enabled", true)
+	assertSetting(t, settings, "github.copilot.chat.otel.exporterType", "otlp-http")
+	assertSetting(t, settings, "github.copilot.chat.otel.otlpEndpoint", "http://127.0.0.1:4318")
+	assertSetting(t, settings, "github.copilot.chat.otel.captureContent", false)
+
+	status, err := adapter.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	if !status.Installed || status.CaptureQuality != CaptureOTELReported {
+		t.Fatalf("status = %#v", status)
+	}
+}
+
+func TestOpenCodeInstallWritesGlobalPluginPostingLocalEvents(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	adapter, found := Default().Get("opencode")
+	if !found {
+		t.Fatal("missing opencode adapter")
+	}
+	result, err := adapter.Install(context.Background(), InstallOptions{})
+	if err != nil {
+		t.Fatalf("Install() error = %v", err)
+	}
+	if !result.Changed {
+		t.Fatalf("Install() changed = false, actions = %#v", result.Actions)
+	}
+	pluginPath := filepath.Join(configHome, ".config", "opencode", "plugins", "quantum-log.ts")
+	contents, err := os.ReadFile(pluginPath)
+	if err != nil {
+		t.Fatalf("read plugin: %v", err)
+	}
+	text := string(contents)
+	for _, want := range []string{"/v1/events", "session.created", "message.updated", "tool.execute.before", "tool.execute.after", "capture_quality", "prompt", "response"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("plugin missing %q:\n%s", want, text)
+		}
+	}
+	status, err := adapter.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	if !status.Installed || status.CaptureQuality != CaptureAgentReported {
+		t.Fatalf("status = %#v", status)
+	}
+}
+
+func TestClaudeCodeInstallWritesLifecycleHooks(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	adapter, found := Default().Get("claude-code")
+	if !found {
+		t.Fatal("claude-code adapter missing")
+	}
+	result, err := adapter.Install(context.Background(), InstallOptions{})
+	if err != nil {
+		t.Fatalf("install claude-code: %v", err)
+	}
+	if !result.Changed {
+		t.Fatalf("install result = %#v", result)
+	}
+	settingsPath := filepath.Join(configHome, ".claude", "settings.json")
+	contents, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	text := string(contents)
+	for _, want := range []string{"SessionStart", "UserPromptSubmit", "Stop", "SubagentStop", "qlog hook claude-code"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("settings missing %q: %s", want, text)
+		}
+	}
+}
+
+func assertSetting(t *testing.T, settings map[string]any, key string, want any) {
+	t.Helper()
+	if got := settings[key]; got != want {
+		t.Fatalf("%s = %#v, want %#v", key, got, want)
 	}
 }
 
@@ -53,7 +175,7 @@ func TestDefaultRegistryAdaptersExposeSetupLifecycle(t *testing.T) {
 }
 
 func TestMinimalAdapterDryRunIsIdempotentAndDoesNotWrite(t *testing.T) {
-	adapter, _ := Default().Get("opencode")
+	adapter, _ := Default().Get("claude-code")
 	first, err := adapter.Install(context.Background(), InstallOptions{DryRun: true})
 	if err != nil {
 		t.Fatalf("first dry run: %v", err)
