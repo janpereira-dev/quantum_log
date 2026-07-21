@@ -48,8 +48,9 @@ type InstallOptions struct {
 }
 
 type InstallResult struct {
-	Changed bool     `json:"changed"`
-	Actions []string `json:"actions"`
+	Changed bool          `json:"changed"`
+	Actions []string      `json:"actions"`
+	Changes []SetupChange `json:"changes,omitempty"`
 }
 
 type RawRecord struct {

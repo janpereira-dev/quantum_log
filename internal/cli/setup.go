@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/janpereira-dev/quantum_log/internal/adapters"
@@ -19,7 +20,11 @@ func newSetupCommand() *cobra.Command {
 			}
 			items = []adapters.Adapter{adapter}
 		} else if !all {
-			items = setupDefaultAdapters(items)
+			var err error
+			items, err = setupDefaultAdapters(command.Context(), items)
+			if err != nil {
+				return err
+			}
 		}
 
 		plans := make([]adapters.SetupPlan, 0, len(items))
@@ -66,17 +71,27 @@ func newSetupCommand() *cobra.Command {
 	return command
 }
 
-func setupDefaultAdapters(items []adapters.Adapter) []adapters.Adapter {
+func setupDefaultAdapters(ctx context.Context, items []adapters.Adapter) ([]adapters.Adapter, error) {
 	result := make([]adapters.Adapter, 0, len(items))
 	for _, item := range items {
-		if item.Descriptor().ID != "generic-jsonl" {
+		if item.Descriptor().ID == "generic-jsonl" {
+			continue
+		}
+		status, err := item.Status(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if status.Available || status.Installed {
 			result = append(result, item)
 		}
 	}
-	return result
+	return result, nil
 }
 
 func installResultChanges(adapterID string, result adapters.InstallResult) []adapters.SetupChange {
+	if len(result.Changes) != 0 {
+		return result.Changes
+	}
 	changes := make([]adapters.SetupChange, 0, len(result.Actions))
 	for _, action := range result.Actions {
 		changes = append(changes, adapters.SetupChange{Action: actionAction(result.Changed), Description: action})

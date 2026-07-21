@@ -35,7 +35,7 @@ func (a claudeCodeAdapter) Install(_ context.Context, options InstallOptions) (I
 	if options.DryRun {
 		change.Description = "dry run: " + change.Description
 	}
-	return InstallResult{Changed: !options.DryRun && (change.Action == "created" || change.Action == "updated"), Actions: []string{formatChange(change)}}, nil
+	return InstallResult{Changed: !options.DryRun && (change.Action == "created" || change.Action == "updated"), Actions: []string{formatChange(change)}, Changes: []SetupChange{change}}, nil
 }
 
 func (a claudeCodeAdapter) PlanInstall(_ context.Context, options SetupOptions) (SetupPlan, error) {
@@ -94,7 +94,7 @@ func (a claudeCodeAdapter) HealthCheck(ctx context.Context) error {
 }
 
 func (claudeCodeAdapter) Ingest(context.Context, io.Reader) ([]RawRecord, error) {
-	return nil, errors.New("Claude Code hooks post directly to qlog /v1/events")
+	return nil, errors.New("claude code hooks post directly to qlog /v1/events")
 }
 
 func (claudeCodeAdapter) Normalize(record RawRecord) (RawRecord, error) { return record, nil }

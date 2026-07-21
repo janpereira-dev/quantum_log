@@ -246,3 +246,80 @@ func TestApplyMarkerBlockDryRunDoesNotWrite(t *testing.T) {
 		t.Fatalf("dry-run wrote file: %v", err)
 	}
 }
+
+func TestApplyMarkerBlockDryRunIncludesPlannedBackupPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent", "config.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("existing"), 0o600); err != nil {
+		t.Fatalf("write existing: %v", err)
+	}
+	change, err := ApplyMarkerBlock(path, "agent-auto-capture", "content", true)
+	if err != nil {
+		t.Fatalf("dry-run marker block: %v", err)
+	}
+	if change.Action != "update" || change.BackupPath == "" || !strings.Contains(change.BackupPath, path+".qlog-backup-") {
+		t.Fatalf("dry-run change = %#v", change)
+	}
+}
+
+func TestCommandAdapterUninstallRemovesOnlyOwnedMarker(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	adapter := newCommandAdapter("sample", "Sample", "go", ".sample/config.md")
+	path := filepath.Join(configHome, ".sample", "config.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("before\n"), 0o600); err != nil {
+		t.Fatalf("write existing: %v", err)
+	}
+	if _, err := adapter.Install(context.Background(), InstallOptions{}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	result, err := adapter.Uninstall(context.Background(), InstallOptions{})
+	if err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+	if !result.Changed {
+		t.Fatalf("uninstall result = %#v", result)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read after uninstall: %v", err)
+	}
+	if !strings.Contains(string(contents), "before") || strings.Contains(string(contents), "qlog:begin agent-auto-capture") {
+		t.Fatalf("contents after uninstall = %q", contents)
+	}
+}
+
+func TestCommandAdapterStatusInstalledAndTestRequiresInstall(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	adapter := newCommandAdapter("sample", "Sample", "go", ".sample/config.md")
+	result, err := adapter.Test(context.Background())
+	if err != nil {
+		t.Fatalf("test before install: %v", err)
+	}
+	if result.Passed {
+		t.Fatalf("test passed before setup install: %#v", result)
+	}
+	if _, err := adapter.Install(context.Background(), InstallOptions{}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	status, err := adapter.Status(context.Background())
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if !status.Installed || status.State != SetupInstalled {
+		t.Fatalf("status = %#v", status)
+	}
+	result, err = adapter.Test(context.Background())
+	if err != nil {
+		t.Fatalf("test after install: %v", err)
+	}
+	if !result.Passed {
+		t.Fatalf("test after install = %#v", result)
+	}
+}

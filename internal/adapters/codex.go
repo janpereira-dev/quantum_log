@@ -5,7 +5,7 @@ import "context"
 type codexAdapter struct{ commandAdapter }
 
 func newCodexAdapter() codexAdapter {
-	return codexAdapter{commandAdapter: newCommandAdapter("codex", "Codex", "codex", ".codex/qlog-instructions.md")}
+	return codexAdapter{commandAdapter: newCommandAdapter("codex", "Codex", "codex", ".codex/AGENTS.md")}
 }
 
 func (a codexAdapter) Descriptor() Descriptor {

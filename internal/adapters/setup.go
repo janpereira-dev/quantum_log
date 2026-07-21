@@ -91,14 +91,18 @@ func ApplyMarkerBlock(path, marker, content string, dryRun bool) (SetupChange, e
 		} else {
 			action = "create"
 		}
-		return SetupChange{Path: path, Action: action, Description: "dry run: qlog marker block would be written"}, nil
+		change := SetupChange{Path: path, Action: action, Description: "dry run: qlog marker block would be written"}
+		if err == nil {
+			change.BackupPath = plannedBackupPath(path)
+		}
+		return change, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return SetupChange{}, fmt.Errorf("create parent directory: %w", err)
 	}
 	change := SetupChange{Path: path, Action: action, Description: "qlog marker block written"}
 	if err == nil {
-		backupPath := fmt.Sprintf("%s.qlog-backup-%s", path, time.Now().UTC().Format("20060102150405"))
+		backupPath := plannedBackupPath(path)
 		if err := os.WriteFile(backupPath, currentBytes, 0o600); err != nil {
 			return SetupChange{}, fmt.Errorf("write backup: %w", err)
 		}
@@ -108,6 +112,44 @@ func ApplyMarkerBlock(path, marker, content string, dryRun bool) (SetupChange, e
 		return SetupChange{}, fmt.Errorf("write %s: %w", path, err)
 	}
 	return change, nil
+}
+
+func RemoveMarkerBlock(path, marker string, dryRun bool) (SetupChange, error) {
+	begin, end := markerBounds(marker)
+	currentBytes, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return SetupChange{Path: path, Action: "unchanged", Description: "qlog marker block not installed"}, nil
+		}
+		return SetupChange{}, fmt.Errorf("read %s: %w", path, err)
+	}
+	current := string(currentBytes)
+	start := strings.Index(current, begin)
+	finish := strings.Index(current, end)
+	if start < 0 || finish < start {
+		return SetupChange{Path: path, Action: "unchanged", Description: "qlog marker block not installed"}, nil
+	}
+	finish += len(end)
+	for finish < len(current) && (current[finish] == '\r' || current[finish] == '\n') {
+		finish++
+	}
+	next := current[:start] + current[finish:]
+	change := SetupChange{Path: path, Action: "removed", BackupPath: plannedBackupPath(path), Description: "qlog marker block removed"}
+	if dryRun {
+		change.Description = "dry run: " + change.Description
+		return change, nil
+	}
+	if err := os.WriteFile(change.BackupPath, currentBytes, 0o600); err != nil {
+		return SetupChange{}, fmt.Errorf("write backup: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(next), 0o600); err != nil {
+		return SetupChange{}, fmt.Errorf("write %s: %w", path, err)
+	}
+	return change, nil
+}
+
+func plannedBackupPath(path string) string {
+	return fmt.Sprintf("%s.qlog-backup-%s", path, time.Now().UTC().Format("20060102150405"))
 }
 
 func HasMarkerBlock(path, marker string) bool {

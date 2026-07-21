@@ -194,3 +194,63 @@ func TestSetupCommandPlansInstallsAndIsIdempotent(t *testing.T) {
 		t.Fatalf("setup opencode rerun = %q, %#v, %v", output, rerun, err)
 	}
 }
+
+func TestSetupDefaultWithoutAllSkipsUnavailableAdapters(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	t.Setenv("PATH", "")
+	run := func(args ...string) (string, error) {
+		command := New(Version{})
+		output := new(bytes.Buffer)
+		command.SetArgs(args)
+		setOutput(command, output)
+		err := command.Execute()
+		return output.String(), err
+	}
+	output, err := run("setup", "--yes", "--json")
+	if err != nil {
+		t.Fatalf("setup default: %v", err)
+	}
+	var plans []adapters.SetupPlan
+	if err := json.Unmarshal([]byte(output), &plans); err != nil {
+		t.Fatalf("decode setup output = %q: %v", output, err)
+	}
+	if len(plans) != 0 {
+		t.Fatalf("plans = %#v", plans)
+	}
+	if _, err := os.Stat(filepath.Join(configHome, ".config")); !os.IsNotExist(err) {
+		t.Fatalf("default setup created config for unavailable adapters: %v", err)
+	}
+}
+
+func TestSetupAppliedJSONPreservesPathAndBackup(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	run := func(args ...string) (string, error) {
+		command := New(Version{})
+		output := new(bytes.Buffer)
+		command.SetArgs(args)
+		setOutput(command, output)
+		err := command.Execute()
+		return output.String(), err
+	}
+	if _, err := run("setup", "opencode", "--yes", "--json"); err != nil {
+		t.Fatalf("first setup: %v", err)
+	}
+	pluginPath := filepath.Join(configHome, ".config", "opencode", "plugins", "quantum-log.ts")
+	if err := os.WriteFile(pluginPath, []byte("custom"), 0o600); err != nil {
+		t.Fatalf("modify plugin: %v", err)
+	}
+	output, err := run("setup", "opencode", "--yes", "--json")
+	if err != nil {
+		t.Fatalf("second setup: %v", err)
+	}
+	var plans []adapters.SetupPlan
+	if err := json.Unmarshal([]byte(output), &plans); err != nil || len(plans) != 1 || len(plans[0].Changes) != 1 {
+		t.Fatalf("decode setup output = %q %#v %v", output, plans, err)
+	}
+	change := plans[0].Changes[0]
+	if change.Path != pluginPath || change.BackupPath == "" || change.Action != "updated" {
+		t.Fatalf("applied change = %#v", change)
+	}
+}

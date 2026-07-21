@@ -46,7 +46,7 @@ func (a commandAdapter) Install(_ context.Context, options InstallOptions) (Inst
 	if options.DryRun {
 		change.Description = "dry run: " + change.Description
 	}
-	return InstallResult{Changed: !options.DryRun && (change.Action == "created" || change.Action == "updated"), Actions: []string{formatChange(change)}}, nil
+	return InstallResult{Changed: !options.DryRun && (change.Action == "created" || change.Action == "updated"), Actions: []string{formatChange(change)}, Changes: []SetupChange{change}}, nil
 }
 
 func (a commandAdapter) PlanInstall(_ context.Context, options SetupOptions) (SetupPlan, error) {
@@ -71,7 +71,7 @@ func (a commandAdapter) Status(ctx context.Context) (SetupStatus, error) {
 	}
 	installed := HasMarkerBlock(a.configPath(), a.marker)
 	if installed {
-		state = SetupPartial
+		state = SetupInstalled
 	}
 	return SetupStatus{AdapterID: a.id, Available: detection.Available, Installed: installed, State: state, CaptureQuality: CaptureLifecycleOnly, Evidence: detection.Evidence, Notes: []string{"setup instructions installed; token capture depends on agent-reported data source"}}, nil
 }
@@ -81,19 +81,22 @@ func (a commandAdapter) Test(ctx context.Context) (TestResult, error) {
 	if err != nil {
 		return TestResult{}, err
 	}
+	installed := HasMarkerBlock(a.configPath(), a.marker)
 	message := detection.Evidence
-	if !detection.Available {
+	if !installed {
+		message = "adapter not configured: run qlog setup " + a.id
+	} else if !detection.Available {
 		message = "adapter unavailable: " + detection.Evidence
 	}
-	return TestResult{AdapterID: a.id, Passed: detection.Available, CaptureQuality: CaptureLifecycleOnly, Message: message, TestedAt: time.Now().UTC()}, nil
+	return TestResult{AdapterID: a.id, Passed: detection.Available && installed, CaptureQuality: CaptureLifecycleOnly, Message: message, TestedAt: time.Now().UTC()}, nil
 }
 
 func (a commandAdapter) Uninstall(_ context.Context, options InstallOptions) (InstallResult, error) {
-	action := "no files changed: setup marker removal is not implemented yet"
-	if options.DryRun {
-		action = "dry run: " + action
+	change, err := RemoveMarkerBlock(a.configPath(), a.marker, options.DryRun)
+	if err != nil {
+		return InstallResult{}, err
 	}
-	return InstallResult{Actions: []string{action}}, nil
+	return InstallResult{Changed: !options.DryRun && change.Action == "removed", Actions: []string{formatChange(change)}, Changes: []SetupChange{change}}, nil
 }
 
 func (a commandAdapter) HealthCheck(ctx context.Context) error {

@@ -26,7 +26,7 @@ func (a openCodeAdapter) Install(_ context.Context, options InstallOptions) (Ins
 	if err != nil {
 		return InstallResult{}, err
 	}
-	return InstallResult{Changed: !options.DryRun && (change.Action == "created" || change.Action == "updated"), Actions: []string{formatChange(change)}}, nil
+	return InstallResult{Changed: !options.DryRun && (change.Action == "created" || change.Action == "updated"), Actions: []string{formatChange(change)}, Changes: []SetupChange{change}}, nil
 }
 
 func (a openCodeAdapter) PlanInstall(_ context.Context, options SetupOptions) (SetupPlan, error) {
@@ -41,7 +41,7 @@ func (a openCodeAdapter) PlanInstall(_ context.Context, options SetupOptions) (S
 }
 
 func (a openCodeAdapter) Status(ctx context.Context) (SetupStatus, error) {
-	detection, err := a.commandAdapter.Detect(ctx)
+	detection, err := a.Detect(ctx)
 	if err != nil {
 		return SetupStatus{}, err
 	}
