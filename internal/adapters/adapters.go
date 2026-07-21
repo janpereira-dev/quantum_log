@@ -48,8 +48,9 @@ type InstallOptions struct {
 }
 
 type InstallResult struct {
-	Changed bool     `json:"changed"`
-	Actions []string `json:"actions"`
+	Changed bool          `json:"changed"`
+	Actions []string      `json:"actions"`
+	Changes []SetupChange `json:"changes,omitempty"`
 }
 
 type RawRecord struct {
@@ -70,6 +71,9 @@ type Adapter interface {
 	Detect(context.Context) (Detection, error)
 	Install(context.Context, InstallOptions) (InstallResult, error)
 	Uninstall(context.Context, InstallOptions) (InstallResult, error)
+	PlanInstall(context.Context, SetupOptions) (SetupPlan, error)
+	Status(context.Context) (SetupStatus, error)
+	Test(context.Context) (TestResult, error)
 	HealthCheck(context.Context) error
 	Ingest(context.Context, io.Reader) ([]RawRecord, error)
 	Normalize(RawRecord) (RawRecord, error)
@@ -114,7 +118,16 @@ func (r *Registry) List() []Adapter {
 }
 
 func Default() *Registry {
-	registry, err := NewRegistry(GenericJSONL{}, commandAdapter{id: "opencode", name: "OpenCode", executable: "opencode"}, commandAdapter{id: "claude-code", name: "Claude Code", executable: "claude"})
+	registry, err := NewRegistry(
+		GenericJSONL{},
+		newOpenCodeAdapter(),
+		newClaudeCodeAdapter(),
+		newCodexAdapter(),
+		newCommandAdapter("pi", "Pi", "pi", ".config/pi/qlog.md"),
+		newVSCodeCopilotAdapter(),
+		newCommandAdapter("openclaw", "OpenClaw", "openclaw", ".config/openclaw/qlog.md"),
+		newCommandAdapter("hermes", "Hermes", "hermes", ".config/hermes/qlog.md"),
+	)
 	if err != nil {
 		panic(err)
 	}

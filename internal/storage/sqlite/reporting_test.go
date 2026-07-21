@@ -64,6 +64,41 @@ func TestUsageGroupingPreservesTotalsAndAllocation(t *testing.T) {
 	}
 }
 
+func TestUsageGroupsByProjectAgentProviderModelAndCaptureQuality(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	project, _, err := store.RegisterProject(ctx, "Project", "project", filepath.Join(t.TempDir(), "project"))
+	if err != nil {
+		t.Fatalf("RegisterProject() error = %v", err)
+	}
+
+	if _, err := store.RecordModelCall(ctx, ModelCallInput{ProjectID: project.ID, AgentName: "copilot-chat", Provider: "github", ModelID: "gpt-5", InputTokens: 10, OutputTokens: 5, CaptureQuality: "otel_reported", OccurredAt: time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("RecordModelCall(reported) error = %v", err)
+	}
+	if _, err := store.RecordModelCall(ctx, ModelCallInput{ProjectID: project.ID, AgentName: "opencode", Provider: "anthropic", ModelID: "claude-sonnet", InputTokens: 7, OutputTokens: 3, CaptureQuality: "estimated", OccurredAt: time.Date(2026, 7, 20, 10, 1, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("RecordModelCall(estimated) error = %v", err)
+	}
+
+	report, err := store.Usage(ctx, UsageQuery{GroupBy: []string{"project", "agent", "provider", "model", "capture_quality"}})
+	if err != nil {
+		t.Fatalf("Usage() error = %v", err)
+	}
+	if len(report.Rows) != 2 {
+		t.Fatalf("rows = %d, want 2: %#v", len(report.Rows), report.Rows)
+	}
+	if report.Rows[0].AgentName != "copilot-chat" || report.Rows[0].CaptureQuality != "otel_reported" || report.Rows[0].TotalTokens != 15 {
+		t.Fatalf("first row = %#v", report.Rows[0])
+	}
+	if report.Rows[1].AgentName != "opencode" || report.Rows[1].CaptureQuality != "estimated" || report.Rows[1].TotalTokens != 10 {
+		t.Fatalf("second row = %#v", report.Rows[1])
+	}
+}
+
 func TestReplaceAllocationsRejectsInvalidSplit(t *testing.T) {
 	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "qlog.db"))
 	if err != nil {

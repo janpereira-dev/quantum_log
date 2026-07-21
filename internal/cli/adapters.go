@@ -81,6 +81,81 @@ func newAdapterCommand() *cobra.Command {
 	}}
 	install.Flags().BoolVar(&dryRun, "dry-run", false, "show changes without writing files")
 	install.Flags().BoolVar(&installJSON, "json", false, "output JSON")
-	command.AddCommand(list, detect, install)
+
+	var statusJSON bool
+	status := &cobra.Command{Use: "status [adapter]", Short: "Show adapter setup status", Args: cobra.MaximumNArgs(1), RunE: func(command *cobra.Command, args []string) error {
+		items := registry.List()
+		if len(args) == 1 {
+			adapter, found := registry.Get(args[0])
+			if !found {
+				return fmt.Errorf("adapter %q not found", args[0])
+			}
+			items = []adapters.Adapter{adapter}
+		}
+		statuses := make([]adapters.SetupStatus, 0, len(items))
+		for _, adapter := range items {
+			status, err := adapter.Status(command.Context())
+			if err != nil {
+				return err
+			}
+			statuses = append(statuses, status)
+		}
+		if statusJSON {
+			if len(args) == 1 {
+				return writeJSON(command.Root().OutOrStdout(), statuses[0])
+			}
+			return writeJSON(command.Root().OutOrStdout(), statuses)
+		}
+		for _, status := range statuses {
+			if _, err := fmt.Fprintf(command.Root().OutOrStdout(), "%s | %s | installed=%t | capture=%s | %s\n", status.AdapterID, status.State, status.Installed, status.CaptureQuality, status.Evidence); err != nil {
+				return err
+			}
+		}
+		return nil
+	}}
+	status.Flags().BoolVar(&statusJSON, "json", false, "output JSON")
+
+	var testJSON bool
+	test := &cobra.Command{Use: "test <adapter>", Short: "Test one adapter capture readiness", Args: cobra.ExactArgs(1), RunE: func(command *cobra.Command, args []string) error {
+		adapter, found := registry.Get(args[0])
+		if !found {
+			return fmt.Errorf("adapter %q not found", args[0])
+		}
+		result, err := adapter.Test(command.Context())
+		if err != nil {
+			return err
+		}
+		if testJSON {
+			return writeJSON(command.Root().OutOrStdout(), result)
+		}
+		_, err = fmt.Fprintf(command.Root().OutOrStdout(), "%s | passed=%t | capture=%s | %s\n", result.AdapterID, result.Passed, result.CaptureQuality, result.Message)
+		return err
+	}}
+	test.Flags().BoolVar(&testJSON, "json", false, "output JSON")
+
+	var uninstallDryRun, uninstallJSON bool
+	uninstall := &cobra.Command{Use: "uninstall <adapter>", Short: "Uninstall qlog-owned adapter setup", Args: cobra.ExactArgs(1), RunE: func(command *cobra.Command, args []string) error {
+		adapter, found := registry.Get(args[0])
+		if !found {
+			return fmt.Errorf("adapter %q not found", args[0])
+		}
+		result, err := adapter.Uninstall(command.Context(), adapters.InstallOptions{DryRun: uninstallDryRun})
+		if err != nil {
+			return err
+		}
+		if uninstallJSON {
+			return writeJSON(command.Root().OutOrStdout(), result)
+		}
+		for _, action := range result.Actions {
+			if _, err := fmt.Fprintln(command.Root().OutOrStdout(), action); err != nil {
+				return err
+			}
+		}
+		return nil
+	}}
+	uninstall.Flags().BoolVar(&uninstallDryRun, "dry-run", false, "show changes without writing files")
+	uninstall.Flags().BoolVar(&uninstallJSON, "json", false, "output JSON")
+
+	command.AddCommand(list, detect, install, status, test, uninstall)
 	return command
 }

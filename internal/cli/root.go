@@ -56,7 +56,7 @@ func New(version Version) *cobra.Command {
 	}
 	root.PersistentFlags().StringVar(&home, "home", "", "override the local QUANTUM_LOG data directory")
 	root.SetVersionTemplate("{{.Version}}\n")
-	root.AddCommand(newInitCommand(&home), newDoctorCommand(&home), newVerifyCommand(&home), newMaintenanceCommand(&home), newProjectCommand(&home), newIngestCommand(&home), newUsageCommand(&home), newReportCommand(&home), newAllocationCommand(&home), newPricingCommand(&home), newTaskCommand(&home), newExportCommand(&home), newTUICommand(&home), newAdapterCommand(), newCollectorCommand(&home), newRunCommand(&home), newMCPCommand(&home, version), newUnattributedCommand(&home), newBudgetCommand(&home), newAnchorCommand(&home))
+	root.AddCommand(newInitCommand(&home), newDoctorCommand(&home), newVerifyCommand(&home), newMaintenanceCommand(&home), newProjectCommand(&home), newIngestCommand(&home), newUsageCommand(&home), newReportCommand(&home), newAllocationCommand(&home), newPricingCommand(&home), newTaskCommand(&home), newExportCommand(&home), newTUICommand(&home), newAdapterCommand(), newSetupCommand(), newCollectorCommand(&home), newHookCommand(), newRunCommand(&home), newMCPCommand(&home, version), newUnattributedCommand(&home), newBudgetCommand(&home), newAnchorCommand(&home))
 	return root
 }
 
@@ -372,10 +372,11 @@ func importReader(command *cobra.Command, home *string, reader io.Reader) error 
 }
 
 func newUsageCommand(home *string) *cobra.Command {
-	usage := &cobra.Command{Use: "usage", Short: "Show observed usage and allocated cost"}
+	usage := &cobra.Command{Use: "usage", Short: "Show observed token usage"}
 	for _, period := range []string{"today", "week", "month"} {
 		usage.AddCommand(newUsagePeriodCommand(home, period))
 	}
+	usage.AddCommand(newUsageProjectCommand(home))
 	return usage
 }
 
@@ -403,17 +404,42 @@ func newUsagePeriodCommand(home *string, period string) *cobra.Command {
 		if jsonOutput {
 			return writeJSON(command.Root().OutOrStdout(), report)
 		}
-		for _, row := range report.Rows {
-			if _, err := fmt.Fprintf(command.Root().OutOrStdout(), "%s | %s/%s | %d tokens | $%d micros\n", row.ProjectSlug, row.Provider, row.Model, row.TotalTokens, row.AllocatedCostUSDMicros); err != nil {
-				return err
-			}
-		}
-		_, err = fmt.Fprintf(command.Root().OutOrStdout(), "TOTAL | %d tokens | $%d micros\n", report.TotalTokens, report.AllocatedCostUSDMicros)
-		return err
+		return writeUsageReport(command.Root().OutOrStdout(), report)
 	}}
-	command.Flags().StringVar(&groupBy, "group-by", "project,provider,model", "comma-separated dimensions")
+	command.Flags().StringVar(&groupBy, "group-by", "project,agent,provider,model,capture_quality", "comma-separated dimensions")
 	command.Flags().BoolVar(&jsonOutput, "json", false, "output JSON")
 	return command
+}
+
+func newUsageProjectCommand(home *string) *cobra.Command {
+	var jsonOutput bool
+	command := &cobra.Command{Use: "project <slug>", Short: "Report usage for one project", Args: cobra.ExactArgs(1), RunE: func(command *cobra.Command, args []string) error {
+		service, err := app.Open(command.Context(), *home)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = service.Close() }()
+		report, err := service.Store.Usage(command.Context(), sqlite.UsageQuery{ProjectSlug: args[0], GroupBy: []string{"project", "agent", "provider", "model", "capture_quality"}})
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			return writeJSON(command.Root().OutOrStdout(), report)
+		}
+		return writeUsageReport(command.Root().OutOrStdout(), report)
+	}}
+	command.Flags().BoolVar(&jsonOutput, "json", false, "output JSON")
+	return command
+}
+
+func writeUsageReport(writer io.Writer, report sqlite.UsageReport) error {
+	for _, row := range report.Rows {
+		if _, err := fmt.Fprintf(writer, "%s | %s | %s/%s | %s | %d tokens\n", row.ProjectSlug, row.AgentName, row.Provider, row.Model, row.CaptureQuality, row.TotalTokens); err != nil {
+			return err
+		}
+	}
+	_, err := fmt.Fprintf(writer, "TOTAL | %d tokens\n", report.TotalTokens)
+	return err
 }
 
 func storeUsageQuery(from, to time.Time, groupBy string) sqlite.UsageQuery {

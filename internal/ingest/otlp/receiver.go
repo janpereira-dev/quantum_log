@@ -83,14 +83,14 @@ func (r Receiver) ingest(ctx context.Context, request exportTraceServiceRequest)
 }
 
 func (r Receiver) event(ctx context.Context, resource, span map[string]string, input span) (map[string]any, error) {
-	cwd := first(span, resource, "process.cwd", "qlog.cwd")
+	cwd := first(span, resource, "process.cwd", "qlog.cwd", "github.copilot.git.repository", "copilot_chat.repo.remote_url")
 	adapterProject := first(span, resource, "qlog.project")
 	resolved, err := r.service.ResolveProject(ctx, "", adapterProject, cwd)
 	if err != nil {
 		return nil, err
 	}
 	provider := first(span, resource, "gen_ai.provider.name", "gen_ai.system")
-	model := first(span, resource, "gen_ai.request.model", "gen_ai.response.model")
+	model := first(span, resource, "gen_ai.response.model", "gen_ai.request.model")
 	eventType := "otel.span"
 	if provider != "" && model != "" {
 		eventType = "model.call"
@@ -100,16 +100,20 @@ func (r Receiver) event(ctx context.Context, resource, span map[string]string, i
 		occurredAt = time.Now().UTC()
 	}
 	payload := map[string]any{
-		"provider":          provider,
-		"model":             model,
-		"agent_name":        first(resource, span, "service.name"),
-		"input_tokens":      number(span, "gen_ai.usage.input_tokens", "gen_ai.usage.prompt_tokens"),
-		"output_tokens":     number(span, "gen_ai.usage.output_tokens", "gen_ai.usage.completion_tokens"),
-		"capture_quality":   "otel_reported",
-		"working_directory": resolved.CWD,
-		"git_root":          first(span, resource, "qlog.git.root"),
-		"git_branch":        first(span, resource, "vcs.ref.head.name"),
-		"workspace":         first(span, resource, "qlog.workspace"),
+		"provider":            provider,
+		"model":               model,
+		"agent_name":          first(span, resource, "gen_ai.agent.name", "service.name"),
+		"input_tokens":        number(span, "gen_ai.usage.input_tokens", "gen_ai.usage.prompt_tokens"),
+		"output_tokens":       number(span, "gen_ai.usage.output_tokens", "gen_ai.usage.completion_tokens"),
+		"reasoning_tokens":    number(span, "gen_ai.usage.reasoning.output_tokens", "gen_ai.usage.reasoning_tokens"),
+		"cached_input_tokens": number(span, "gen_ai.usage.cache_read.input_tokens"),
+		"cache_write_tokens":  number(span, "gen_ai.usage.cache_creation.input_tokens"),
+		"capture_quality":     "otel_reported",
+		"working_directory":   resolved.CWD,
+		"git_root":            first(span, resource, "qlog.git.root"),
+		"git_branch":          first(span, resource, "github.copilot.git.branch", "copilot_chat.repo.head_branch_name", "vcs.ref.head.name"),
+		"git_commit":          first(span, resource, "github.copilot.git.commit_sha", "copilot_chat.repo.head_commit_hash", "vcs.ref.head.revision"),
+		"workspace":           first(span, resource, "qlog.workspace"),
 	}
 	sessionID := first(span, resource, "session.id", "gen_ai.conversation.id")
 	if sessionID == "" {
