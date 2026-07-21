@@ -86,6 +86,69 @@ func TestCopilotVSCodeInstallConfiguresNativeOTelWithoutContentCapture(t *testin
 	}
 }
 
+func TestVSCodeCopilotInstallHandlesJSONCAndPreservesSettings(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	settingsPath := filepath.Join(configHome, "Code", "User", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	before := `{
+  // keep this user setting
+  "editor.fontSize": 14,
+}
+`
+	if err := os.WriteFile(settingsPath, []byte(before), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	adapter := newVSCodeCopilotAdapter()
+	result, err := adapter.Install(context.Background(), InstallOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Changed || result.Changes[0].BackupPath == "" {
+		t.Fatalf("install result = %#v", result)
+	}
+	contents, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(contents)
+	if !strings.Contains(text, "editor.fontSize") || !strings.Contains(text, "github.copilot.chat.otel.enabled") || strings.Contains(text, "github.copilot.chat.otel.captureContent\": true") {
+		t.Fatalf("settings after install = %s", text)
+	}
+}
+
+func TestVSCodeCopilotUninstallRemovesOnlyManagedSettings(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	adapter := newVSCodeCopilotAdapter()
+	if _, err := adapter.Install(context.Background(), InstallOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	settingsPath := filepath.Join(configHome, "Code", "User", "settings.json")
+	settings := readSettingsMap(t, settingsPath)
+	settings["editor.fontSize"] = float64(14)
+	settings["github.copilot.chat.otel.outfile"] = "C:/tmp/copilot.jsonl"
+	writeSettingsMap(t, settingsPath, settings)
+
+	result, err := adapter.Uninstall(context.Background(), InstallOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Changed {
+		t.Fatalf("uninstall result = %#v", result)
+	}
+	after := readSettingsMap(t, settingsPath)
+	if _, found := after["github.copilot.chat.otel.enabled"]; found {
+		t.Fatalf("managed setting remained: %#v", after)
+	}
+	if after["editor.fontSize"] != float64(14) || after["github.copilot.chat.otel.outfile"] != "C:/tmp/copilot.jsonl" {
+		t.Fatalf("unrelated settings not preserved: %#v", after)
+	}
+}
+
 func TestOpenCodeInstallWritesGlobalPluginPostingLocalEvents(t *testing.T) {
 	configHome := t.TempDir()
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
@@ -151,6 +214,30 @@ func assertSetting(t *testing.T, settings map[string]any, key string, want any) 
 	t.Helper()
 	if got := settings[key]; got != want {
 		t.Fatalf("%s = %#v, want %#v", key, got, want)
+	}
+}
+
+func readSettingsMap(t *testing.T, path string) map[string]any {
+	t.Helper()
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings := map[string]any{}
+	if err := json.Unmarshal(contents, &settings); err != nil {
+		t.Fatal(err)
+	}
+	return settings
+}
+
+func writeSettingsMap(t *testing.T, path string, settings map[string]any) {
+	t.Helper()
+	contents, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(contents, '\n'), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 

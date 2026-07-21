@@ -2,10 +2,7 @@ package adapters
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"os"
-	"path/filepath"
+	"reflect"
 	"time"
 )
 
@@ -22,7 +19,7 @@ func (a vscodeCopilotAdapter) Descriptor() Descriptor {
 }
 
 func (a vscodeCopilotAdapter) Install(_ context.Context, options InstallOptions) (InstallResult, error) {
-	change, err := applyJSONSettings(a.settingsPath(), copilotOTelSettings(), options.DryRun)
+	change, err := applyVSCodeSettings(a.settingsPath(), copilotOTelSettings(), a.id, options.DryRun)
 	if err != nil {
 		return InstallResult{}, err
 	}
@@ -30,7 +27,7 @@ func (a vscodeCopilotAdapter) Install(_ context.Context, options InstallOptions)
 }
 
 func (a vscodeCopilotAdapter) PlanInstall(_ context.Context, options SetupOptions) (SetupPlan, error) {
-	change, err := applyJSONSettings(a.settingsPath(), copilotOTelSettings(), true)
+	change, err := applyVSCodeSettings(a.settingsPath(), copilotOTelSettings(), a.id, true)
 	if err != nil {
 		return SetupPlan{}, err
 	}
@@ -38,6 +35,14 @@ func (a vscodeCopilotAdapter) PlanInstall(_ context.Context, options SetupOption
 		change.Description = "dry run: " + change.Description
 	}
 	return SetupPlan{AdapterID: a.id, State: SetupAvailable, CaptureQuality: CaptureOTELReported, Changes: []SetupChange{change}, Notes: []string{"configures VS Code Copilot native OpenTelemetry to qlog localhost collector with content capture disabled"}}, nil
+}
+
+func (a vscodeCopilotAdapter) Uninstall(_ context.Context, options InstallOptions) (InstallResult, error) {
+	change, err := removeVSCodeSettings(a.settingsPath(), copilotOTelSettings(), a.id, options.DryRun)
+	if err != nil {
+		return InstallResult{}, err
+	}
+	return InstallResult{Changed: !options.DryRun && change.Action == "removed", Actions: []string{formatChange(change)}, Changes: []SetupChange{change}}, nil
 }
 
 func (a vscodeCopilotAdapter) Status(ctx context.Context) (SetupStatus, error) {
@@ -65,16 +70,7 @@ func (a vscodeCopilotAdapter) Test(ctx context.Context) (TestResult, error) {
 }
 
 func (a vscodeCopilotAdapter) settingsPath() string {
-	if root := os.Getenv("QLOG_ADAPTER_CONFIG_HOME"); root != "" {
-		return filepath.Join(root, "Code", "User", "settings.json")
-	}
-	if appData := os.Getenv("APPDATA"); appData != "" {
-		return filepath.Join(appData, "Code", "User", "settings.json")
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".config", "Code", "User", "settings.json")
-	}
-	return filepath.Join("Code", "User", "settings.json")
+	return vscodeSettingsPath("Code")
 }
 
 func copilotOTelSettings() map[string]any {
@@ -86,67 +82,13 @@ func copilotOTelSettings() map[string]any {
 	}
 }
 
-func applyJSONSettings(path string, desired map[string]any, dryRun bool) (SetupChange, error) {
-	currentBytes, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
-		return SetupChange{}, fmt.Errorf("read %s: %w", path, err)
-	}
-	settings := map[string]any{}
-	if err == nil && len(currentBytes) > 0 {
-		if err := json.Unmarshal(currentBytes, &settings); err != nil {
-			return SetupChange{}, fmt.Errorf("parse %s: %w", path, err)
-		}
-	}
-	changed := false
-	for key, value := range desired {
-		if settings[key] != value {
-			settings[key] = value
-			changed = true
-		}
-	}
-	if !changed {
-		return SetupChange{Path: path, Action: "unchanged", Description: "qlog settings already up to date"}, nil
-	}
-	action := "created"
-	if err == nil {
-		action = "updated"
-	}
-	if dryRun {
-		return SetupChange{Path: path, Action: action, Description: "dry run: qlog settings would be written"}, nil
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return SetupChange{}, fmt.Errorf("create parent directory: %w", err)
-	}
-	change := SetupChange{Path: path, Action: action, Description: "qlog settings written"}
-	if err == nil {
-		backupPath := fmt.Sprintf("%s.qlog-backup-%s", path, time.Now().UTC().Format("20060102150405"))
-		if err := os.WriteFile(backupPath, currentBytes, 0o600); err != nil {
-			return SetupChange{}, fmt.Errorf("write backup: %w", err)
-		}
-		change.BackupPath = backupPath
-	}
-	next, err := json.MarshalIndent(settings, "", "  ")
-	if err != nil {
-		return SetupChange{}, err
-	}
-	next = append(next, '\n')
-	if err := os.WriteFile(path, next, 0o600); err != nil {
-		return SetupChange{}, fmt.Errorf("write %s: %w", path, err)
-	}
-	return change, nil
-}
-
 func jsonSettingsContain(path string, desired map[string]any) bool {
-	contents, err := os.ReadFile(path)
+	settings, _, _, err := readVSCodeSettings(path)
 	if err != nil {
 		return false
 	}
-	settings := map[string]any{}
-	if err := json.Unmarshal(contents, &settings); err != nil {
-		return false
-	}
 	for key, value := range desired {
-		if settings[key] != value {
+		if !reflect.DeepEqual(settings[key], value) {
 			return false
 		}
 	}
