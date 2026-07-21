@@ -65,7 +65,7 @@ func TestReceiverImportsCopilotOTLPTokensCacheReasoningAndProjectMetadata(t *tes
 		t.Fatalf("register project: %v", err)
 	}
 
-	payload := `{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"copilot-chat"}},{"key":"service.version","value":{"stringValue":"1.112.0"}},{"key":"session.id","value":{"stringValue":"window-1"}}]},"scopeSpans":[{"spans":[{"traceId":"trace-copilot","startTimeUnixNano":"1763294400000000000","attributes":[{"key":"gen_ai.operation.name","value":{"stringValue":"chat"}},{"key":"gen_ai.provider.name","value":{"stringValue":"github"}},{"key":"gen_ai.agent.name","value":{"stringValue":"GitHub Copilot Chat"}},{"key":"gen_ai.request.model","value":{"stringValue":"gpt-5"}},{"key":"gen_ai.response.model","value":{"stringValue":"gpt-5-resolved"}},{"key":"gen_ai.usage.input_tokens","value":{"intValue":"11"}},{"key":"gen_ai.usage.output_tokens","value":{"intValue":"13"}},{"key":"gen_ai.usage.cache_read.input_tokens","value":{"intValue":"17"}},{"key":"gen_ai.usage.cache_creation.input_tokens","value":{"intValue":"19"}},{"key":"gen_ai.usage.reasoning.output_tokens","value":{"intValue":"23"}},{"key":"github.copilot.git.repository","value":{"stringValue":"` + filepath.ToSlash(worktree) + `"}},{"key":"github.copilot.git.branch","value":{"stringValue":"main"}},{"key":"github.copilot.git.commit_sha","value":{"stringValue":"abc123"}}]}]}]}]}`
+	payload := `{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"copilot-chat"}},{"key":"service.version","value":{"stringValue":"1.112.0"}},{"key":"session.id","value":{"stringValue":"window-1"}}]},"scopeSpans":[{"spans":[{"traceId":"trace-copilot","startTimeUnixNano":"1763294400000000000","attributes":[{"key":"gen_ai.operation.name","value":{"stringValue":"chat"}},{"key":"gen_ai.provider.name","value":{"stringValue":"github"}},{"key":"gen_ai.agent.name","value":{"stringValue":"GitHub Copilot Chat"}},{"key":"gen_ai.request.model","value":{"stringValue":"gpt-5"}},{"key":"gen_ai.response.model","value":{"stringValue":"gpt-5-resolved"}},{"key":"gen_ai.usage.input_tokens","value":{"intValue":"11"}},{"key":"gen_ai.usage.output_tokens","value":{"intValue":"13"}},{"key":"gen_ai.usage.cache_read.input_tokens","value":{"intValue":"17"}},{"key":"gen_ai.usage.cache_creation.input_tokens","value":{"intValue":"19"}},{"key":"gen_ai.usage.reasoning.output_tokens","value":{"intValue":"23"}},{"key":"qlog.cwd","value":{"stringValue":"` + filepath.ToSlash(worktree) + `"}},{"key":"github.copilot.git.branch","value":{"stringValue":"main"}},{"key":"github.copilot.git.commit_sha","value":{"stringValue":"abc123"}}]}]}]}]}`
 	request := httptest.NewRequest(http.MethodPost, "/v1/traces", bytes.NewBufferString(payload))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
@@ -182,6 +182,32 @@ func TestReceiverDoesNotCopyUnrecognizedOTLPAttributesIntoPayload(t *testing.T) 
 	for _, forbidden := range []string{"must-not-persist", "Bearer secret", "private-value"} {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("payload retained %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestReceiverDoesNotUseRemoteRepositoryURLAsWorkingDirectory(t *testing.T) {
+	service, err := app.Initialize(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatalf("initialize service: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	line, err := Receiver{service: service}.event(context.Background(), map[string]string{}, map[string]string{
+		"gen_ai.provider.name":          "github",
+		"gen_ai.request.model":          "gpt-5",
+		"copilot_chat.repo.remote_url":   "https://oauth:secret@example.com/org/private.git?token=leak",
+		"github.copilot.git.repository": "https://oauth:secret@example.com/org/private.git?token=leak",
+	}, span{})
+	if err != nil {
+		t.Fatalf("event: %v", err)
+	}
+	encoded, err := json.Marshal(line["payload"])
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	for _, forbidden := range []string{"oauth", "secret", "token=leak", "private.git"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("payload retained remote URL data %q: %s", forbidden, encoded)
 		}
 	}
 }

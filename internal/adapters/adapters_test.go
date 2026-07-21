@@ -81,7 +81,7 @@ func TestCopilotVSCodeInstallConfiguresNativeOTelWithoutContentCapture(t *testin
 	if err != nil {
 		t.Fatalf("Status() error = %v", err)
 	}
-	if !status.Installed || status.CaptureQuality != CaptureOTELReported {
+	if !status.Installed || status.CaptureQuality != CaptureExperimental {
 		t.Fatalf("status = %#v", status)
 	}
 }

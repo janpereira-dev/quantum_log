@@ -116,7 +116,7 @@ func (r Receiver) ingest(ctx context.Context, request exportTraceServiceRequest)
 }
 
 func (r Receiver) event(ctx context.Context, resource, span map[string]string, input span) (map[string]any, error) {
-	cwd := first(span, resource, "process.cwd", "qlog.cwd", "github.copilot.git.repository", "copilot_chat.repo.remote_url")
+	cwd := first(span, resource, "process.cwd", "qlog.cwd")
 	adapterProject := first(span, resource, "qlog.project")
 	resolved, err := r.service.ResolveProject(ctx, "", adapterProject, cwd)
 	if err != nil {

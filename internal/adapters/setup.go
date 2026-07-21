@@ -15,6 +15,7 @@ const (
 	CaptureAgentReported    CaptureQuality = "agent_reported"
 	CaptureOTELReported     CaptureQuality = "otel_reported"
 	CaptureLifecycleOnly    CaptureQuality = "lifecycle_only"
+	CaptureExperimental     CaptureQuality = "experimental"
 	CaptureEstimated        CaptureQuality = "estimated"
 	CaptureManualImport     CaptureQuality = "manual_import"
 	CaptureUnavailable      CaptureQuality = "unavailable"

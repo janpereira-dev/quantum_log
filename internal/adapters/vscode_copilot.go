@@ -34,7 +34,7 @@ func (a vscodeCopilotAdapter) PlanInstall(_ context.Context, options SetupOption
 	if options.DryRun {
 		change.Description = "dry run: " + change.Description
 	}
-	return SetupPlan{AdapterID: a.id, State: SetupAvailable, CaptureQuality: CaptureOTELReported, Changes: []SetupChange{change}, Notes: []string{"configures VS Code Copilot native OpenTelemetry to qlog localhost collector with content capture disabled"}}, nil
+	return SetupPlan{AdapterID: a.id, State: SetupAvailable, CaptureQuality: CaptureExperimental, Changes: []SetupChange{change}, Notes: []string{"configures VS Code Copilot native OpenTelemetry to qlog localhost collector with content capture disabled; run adapter verify after a real Copilot event to prove capture"}}, nil
 }
 
 func (a vscodeCopilotAdapter) Uninstall(_ context.Context, options InstallOptions) (InstallResult, error) {
@@ -58,7 +58,7 @@ func (a vscodeCopilotAdapter) Status(ctx context.Context) (SetupStatus, error) {
 	if installed {
 		state = SetupInstalled
 	}
-	return SetupStatus{AdapterID: a.id, Available: detection.Available, Installed: installed, State: state, CaptureQuality: CaptureOTELReported, Evidence: detection.Evidence, Notes: []string{"VS Code Copilot emits GenAI OTel spans with token, cache, reasoning, tool, MCP, repo, branch, and commit metadata when enabled"}}, nil
+	return SetupStatus{AdapterID: a.id, Available: detection.Available, Installed: installed, State: state, CaptureQuality: CaptureExperimental, Evidence: detection.Evidence, Notes: []string{"VS Code Copilot OTel setup is experimental until adapter verify finds a recent Copilot-originated otel_reported model call"}}, nil
 }
 
 func (a vscodeCopilotAdapter) Test(ctx context.Context) (TestResult, error) {
@@ -66,7 +66,7 @@ func (a vscodeCopilotAdapter) Test(ctx context.Context) (TestResult, error) {
 	if err != nil {
 		return TestResult{}, err
 	}
-	return TestResult{AdapterID: a.id, Passed: status.Installed, CaptureQuality: CaptureOTELReported, Message: status.Evidence, TestedAt: time.Now().UTC()}, nil
+	return TestResult{AdapterID: a.id, Passed: status.Installed, CaptureQuality: CaptureExperimental, Message: status.Evidence, TestedAt: time.Now().UTC()}, nil
 }
 
 func (a vscodeCopilotAdapter) settingsPath() string {

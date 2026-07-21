@@ -26,12 +26,12 @@ func newCollectorCommand(home *string) *cobra.Command {
 		if jsonOutput {
 			return writeJSON(command.Root().OutOrStdout(), output)
 		}
-		_, err := fmt.Fprintf(command.Root().OutOrStdout(), "collector: http://%s (/v1/traces OTLP JSON, /v1/events qlog JSON)\n", listen)
+		_, err := fmt.Fprintf(command.Root().OutOrStdout(), "collector: http://%s (/v1/traces OTLP JSON/protobuf, /v1/events qlog JSON)\n", listen)
 		return err
 	}}
 	status.Flags().StringVar(&listen, "listen", "127.0.0.1:4318", "OTLP/HTTP listen address")
 	status.Flags().BoolVar(&jsonOutput, "json", false, "output JSON")
-	serve := &cobra.Command{Use: "serve", Short: "Serve OTLP/HTTP JSON traces", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+	serve := &cobra.Command{Use: "serve", Short: "Serve OTLP/HTTP JSON/protobuf traces", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
 		if err := validateListenAddress(listen, allowNonLoopback); err != nil {
 			return err
 		}
@@ -39,12 +39,11 @@ func newCollectorCommand(home *string) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		defer func() { _ = service.Close() }()
-		mux := http.NewServeMux()
-		mux.Handle("/v1/traces", otlp.NewHandler(service))
-		mux.Handle("/v1/events", qlogevent.NewHandler(service))
-		server := &http.Server{Addr: listen, Handler: mux, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: time.Minute}
-		_, err = fmt.Fprintf(command.Root().OutOrStdout(), "qlog collector listening on http://%s (/v1/traces OTLP JSON, /v1/events qlog JSON)\n", listen)
+		if err := service.Close(); err != nil {
+			return err
+		}
+		server := &http.Server{Addr: listen, Handler: newCollectorMux(*home), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: time.Minute}
+		_, err = fmt.Fprintf(command.Root().OutOrStdout(), "qlog collector listening on http://%s (/v1/traces OTLP JSON/protobuf, /v1/events qlog JSON)\n", listen)
 		if err != nil {
 			return err
 		}
@@ -69,6 +68,28 @@ func newCollectorCommand(home *string) *cobra.Command {
 		collectorLifecycleCommand("uninstall", "Uninstall managed collector", func(manager collectorManager, _, _ string) (string, error) { return manager.Uninstall() }, home, &listen),
 	)
 	return collector
+}
+
+func newCollectorMux(home string) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.Handle("/v1/traces", requestScopedHandler{home: home, build: otlp.NewHandler})
+	mux.Handle("/v1/events", requestScopedHandler{home: home, build: qlogevent.NewHandler})
+	return mux
+}
+
+type requestScopedHandler struct {
+	home  string
+	build func(*app.Service) http.Handler
+}
+
+func (h requestScopedHandler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	service, err := app.Open(request.Context(), h.home)
+	if err != nil {
+		http.Error(writer, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	defer func() { _ = service.Close() }()
+	h.build(service).ServeHTTP(writer, request)
 }
 
 type collectorManager interface {
