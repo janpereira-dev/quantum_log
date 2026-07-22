@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/janpereira-dev/quantum_log/internal/app"
@@ -11,6 +12,8 @@ import (
 	"github.com/janpereira-dev/quantum_log/internal/ingest/qlogevent"
 	"github.com/spf13/cobra"
 )
+
+var collectorIngestMu sync.Mutex
 
 func newCollectorCommand(home *string) *cobra.Command {
 	collector := &cobra.Command{Use: "collector", Short: "Receive local telemetry"}
@@ -83,6 +86,8 @@ type requestScopedHandler struct {
 }
 
 func (h requestScopedHandler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	collectorIngestMu.Lock()
+	defer collectorIngestMu.Unlock()
 	service, err := app.Open(request.Context(), h.home)
 	if err != nil {
 		http.Error(writer, err.Error(), http.StatusServiceUnavailable)

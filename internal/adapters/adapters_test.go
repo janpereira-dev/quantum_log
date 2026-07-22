@@ -96,6 +96,7 @@ func TestVSCodeCopilotInstallHandlesJSONCAndPreservesSettings(t *testing.T) {
 	before := `{
   // keep this user setting
   "editor.fontSize": 14,
+  "editor.snippetSuggestions": "inline, }",
 }
 `
 	if err := os.WriteFile(settingsPath, []byte(before), 0o600); err != nil {
@@ -115,8 +116,40 @@ func TestVSCodeCopilotInstallHandlesJSONCAndPreservesSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(contents)
-	if !strings.Contains(text, "editor.fontSize") || !strings.Contains(text, "github.copilot.chat.otel.enabled") || strings.Contains(text, "github.copilot.chat.otel.captureContent\": true") {
+	if !strings.Contains(text, "// keep this user setting") || !strings.Contains(text, "editor.fontSize") || !strings.Contains(text, "inline, }") || !strings.Contains(text, "github.copilot.chat.otel.enabled") || strings.Contains(text, "github.copilot.chat.otel.captureContent\": true") {
 		t.Fatalf("settings after install = %s", text)
+	}
+}
+
+func TestVSCodeCopilotUninstallRestoresPreexistingManagedSetting(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	settingsPath := filepath.Join(configHome, "Code", "User", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	before := `{
+  // user-owned Copilot setting
+  "github.copilot.chat.otel.enabled": false
+}
+`
+	if err := os.WriteFile(settingsPath, []byte(before), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	adapter := newVSCodeCopilotAdapter()
+	if _, err := adapter.Install(context.Background(), InstallOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.Uninstall(context.Background(), InstallOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	after := string(mustReadFile(t, settingsPath))
+	if !strings.Contains(after, `"github.copilot.chat.otel.enabled": false`) {
+		t.Fatalf("preexisting setting not restored: %s", after)
+	}
+	if strings.Contains(after, qlogVSCodeManagedKey) || strings.Contains(after, "github.copilot.chat.otel.exporterType") {
+		t.Fatalf("qlog-managed settings remained: %s", after)
 	}
 }
 
@@ -239,6 +272,15 @@ func writeSettingsMap(t *testing.T, path string, settings map[string]any) {
 	if err := os.WriteFile(path, append(contents, '\n'), 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func mustReadFile(t *testing.T, path string) []byte {
+	t.Helper()
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return contents
 }
 
 func TestDefaultRegistryAdaptersExposeSetupLifecycle(t *testing.T) {

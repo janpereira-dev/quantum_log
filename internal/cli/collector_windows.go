@@ -37,6 +37,9 @@ func (windowsCollectorManager) Start(home, listen string) (string, error) {
 	if err := os.MkdirAll(collectorStateDir(), 0o700); err != nil {
 		return "", err
 	}
+	if pidBytes, err := os.ReadFile(collectorPIDPath()); err == nil && strings.TrimSpace(string(pidBytes)) != "" {
+		return "", fmt.Errorf("collector pid file already exists at %s; run qlog collector stop before starting another collector", collectorPIDPath())
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return "", err

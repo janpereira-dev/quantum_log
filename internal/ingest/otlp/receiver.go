@@ -108,7 +108,7 @@ func (r Receiver) ingest(ctx context.Context, request exportTraceServiceRequest)
 	if count == 0 {
 		return 0, nil
 	}
-	imported, err := jsonl.Import(ctx, r.service.Store, &lines)
+	imported, err := jsonl.ImportTrusted(ctx, r.service.Store, &lines)
 	if err != nil {
 		return 0, fmt.Errorf("import OTLP spans: %w", err)
 	}

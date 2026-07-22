@@ -1,8 +1,12 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/janpereira-dev/quantum_log/internal/adapters"
@@ -217,9 +221,18 @@ func verifyAdapter(ctx context.Context, home string, adapter adapters.Adapter, p
 	}
 	stages = append(stages, adapterVerifyStage{Name: "settings", Passed: status.Installed, Message: string(status.State)})
 	if adapter.Descriptor().ID != "copilot-vscode" {
-		ready := status.Installed
+		stages = append(stages, adapterVerifyStage{Name: "availability", Passed: status.Available, Message: status.Evidence})
+		test, testErr := adapter.Test(ctx)
+		if testErr != nil {
+			stages = append(stages, adapterVerifyStage{Name: "test", Passed: false, Message: testErr.Error()})
+			return adapterVerifyResult{AdapterID: adapter.Descriptor().ID, Stages: stages, Message: "generic adapter verification failed"}
+		}
+		stages = append(stages, adapterVerifyStage{Name: "test", Passed: test.Passed, Message: test.Message})
+		ready := status.Installed && status.Available && test.Passed
 		return adapterVerifyResult{AdapterID: adapter.Descriptor().ID, Ready: ready, Stages: stages, Message: "generic adapter verification complete"}
 	}
+	collectorOK, collectorMessage := verifyCollectorReachability(ctx)
+	stages = append(stages, adapterVerifyStage{Name: "collector", Passed: collectorOK, Message: collectorMessage})
 	duration, err := time.ParseDuration(since)
 	if err != nil {
 		stages = append(stages, adapterVerifyStage{Name: "since", Passed: false, Message: err.Error()})
@@ -238,10 +251,34 @@ func verifyAdapter(ctx context.Context, home string, adapter adapters.Adapter, p
 		return adapterVerifyResult{AdapterID: "copilot-vscode", Stages: stages, Message: "usage query failed"}
 	}
 	stages = append(stages, adapterVerifyStage{Name: "copilot_model_call", Passed: foundCopilot, Message: "requires recent otlp-http Copilot model.call with otel_reported tokens in local storage"})
-	ready := status.Installed && foundCopilot
+	ready := status.Installed && collectorOK && foundCopilot
 	message := "Copilot capture is not verified yet"
 	if ready {
 		message = "Copilot capture verified"
 	}
 	return adapterVerifyResult{AdapterID: "copilot-vscode", Ready: ready, Stages: stages, Message: message}
+}
+
+func verifyCollectorReachability(ctx context.Context) (bool, string) {
+	endpoint := os.Getenv("QLOG_COLLECTOR_URL")
+	if endpoint == "" {
+		endpoint = "http://127.0.0.1:4318/v1/traces"
+	} else if !strings.HasSuffix(endpoint, "/v1/traces") {
+		endpoint = strings.TrimRight(endpoint, "/") + "/v1/traces"
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader([]byte(`{"resourceSpans":[]}`)))
+	if err != nil {
+		return false, err.Error()
+	}
+	request.Header.Set("Content-Type", "application/json")
+	client := http.Client{Timeout: 2 * time.Second}
+	response, err := client.Do(request)
+	if err != nil {
+		return false, err.Error()
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return false, fmt.Sprintf("collector %s returned HTTP %d", endpoint, response.StatusCode)
+	}
+	return true, "collector reachable at " + endpoint
 }

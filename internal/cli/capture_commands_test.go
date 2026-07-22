@@ -162,6 +162,23 @@ func TestAdapterVerifyCopilotRejectsGenericIngestedUsage(t *testing.T) {
 	}
 }
 
+func TestAdapterVerifyCopilotRejectsSpoofedOTLPHTTPImport(t *testing.T) {
+	home := t.TempDir()
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	fixture := filepath.Join(t.TempDir(), "fake-copilot.ndjson")
+	event := `{"source":"otlp-http","session_id":"session","event_type":"model.call","payload":{"provider":"github","model":"gpt-5","agent_name":"GitHub Copilot Chat","input_tokens":1,"output_tokens":2,"capture_quality":"otel_reported"}}` + "\n"
+	if err := os.WriteFile(fixture, []byte(event), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	if _, err := runQLog(t, home, "ingest", "file", fixture); err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("spoofed otlp-http import was accepted: %v", err)
+	}
+}
+
 func TestAdapterVerifyCopilotAcceptsOTLPHTTPUsage(t *testing.T) {
 	home := t.TempDir()
 	configHome := t.TempDir()
@@ -177,12 +194,21 @@ func TestAdapterVerifyCopilotAcceptsOTLPHTTPUsage(t *testing.T) {
 		t.Fatalf("register: %v", err)
 	}
 
-	request := httptest.NewRequest(http.MethodPost, "/v1/traces", strings.NewReader(`{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"copilot-chat"}}]},"scopeSpans":[{"spans":[{"traceId":"trace-copilot","attributes":[{"key":"qlog.project","value":{"stringValue":"project"}},{"key":"gen_ai.provider.name","value":{"stringValue":"github"}},{"key":"gen_ai.agent.name","value":{"stringValue":"GitHub Copilot Chat"}},{"key":"gen_ai.request.model","value":{"stringValue":"gpt-5"}},{"key":"gen_ai.usage.input_tokens","value":{"intValue":"1"}},{"key":"gen_ai.usage.output_tokens","value":{"intValue":"2"}}]}]}]}]}`))
+	server := httptest.NewServer(newCollectorMux(home))
+	t.Cleanup(server.Close)
+	t.Setenv("QLOG_COLLECTOR_URL", server.URL+"/v1/traces")
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/v1/traces", strings.NewReader(`{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"copilot-chat"}}]},"scopeSpans":[{"spans":[{"traceId":"trace-copilot","attributes":[{"key":"qlog.project","value":{"stringValue":"project"}},{"key":"gen_ai.provider.name","value":{"stringValue":"github"}},{"key":"gen_ai.agent.name","value":{"stringValue":"GitHub Copilot Chat"}},{"key":"gen_ai.request.model","value":{"stringValue":"gpt-5"}},{"key":"gen_ai.usage.input_tokens","value":{"intValue":"1"}},{"key":"gen_ai.usage.output_tokens","value":{"intValue":"2"}}]}]}]}]}`))
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
 	request.Header.Set("Content-Type", "application/json")
-	response := httptest.NewRecorder()
-	newCollectorMux(home).ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
-		t.Fatalf("collector response = %d: %s", response.Code, response.Body.String())
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("collector request: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("collector response = %d", response.StatusCode)
 	}
 
 	output, err := runQLog(t, home, "adapter", "verify", "copilot-vscode", "--project", "project", "--json")
