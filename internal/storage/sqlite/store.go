@@ -99,6 +99,12 @@ type UsageQuery struct {
 	GroupBy     []string
 }
 
+type CopilotOTLPEvidenceQuery struct {
+	From        time.Time
+	To          time.Time
+	ProjectSlug string
+}
+
 type UsageRow struct {
 	ProjectSlug            string `json:"project_slug"`
 	AgentName              string `json:"agent_name"`
@@ -1304,6 +1310,51 @@ func (s *Store) Usage(ctx context.Context, query UsageQuery) (UsageReport, error
 		return left < right
 	})
 	return report, nil
+}
+
+func (s *Store) HasRecentCopilotOTLPModelCall(ctx context.Context, query CopilotOTLPEvidenceQuery) (bool, error) {
+	where := " WHERE r.source = 'otlp-http' AND replace(lower(r.event_type), '_', '.') = 'model.call'"
+	args := []any{}
+	if !query.From.IsZero() {
+		where += " AND r.occurred_at >= ?"
+		args = append(args, timestamp(query.From))
+	}
+	if !query.To.IsZero() {
+		where += " AND r.occurred_at < ?"
+		args = append(args, timestamp(query.To))
+	}
+	if query.ProjectSlug != "" {
+		where += " AND p.slug = ?"
+		args = append(args, normalizeSlug(query.ProjectSlug))
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT r.payload_json_sanitized FROM raw_events r LEFT JOIN projects p ON p.id = r.project_id`+where, args...)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var encoded string
+		if err := rows.Scan(&encoded); err != nil {
+			return false, err
+		}
+		var payload struct {
+			Provider       string `json:"provider"`
+			AgentName      string `json:"agent_name"`
+			InputTokens    int64  `json:"input_tokens"`
+			OutputTokens   int64  `json:"output_tokens"`
+			Reasoning      int64  `json:"reasoning_tokens"`
+			CachedInput    int64  `json:"cached_input_tokens"`
+			CacheWrite     int64  `json:"cache_write_tokens"`
+			CaptureQuality string `json:"capture_quality"`
+		}
+		if err := json.Unmarshal([]byte(encoded), &payload); err != nil {
+			return false, err
+		}
+		if strings.EqualFold(payload.Provider, "github") && strings.Contains(strings.ToLower(payload.AgentName), "copilot") && payload.CaptureQuality == "otel_reported" && payload.InputTokens+payload.OutputTokens+payload.Reasoning+payload.CachedInput+payload.CacheWrite > 0 {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 func validateGroupBy(groupBy []string) error {
