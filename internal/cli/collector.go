@@ -89,7 +89,6 @@ func newCollectorMux(home string) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.Handle("/v1/traces", requestScopedHandler{home: home, build: otlp.NewHandler})
 	mux.Handle("/v1/events", requestScopedHandler{home: home, build: qlogevent.NewHandler})
-<<<<<<< HEAD
 	mux.HandleFunc("/healthz", func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodGet && request.Method != http.MethodHead {
 			writer.Header().Set("Allow", "GET, HEAD")
@@ -130,11 +129,6 @@ func probeCollectorHealth(ctx context.Context, listen string) collectorHealth {
 	return health
 }
 
-=======
-	return mux
-}
-
->>>>>>> origin/main
 type requestScopedHandler struct {
 	home  string
 	build func(*app.Service) http.Handler
