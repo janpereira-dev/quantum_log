@@ -41,7 +41,11 @@ func newCollectorCommand(home *string) *cobra.Command {
 		if jsonOutput {
 			return writeJSON(command.Root().OutOrStdout(), output)
 		}
+<<<<<<< HEAD
 		_, err = fmt.Fprintf(command.Root().OutOrStdout(), "collector: http://%s (/v1/traces OTLP JSON/protobuf, /v1/events qlog JSON, /healthz health) reachable=%t health=%s\n", listen, health.Reachable, health.Health)
+=======
+		_, err := fmt.Fprintf(command.Root().OutOrStdout(), "collector: http://%s (/v1/traces OTLP JSON/protobuf, /v1/events qlog JSON)\n", listen)
+>>>>>>> origin/main
 		return err
 	}}
 	status.Flags().StringVar(&listen, "listen", "127.0.0.1:4318", "OTLP/HTTP listen address")
@@ -89,6 +93,7 @@ func newCollectorMux(home string) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.Handle("/v1/traces", requestScopedHandler{home: home, build: otlp.NewHandler})
 	mux.Handle("/v1/events", requestScopedHandler{home: home, build: qlogevent.NewHandler})
+<<<<<<< HEAD
 	mux.HandleFunc("/healthz", func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodGet && request.Method != http.MethodHead {
 			writer.Header().Set("Allow", "GET, HEAD")
@@ -129,6 +134,11 @@ func probeCollectorHealth(ctx context.Context, listen string) collectorHealth {
 	return health
 }
 
+=======
+	return mux
+}
+
+>>>>>>> origin/main
 type requestScopedHandler struct {
 	home  string
 	build func(*app.Service) http.Handler
