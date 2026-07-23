@@ -1,0 +1,18 @@
+id: QL-GR-003
+name: cardinality-budget
+severity: blocking
+scope: [metrics, collector, dashboards]
+forbidden_metric_attributes:
+  - trace_id
+  - span_id
+  - session_id
+  - task_id
+  - operation_id
+  - ledger_entry_id
+  - prompt_hash
+  - error_message
+rules:
+  - "Toda métrica nueva incluye cálculo de cardinalidad máxima."
+  - "Dimensiones abiertas requieren transformación, agrupación o eliminación."
+  - "Rutas, modelos y herramientas deben normalizarse."
+evidence_required: [metric_catalog, theoretical_cardinality, load_test_series_count]

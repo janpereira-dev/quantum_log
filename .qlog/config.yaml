@@ -1,0 +1,10 @@
+schemaVersion: 1
+privacy:
+  capturePromptContent: false
+  captureResponseContent: false
+  captureToolArguments: false
+  captureToolResults: false
+  captureAbsolutePathLocally: true
+  hashPathsOnExport: true
+  redactSecrets: true
+  redactPII: true

@@ -1,0 +1,11 @@
+id: QL-GR-008
+name: semantic-conventions-governance
+severity: blocking
+scope: [traces, metrics, logs, resources]
+rules:
+  - "La versión se obtiene de sources.lock.yaml."
+  - "Se documenta la estabilidad del dominio usado."
+  - "No se mezclan generaciones incompatibles de una convención."
+  - "quantum_log.* solo se usa cuando no existe atributo oficial adecuado."
+  - "GenAI/MCP fija schema y commit antes de implementar."
+evidence_required: [attribute_map, stability_review, migration_note]

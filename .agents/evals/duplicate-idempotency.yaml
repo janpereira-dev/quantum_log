@@ -1,0 +1,11 @@
+id: QL-EVAL-003
+name: duplicate-operation-idempotency
+steps:
+  - ingest_operation_with_fixed_operation_id
+  - retry_same_operation
+  - query_ledger
+assertions:
+  authoritative_entries: 1
+  duplicate_detected: true
+  telemetry_may_have_retry_span: true
+  integrity_chain_valid: true

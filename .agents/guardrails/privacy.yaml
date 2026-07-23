@@ -1,0 +1,16 @@
+id: QL-GR-002
+name: telemetry-privacy
+severity: blocking
+scope: [traces, metrics, logs, collector, adapters]
+defaults:
+  prompt_content: deny
+  response_content: deny
+  file_content: deny
+  environment_values: deny
+  authorization_headers: deny
+rules:
+  - "Minimizar datos en origen antes de aplicar redacción posterior."
+  - "Nunca usar secretos, emails, rutas completas o comandos crudos como dimensiones métricas."
+  - "Toda captura temporal de contenido requiere opt-in, expiración y aviso visible."
+  - "Los fixtures de secretos deben producir cero coincidencias exportadas."
+evidence_required: [data_inventory, secret_fixture_test, collector_redaction_test]

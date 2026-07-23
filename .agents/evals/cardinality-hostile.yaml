@@ -1,0 +1,9 @@
+id: QL-EVAL-005
+name: hostile-cardinality
+steps:
+  - generate_10000_unique_session_ids
+  - emit_metrics
+assertions:
+  session_id_not_metric_attribute: true
+  series_count_within_budget: true
+  memory_within_budget: true

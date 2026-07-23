@@ -1,0 +1,16 @@
+id: QL-GR-007
+name: low-overhead
+severity: blocking
+scope: [runtime, telemetry, collector, tray]
+provisional_targets:
+  idle_cpu_percent_max: 0.5
+  active_cpu_percent_max: 3.0
+  memory_baseline_mb_max: 80
+  ledger_append_p95_ms_max: 20
+  telemetry_queue_mb_max: 100
+rules:
+  - "Los targets provisionales deben sustituirse por baseline medido antes de v1."
+  - "No existen colas ni retries ilimitados."
+  - "Shutdown y flush tienen timeout."
+  - "El benchmark compara disabled, local_debug y otlp."
+evidence_required: [benchmark_report, failure_load_test, shutdown_timeout_test]
