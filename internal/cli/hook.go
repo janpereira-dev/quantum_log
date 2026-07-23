@@ -9,12 +9,14 @@ import (
 	"os"
 	"time"
 
+	"github.com/janpereira-dev/quantum_log/internal/app"
+	"github.com/janpereira-dev/quantum_log/internal/ingest/qlogevent"
 	"github.com/spf13/cobra"
 )
 
-func newHookCommand() *cobra.Command {
+func newHookCommand(home *string) *cobra.Command {
 	hook := &cobra.Command{Use: "hook", Short: "Receive local agent hook payloads"}
-	hook.AddCommand(&cobra.Command{Use: "claude-code", Short: "Forward Claude Code lifecycle hooks", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+	hook.AddCommand(&cobra.Command{Use: "claude-code", Short: "Capture Claude Code lifecycle hooks", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
 		body, err := io.ReadAll(command.InOrStdin())
 		if err != nil {
 			return fmt.Errorf("read hook input: %w", err)
@@ -23,37 +25,46 @@ func newHookCommand() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		endpoint := os.Getenv("QLOG_COLLECTOR_URL")
-		if endpoint == "" {
-			endpoint = "http://127.0.0.1:4318/v1/events"
+		if endpoint := os.Getenv("QLOG_COLLECTOR_URL"); endpoint != "" {
+			encoded, err := json.Marshal(event)
+			if err != nil {
+				return fmt.Errorf("encode hook event: %w", err)
+			}
+			request, err := http.NewRequestWithContext(command.Context(), http.MethodPost, endpoint, bytes.NewReader(encoded))
+			if err != nil {
+				return fmt.Errorf("create hook request: %w", err)
+			}
+			request.Header.Set("Content-Type", "application/json")
+			response, err := http.DefaultClient.Do(request)
+			if err != nil {
+				return fmt.Errorf("post hook event: %w", err)
+			}
+			defer func() { _ = response.Body.Close() }()
+			if response.StatusCode < 200 || response.StatusCode > 299 {
+				return fmt.Errorf("collector rejected hook event: %s", response.Status)
+			}
+			_, err = fmt.Fprintln(command.Root().OutOrStdout(), "hook: forwarded")
+			return err
 		}
-		encoded, err := json.Marshal(event)
+		service, err := app.Open(command.Context(), *home)
 		if err != nil {
-			return fmt.Errorf("encode hook event: %w", err)
+			return err
 		}
-		request, err := http.NewRequestWithContext(command.Context(), http.MethodPost, endpoint, bytes.NewReader(encoded))
+		defer func() { _ = service.Close() }()
+		count, err := qlogevent.Ingest(command.Context(), service, event)
 		if err != nil {
-			return fmt.Errorf("create hook request: %w", err)
+			return err
 		}
-		request.Header.Set("Content-Type", "application/json")
-		response, err := http.DefaultClient.Do(request)
-		if err != nil {
-			return fmt.Errorf("post hook event: %w", err)
-		}
-		defer func() { _ = response.Body.Close() }()
-		if response.StatusCode < 200 || response.StatusCode > 299 {
-			return fmt.Errorf("collector rejected hook event: %s", response.Status)
-		}
-		_, err = fmt.Fprintln(command.Root().OutOrStdout(), "hook: forwarded")
+		_, err = fmt.Fprintf(command.Root().OutOrStdout(), "hook: ingested %d\n", count)
 		return err
 	}})
 	return hook
 }
 
-func claudeCodeHookEvent(input []byte) (map[string]any, error) {
+func claudeCodeHookEvent(input []byte) (qlogevent.Event, error) {
 	var raw map[string]any
 	if err := json.Unmarshal(input, &raw); err != nil {
-		return nil, fmt.Errorf("decode Claude Code hook JSON: %w", err)
+		return qlogevent.Event{}, fmt.Errorf("decode Claude Code hook JSON: %w", err)
 	}
 	sessionID, _ := raw["session_id"].(string)
 	eventType, _ := raw["hook_event_name"].(string)
@@ -61,17 +72,19 @@ func claudeCodeHookEvent(input []byte) (map[string]any, error) {
 		eventType = "ClaudeCodeHook"
 	}
 	cwd, _ := raw["cwd"].(string)
-	return map[string]any{
-		"source":      "claude-code-hook",
-		"session_id":  sessionID,
-		"event_type":  eventType,
-		"occurred_at": time.Now().UTC().Format(time.RFC3339Nano),
-		"project_hint": map[string]any{
-			"cwd": cwd,
-		},
-		"payload": map[string]any{
-			"agent_name":      "claude-code",
-			"capture_quality": "lifecycle_only",
-		},
+	payload, err := json.Marshal(map[string]any{
+		"agent_name":      "claude-code",
+		"capture_quality": "lifecycle_only",
+	})
+	if err != nil {
+		return qlogevent.Event{}, fmt.Errorf("encode Claude Code hook payload: %w", err)
+	}
+	return qlogevent.Event{
+		Source:      "claude-code-hook",
+		SessionID:   sessionID,
+		EventType:   eventType,
+		OccurredAt:  time.Now().UTC(),
+		ProjectHint: qlogevent.ProjectHint{CWD: cwd},
+		Payload:     payload,
 	}, nil
 }

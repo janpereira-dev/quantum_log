@@ -38,12 +38,12 @@ func (h Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	}
 	request.Body = http.MaxBytesReader(writer, request.Body, maxEventBodyBytes)
 	defer func() { _ = request.Body.Close() }()
-	var event pluginEvent
+	var event Event
 	if err := json.NewDecoder(request.Body).Decode(&event); err != nil {
 		http.Error(writer, "decode event: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	count, err := h.ingest(request.Context(), event)
+	count, err := Ingest(request.Context(), h.service, event)
 	if err != nil {
 		http.Error(writer, err.Error(), http.StatusBadRequest)
 		return
@@ -52,8 +52,8 @@ func (h Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	_ = json.NewEncoder(writer).Encode(map[string]int{"accepted": count})
 }
 
-func (h Handler) ingest(ctx context.Context, event pluginEvent) (int, error) {
-	resolved, err := h.service.ResolveProject(ctx, event.ProjectHint.Project, "", event.ProjectHint.CWD)
+func Ingest(ctx context.Context, service *app.Service, event Event) (int, error) {
+	resolved, err := service.ResolveProject(ctx, event.ProjectHint.Project, "", event.ProjectHint.CWD)
 	if err != nil {
 		return 0, err
 	}
@@ -83,14 +83,14 @@ func (h Handler) ingest(ctx context.Context, event pluginEvent) (int, error) {
 	if err := json.NewEncoder(&buffer).Encode(line); err != nil {
 		return 0, err
 	}
-	count, err := jsonl.Import(ctx, h.service.Store, &buffer)
+	count, err := jsonl.Import(ctx, service.Store, &buffer)
 	if err != nil {
 		return 0, fmt.Errorf("import plugin event: %w", err)
 	}
 	return count, nil
 }
 
-func normalizeCodexRawResponse(event pluginEvent) pluginEvent {
+func normalizeCodexRawResponse(event Event) Event {
 	if event.Source != "codex-app-server" || event.EventType != "rawResponse/completed" {
 		return event
 	}
@@ -129,16 +129,16 @@ func normalizeCodexRawResponse(event pluginEvent) pluginEvent {
 	return event
 }
 
-type pluginEvent struct {
+type Event struct {
 	Source      string          `json:"source"`
 	SessionID   string          `json:"session_id"`
 	EventType   string          `json:"event_type"`
 	OccurredAt  time.Time       `json:"occurred_at"`
-	ProjectHint projectHint     `json:"project_hint"`
+	ProjectHint ProjectHint     `json:"project_hint"`
 	Payload     json.RawMessage `json:"payload"`
 }
 
-type projectHint struct {
+type ProjectHint struct {
 	Project string `json:"project"`
 	CWD     string `json:"cwd"`
 }
@@ -151,7 +151,7 @@ func sanitizePluginPayload(payload json.RawMessage) json.RawMessage {
 	if err := json.Unmarshal(payload, &object); err != nil {
 		return json.RawMessage("{}")
 	}
-	for _, key := range []string{"prompt", "response", "arguments", "result", "tool_arguments", "tool_result", "authorization", "api_key", "token"} {
+	for _, key := range []string{"prompt", "response", "content", "arguments", "result", "tool_arguments", "tool_argument", "tool_args", "tool_arg", "tool_result", "tool_results", "authorization", "api_key", "api key", "api_keys", "api keys", "token", "tokens", "secret", "secrets"} {
 		delete(object, key)
 	}
 	next, err := json.Marshal(object)

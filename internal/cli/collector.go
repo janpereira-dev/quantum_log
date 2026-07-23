@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/janpereira-dev/quantum_log/internal/app"
+	"github.com/janpereira-dev/quantum_log/internal/config"
 	"github.com/janpereira-dev/quantum_log/internal/ingest/otlp"
 	"github.com/janpereira-dev/quantum_log/internal/ingest/qlogevent"
 	"github.com/spf13/cobra"
@@ -21,15 +23,25 @@ func newCollectorCommand(home *string) *cobra.Command {
 	var allowNonLoopback bool
 	var jsonOutput bool
 	status := &cobra.Command{Use: "status", Short: "Show local collector endpoints", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+		paths, err := config.Resolve(*home)
+		if err != nil {
+			return err
+		}
+		health := probeCollectorHealth(command.Context(), listen)
 		output := map[string]any{
 			"listen":    listen,
-			"endpoints": []string{"/v1/traces", "/v1/events"},
+			"home":      paths.Home,
+			"database":  paths.Database,
+			"endpoints": []string{"/v1/traces", "/v1/events", "/healthz"},
 			"scope":     "loopback-only by default",
+			"reachable": health.Reachable,
+			"running":   health.Running,
+			"health":    health.Health,
 		}
 		if jsonOutput {
 			return writeJSON(command.Root().OutOrStdout(), output)
 		}
-		_, err := fmt.Fprintf(command.Root().OutOrStdout(), "collector: http://%s (/v1/traces OTLP JSON/protobuf, /v1/events qlog JSON)\n", listen)
+		_, err = fmt.Fprintf(command.Root().OutOrStdout(), "collector: http://%s (/v1/traces OTLP JSON/protobuf, /v1/events qlog JSON, /healthz health) reachable=%t health=%s\n", listen, health.Reachable, health.Health)
 		return err
 	}}
 	status.Flags().StringVar(&listen, "listen", "127.0.0.1:4318", "OTLP/HTTP listen address")
@@ -77,7 +89,44 @@ func newCollectorMux(home string) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.Handle("/v1/traces", requestScopedHandler{home: home, build: otlp.NewHandler})
 	mux.Handle("/v1/events", requestScopedHandler{home: home, build: qlogevent.NewHandler})
+	mux.HandleFunc("/healthz", func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet && request.Method != http.MethodHead {
+			writer.Header().Set("Allow", "GET, HEAD")
+			http.Error(writer, "method must be GET or HEAD", http.StatusMethodNotAllowed)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusOK)
+		if request.Method == http.MethodGet {
+			_, _ = writer.Write([]byte(`{"status":"ok"}`))
+		}
+	})
 	return mux
+}
+
+type collectorHealth struct {
+	Reachable bool
+	Running   bool
+	Health    string
+}
+
+func probeCollectorHealth(ctx context.Context, listen string) collectorHealth {
+	probeCtx, cancel := context.WithTimeout(ctx, 750*time.Millisecond)
+	defer cancel()
+	request, err := http.NewRequestWithContext(probeCtx, http.MethodGet, "http://"+listen+"/healthz", nil)
+	if err != nil {
+		return collectorHealth{Health: err.Error()}
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return collectorHealth{Health: err.Error()}
+	}
+	defer func() { _ = response.Body.Close() }()
+	health := collectorHealth{Reachable: true, Running: true, Health: response.Status}
+	if response.StatusCode >= 200 && response.StatusCode <= 299 {
+		health.Health = "ok"
+	}
+	return health
 }
 
 type requestScopedHandler struct {

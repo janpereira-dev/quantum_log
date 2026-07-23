@@ -1,0 +1,14 @@
+id: QL-EVAL-002
+name: collector-offline-does-not-break-ledger
+steps:
+  - configure_otlp_unreachable
+  - start_quantum_log
+  - ingest_operation
+  - verify_ledger_entry
+  - observe_telemetry_failure
+assertions:
+  ledger_commit: success
+  process_alive: true
+  queue_bounded: true
+  diagnostic_emitted: true
+  user_operation_result_unchanged: true

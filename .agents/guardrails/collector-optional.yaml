@@ -1,0 +1,10 @@
+id: QL-GR-005
+name: collector-optional
+severity: blocking
+scope: [bootstrap, collector, deployment, tray]
+rules:
+  - "Quantum Log arranca y registra con Collector ausente."
+  - "El modo disabled no abre endpoints ni goroutines innecesarias."
+  - "El exporter caído no causa cola ilimitada."
+  - "La tray app muestra estado degradado real, no falso positivo."
+evidence_required: [disabled_mode_test, collector_absent_test, exporter_failure_test]

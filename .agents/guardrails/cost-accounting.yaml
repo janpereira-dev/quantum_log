@@ -1,0 +1,12 @@
+id: QL-GR-006
+name: cost-accounting-truthfulness
+severity: blocking
+scope: [usage, cost, ledger, reports]
+allowed_quality: [reported, estimated, inferred, unavailable]
+rules:
+  - "Todo coste declara quality y source."
+  - "Estimated incluye pricing_version."
+  - "Conversión incluye moneda origen, tasa, fuente y timestamp."
+  - "No se redondea antes de consolidar."
+  - "Las discrepancias de conciliación se registran, no se ocultan."
+evidence_required: [pricing_fixture, reconciliation_test, currency_conversion_test]

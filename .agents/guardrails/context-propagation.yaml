@@ -1,0 +1,11 @@
+id: QL-GR-004
+name: context-propagation
+severity: blocking
+scope: [go, http, ipc, mcp, goroutines, queues]
+rules:
+  - "Las operaciones hijas reciben context.Context del llamador."
+  - "No se almacena Context en estructuras persistentes o de larga vida."
+  - "Deadlines y cancelación se preservan en fronteras internas."
+  - "Baggage no transporta secretos ni IDs innecesarios."
+  - "Las colas usan parent o link según causalidad real."
+evidence_required: [fanout_test, ipc_propagation_test, cancellation_test]

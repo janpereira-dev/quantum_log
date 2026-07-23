@@ -1,0 +1,89 @@
+project:
+  name: quantum-log
+  product_definition: "Ledger riguroso de actividad, consumo y coste para agentes de inteligencia artificial."
+  backend_language: go
+  lifecycle_stage: design_and_implementation
+
+principles:
+  - ledger_is_authoritative
+  - append_only_history
+  - local_first
+  - offline_capable
+  - privacy_by_default
+  - telemetry_is_optional
+  - provider_agnostic
+  - deterministic_correlation
+  - low_resource_consumption
+  - cross_platform
+  - explicit_data_quality
+
+components:
+  local_service:
+    responsibility: "Capturar, normalizar, persistir y consultar eventos."
+  ledger_core:
+    responsibility: "Mantener historia append-only, correcciones, reversiones e integridad."
+  agent_adapters:
+    responsibility: "Traducir eventos de agentes/proveedores al contrato canónico."
+  token_cost_engine:
+    responsibility: "Normalizar uso, precios, moneda y calidad del dato."
+  tray_application:
+    responsibility: "Control local, estado, activación, exportación y diagnóstico."
+  telemetry_engine:
+    responsibility: "Emitir traces, metrics y logs/events sin bloquear el ledger."
+  optional_collector:
+    responsibility: "Procesar, redactar y exportar OTLP cuando esté habilitado."
+
+ledger:
+  mutation_policy: append_correction
+  deletion_policy: append_tombstone
+  integrity_chain: required
+  idempotency: required
+  authoritative_timestamp: ingestion_and_source
+  telemetry_dependency: forbidden
+
+telemetry:
+  framework: opentelemetry
+  enabled_by_default: false
+  collector_required: false
+  supported_modes:
+    - disabled
+    - local_debug
+    - otlp
+  content_capture:
+    prompt: false
+    response: false
+    file_content: false
+    environment_values: false
+  correlation:
+    ledger_entry_id: required_when_entry_exists
+    session_id: required
+    operation_id: required
+    trace_id_persisted_in_ledger: recommended
+    span_id_persisted_in_ledger: recommended
+
+cost_accounting:
+  allowed_quality_values:
+    - reported
+    - estimated
+    - inferred
+    - unavailable
+  estimated_must_include_pricing_version: true
+  currency_conversion_must_include_rate_source_and_timestamp: true
+
+performance:
+  budgets_are_blocking: true
+  measured_values_required_before_release: true
+  provisional_targets:
+    idle_cpu_percent: 0.5
+    active_cpu_percent: 3.0
+    memory_baseline_mb: 80
+    ledger_append_p95_ms: 20
+    telemetry_queue_max_mb: 100
+
+initial_agent_targets:
+  - codex
+  - claude_code
+  - github_copilot
+  - opencode
+  - openclaw
+  - mcp

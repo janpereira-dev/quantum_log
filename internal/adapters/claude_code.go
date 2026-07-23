@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -28,7 +30,7 @@ func (claudeCodeAdapter) Detect(context.Context) (Detection, error) {
 }
 
 func (a claudeCodeAdapter) Install(_ context.Context, options InstallOptions) (InstallResult, error) {
-	change, err := a.applySettings(options.DryRun)
+	change, err := a.applySettings(options.DryRun, options.Home)
 	if err != nil {
 		return InstallResult{}, err
 	}
@@ -39,7 +41,7 @@ func (a claudeCodeAdapter) Install(_ context.Context, options InstallOptions) (I
 }
 
 func (a claudeCodeAdapter) PlanInstall(_ context.Context, options SetupOptions) (SetupPlan, error) {
-	change, err := a.applySettings(true)
+	change, err := a.applySettings(true, options.Home)
 	if err != nil {
 		return SetupPlan{}, err
 	}
@@ -101,10 +103,10 @@ func (claudeCodeAdapter) Normalize(record RawRecord) (RawRecord, error) { return
 
 func (claudeCodeAdapter) ExtractProjectSignals(RawRecord) ProjectSignals { return ProjectSignals{} }
 
-func (a claudeCodeAdapter) applySettings(dryRun bool) (SetupChange, error) {
+func (a claudeCodeAdapter) applySettings(dryRun bool, home string) (SetupChange, error) {
 	path := a.settingsPath()
 	current, _ := os.ReadFile(path)
-	next, err := claudeSettingsWithQlogHooks(current)
+	next, err := claudeSettingsWithQlogHooks(current, claudeCodeHookCommand(home))
 	if err != nil {
 		return SetupChange{}, err
 	}
@@ -115,7 +117,7 @@ func (a claudeCodeAdapter) applySettings(dryRun bool) (SetupChange, error) {
 	if string(current) == string(next) {
 		action = "unchanged"
 	}
-	change := SetupChange{Path: path, Action: action, Description: "Claude Code lifecycle hooks call qlog hook claude-code"}
+	change := SetupChange{Path: path, Action: action, Description: "Claude Code lifecycle hooks call " + claudeCodeHookCommand(home)}
 	if dryRun || action == "unchanged" {
 		return change, nil
 	}
@@ -144,10 +146,17 @@ func (claudeCodeAdapter) settingsPath() string {
 
 func claudeSettingsHasQlog(path string) bool {
 	contents, err := os.ReadFile(path)
-	return err == nil && bytesContains(contents, []byte("qlog hook claude-code"))
+	return err == nil && bytesContains(contents, []byte("qlog")) && bytesContains(contents, []byte("hook claude-code"))
 }
 
-func claudeSettingsWithQlogHooks(current []byte) ([]byte, error) {
+func claudeCodeHookCommand(home string) string {
+	if strings.TrimSpace(home) == "" {
+		return "qlog hook claude-code"
+	}
+	return "qlog --home " + strconv.Quote(home) + " hook claude-code"
+}
+
+func claudeSettingsWithQlogHooks(current []byte, command string) ([]byte, error) {
 	settings := map[string]any{}
 	if len(current) > 0 {
 		if err := json.Unmarshal(current, &settings); err != nil {
@@ -158,12 +167,59 @@ func claudeSettingsWithQlogHooks(current []byte) ([]byte, error) {
 	if hooks == nil {
 		hooks = map[string]any{}
 	}
-	entry := []map[string]any{{"hooks": []map[string]any{{"type": "command", "command": "qlog hook claude-code"}}}}
 	for _, event := range []string{"SessionStart", "UserPromptSubmit", "Stop", "SubagentStop"} {
-		hooks[event] = entry
+		hooks[event] = claudeHookEntriesWithQlog(hooks[event], command)
 	}
 	settings["hooks"] = hooks
 	return json.MarshalIndent(settings, "", "  ")
+}
+
+func claudeHookEntriesWithQlog(current any, command string) []any {
+	entries, _ := current.([]any)
+	next := make([]any, 0, len(entries)+1)
+	for _, entry := range entries {
+		cleaned, keep := claudeHookEntryWithoutQlog(entry)
+		if keep {
+			next = append(next, cleaned)
+		}
+	}
+	return append(next, map[string]any{"hooks": []any{map[string]any{"type": "command", "command": command}}})
+}
+
+func claudeHookEntryWithoutQlog(entry any) (any, bool) {
+	object, ok := entry.(map[string]any)
+	if !ok {
+		return entry, true
+	}
+	rawHooks, ok := object["hooks"].([]any)
+	if !ok {
+		return entry, true
+	}
+	cleanHooks := make([]any, 0, len(rawHooks))
+	for _, hook := range rawHooks {
+		if !isQlogClaudeCommandHook(hook) {
+			cleanHooks = append(cleanHooks, hook)
+		}
+	}
+	if len(cleanHooks) == 0 {
+		return nil, false
+	}
+	clone := make(map[string]any, len(object))
+	for key, value := range object {
+		clone[key] = value
+	}
+	clone["hooks"] = cleanHooks
+	return clone, true
+}
+
+func isQlogClaudeCommandHook(hook any) bool {
+	object, ok := hook.(map[string]any)
+	if !ok {
+		return false
+	}
+	command, _ := object["command"].(string)
+	typeName, _ := object["type"].(string)
+	return typeName == "command" && strings.Contains(command, "qlog") && strings.Contains(command, "hook claude-code")
 }
 
 func bytesContains(haystack, needle []byte) bool {
