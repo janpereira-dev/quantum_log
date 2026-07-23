@@ -41,11 +41,7 @@ func newCollectorCommand(home *string) *cobra.Command {
 		if jsonOutput {
 			return writeJSON(command.Root().OutOrStdout(), output)
 		}
-<<<<<<< HEAD
 		_, err = fmt.Fprintf(command.Root().OutOrStdout(), "collector: http://%s (/v1/traces OTLP JSON/protobuf, /v1/events qlog JSON, /healthz health) reachable=%t health=%s\n", listen, health.Reachable, health.Health)
-=======
-		_, err := fmt.Fprintf(command.Root().OutOrStdout(), "collector: http://%s (/v1/traces OTLP JSON/protobuf, /v1/events qlog JSON)\n", listen)
->>>>>>> origin/main
 		return err
 	}}
 	status.Flags().StringVar(&listen, "listen", "127.0.0.1:4318", "OTLP/HTTP listen address")
