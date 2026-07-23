@@ -1,0 +1,35 @@
+version: 1.0.0
+namespace: quantum_log
+attributes:
+  quantum_log.session.id:
+    type: string
+    signals: [trace, log]
+    metric_allowed: false
+  quantum_log.task.id:
+    type: string
+    signals: [trace, log]
+    metric_allowed: false
+  quantum_log.operation.id:
+    type: string
+    signals: [trace, log]
+    metric_allowed: false
+  quantum_log.ledger.entry.id:
+    type: string
+    signals: [trace, log]
+    metric_allowed: false
+  quantum_log.agent.name:
+    type: string
+    signals: [trace, metric, log]
+    normalization: controlled_registry
+  quantum_log.agent.version:
+    type: string
+    signals: [trace, log]
+  quantum_log.data.quality:
+    type: string
+    allowed_values: [reported, estimated, inferred, unavailable]
+  quantum_log.cost.pricing.version:
+    type: string
+    signals: [trace, log]
+  quantum_log.content.captured:
+    type: boolean
+    signals: [trace, log]

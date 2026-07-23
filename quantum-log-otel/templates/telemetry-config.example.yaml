@@ -1,0 +1,15 @@
+telemetry:
+  mode: disabled # disabled | local_debug | otlp
+  service_name: quantum-log
+  environment: local
+  otlp:
+    endpoint: http://127.0.0.1:4318
+    protocol: http/protobuf
+    insecure: true
+  traces:
+    sample_ratio: 1.0
+  content_capture:
+    prompts: false
+    responses: false
+    file_contents: false
+  shutdown_timeout: 5s

@@ -1,0 +1,35 @@
+version: 1
+generated_at: "2026-07-21"
+policy:
+  official_sources_only: true
+  freshness_gate_required: true
+  update_semconv_separately_from_runtime_dependencies: true
+sources:
+  opentelemetry_specification:
+    version: "1.59.0"
+    url: "https://opentelemetry.io/docs/specs/otel/"
+  otlp_specification:
+    version: "1.10.0"
+    url: "https://opentelemetry.io/docs/specs/otlp/"
+    status:
+      traces: stable
+      metrics: stable
+      logs: stable
+      profiles: development
+  semantic_conventions:
+    version: "1.43.0"
+    url: "https://opentelemetry.io/docs/specs/semconv/"
+  genai_semantic_conventions:
+    schema: "https://opentelemetry.io/schemas/gen-ai/1.42.0"
+    repository: "https://github.com/open-telemetry/semantic-conventions-genai"
+    policy: "pin_commit_before_implementation"
+  go_documentation:
+    url: "https://opentelemetry.io/docs/languages/go/"
+  collector_documentation:
+    url: "https://opentelemetry.io/docs/collector/"
+  security_guidance:
+    url: "https://opentelemetry.io/docs/security/"
+notes:
+  - "No asumir estabilidad uniforme en todas las convenciones por dominio."
+  - "GenAI y MCP evolucionan con rapidez; fijar commit y schema antes de generar atributos."
+  - "Actualizar este lock mediante ADR y evals, no como cambio incidental."
