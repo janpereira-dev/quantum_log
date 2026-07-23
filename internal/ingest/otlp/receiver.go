@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -13,9 +15,14 @@ import (
 
 	"github.com/janpereira-dev/quantum_log/internal/app"
 	"github.com/janpereira-dev/quantum_log/internal/ingest/jsonl"
+	collectortracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 const maxBodyBytes = 4 << 20
+
+var errUnsupportedMediaType = errors.New("unsupported OTLP content type")
 
 type Receiver struct {
 	service *app.Service
@@ -33,16 +40,9 @@ func (r Receiver) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		http.Error(writer, "method must be POST", http.StatusMethodNotAllowed)
 		return
 	}
-	if !strings.HasPrefix(request.Header.Get("Content-Type"), "application/json") {
-		http.Error(writer, "only OTLP JSON is supported", http.StatusUnsupportedMediaType)
-		return
-	}
-	request.Body = http.MaxBytesReader(writer, request.Body, maxBodyBytes)
-	defer func() { _ = request.Body.Close() }()
-	var payload exportTraceServiceRequest
-	decoder := json.NewDecoder(request.Body)
-	if err := decoder.Decode(&payload); err != nil {
-		http.Error(writer, "decode OTLP JSON: "+err.Error(), http.StatusBadRequest)
+	payload, err := decodeTraceRequest(request, writer)
+	if err != nil {
+		http.Error(writer, err.Error(), statusForDecodeError(err))
 		return
 	}
 	count, err := r.ingest(request.Context(), payload)
@@ -52,6 +52,39 @@ func (r Receiver) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	}
 	writer.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(writer).Encode(map[string]int{"accepted": count})
+}
+
+func decodeTraceRequest(request *http.Request, writer http.ResponseWriter) (exportTraceServiceRequest, error) {
+	request.Body = http.MaxBytesReader(writer, request.Body, maxBodyBytes)
+	defer func() { _ = request.Body.Close() }()
+	contentType := strings.ToLower(strings.TrimSpace(strings.Split(request.Header.Get("Content-Type"), ";")[0]))
+	switch contentType {
+	case "application/json":
+		var payload exportTraceServiceRequest
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			return exportTraceServiceRequest{}, fmt.Errorf("decode OTLP JSON: %w", err)
+		}
+		return payload, nil
+	case "application/x-protobuf", "application/protobuf":
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			return exportTraceServiceRequest{}, fmt.Errorf("read OTLP protobuf: %w", err)
+		}
+		var payload collectortracepb.ExportTraceServiceRequest
+		if err := proto.Unmarshal(body, &payload); err != nil {
+			return exportTraceServiceRequest{}, fmt.Errorf("decode OTLP protobuf: %w", err)
+		}
+		return fromProto(&payload), nil
+	default:
+		return exportTraceServiceRequest{}, errUnsupportedMediaType
+	}
+}
+
+func statusForDecodeError(err error) int {
+	if errors.Is(err, errUnsupportedMediaType) {
+		return http.StatusUnsupportedMediaType
+	}
+	return http.StatusBadRequest
 }
 
 func (r Receiver) ingest(ctx context.Context, request exportTraceServiceRequest) (int, error) {
@@ -75,7 +108,7 @@ func (r Receiver) ingest(ctx context.Context, request exportTraceServiceRequest)
 	if count == 0 {
 		return 0, nil
 	}
-	imported, err := jsonl.Import(ctx, r.service.Store, &lines)
+	imported, err := jsonl.ImportTrusted(ctx, r.service.Store, &lines)
 	if err != nil {
 		return 0, fmt.Errorf("import OTLP spans: %w", err)
 	}
@@ -83,7 +116,7 @@ func (r Receiver) ingest(ctx context.Context, request exportTraceServiceRequest)
 }
 
 func (r Receiver) event(ctx context.Context, resource, span map[string]string, input span) (map[string]any, error) {
-	cwd := first(span, resource, "process.cwd", "qlog.cwd", "github.copilot.git.repository", "copilot_chat.repo.remote_url")
+	cwd := first(span, resource, "process.cwd", "qlog.cwd")
 	adapterProject := first(span, resource, "qlog.project")
 	resolved, err := r.service.ResolveProject(ctx, "", adapterProject, cwd)
 	if err != nil {
@@ -160,6 +193,49 @@ type keyValue struct {
 type attributeValue struct {
 	StringValue string      `json:"stringValue"`
 	IntValue    json.Number `json:"intValue"`
+}
+
+func fromProto(input *collectortracepb.ExportTraceServiceRequest) exportTraceServiceRequest {
+	output := exportTraceServiceRequest{ResourceSpans: make([]resourceSpans, 0, len(input.GetResourceSpans()))}
+	for _, resourceSpan := range input.GetResourceSpans() {
+		mappedResource := resourceSpans{Resource: resource{Attributes: fromProtoAttributes(resourceSpan.GetResource().GetAttributes())}}
+		for _, scopeSpan := range resourceSpan.GetScopeSpans() {
+			mappedScope := scopeSpans{Spans: make([]span, 0, len(scopeSpan.GetSpans()))}
+			for _, protoSpan := range scopeSpan.GetSpans() {
+				mappedScope.Spans = append(mappedScope.Spans, span{
+					TraceID:           fmt.Sprintf("%x", protoSpan.GetTraceId()),
+					StartTimeUnixNano: strconv.FormatUint(protoSpan.GetStartTimeUnixNano(), 10),
+					Attributes:        fromProtoAttributes(protoSpan.GetAttributes()),
+				})
+			}
+			mappedResource.ScopeSpans = append(mappedResource.ScopeSpans, mappedScope)
+		}
+		output.ResourceSpans = append(output.ResourceSpans, mappedResource)
+	}
+	return output
+}
+
+func fromProtoAttributes(values []*commonpb.KeyValue) []keyValue {
+	result := make([]keyValue, 0, len(values))
+	for _, value := range values {
+		result = append(result, keyValue{Key: value.GetKey(), Value: fromProtoValue(value.GetValue())})
+	}
+	return result
+}
+
+func fromProtoValue(value *commonpb.AnyValue) attributeValue {
+	switch typed := value.GetValue().(type) {
+	case *commonpb.AnyValue_StringValue:
+		return attributeValue{StringValue: typed.StringValue}
+	case *commonpb.AnyValue_IntValue:
+		return attributeValue{IntValue: json.Number(strconv.FormatInt(typed.IntValue, 10))}
+	case *commonpb.AnyValue_DoubleValue:
+		return attributeValue{StringValue: strconv.FormatFloat(typed.DoubleValue, 'f', -1, 64)}
+	case *commonpb.AnyValue_BoolValue:
+		return attributeValue{StringValue: strconv.FormatBool(typed.BoolValue)}
+	default:
+		return attributeValue{}
+	}
 }
 
 func attributes(values []keyValue) map[string]string {

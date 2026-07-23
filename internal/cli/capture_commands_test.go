@@ -39,6 +39,193 @@ func TestAdapterCommandsExposeCapabilitiesAndSafeDryRun(t *testing.T) {
 	}
 }
 
+func TestAdapterVerifyCopilotReportsMissingEvidence(t *testing.T) {
+	home := t.TempDir()
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	command := New(Version{})
+	output := new(bytes.Buffer)
+	command.SetArgs([]string{"--home", home, "adapter", "verify", "copilot-vscode", "--json"})
+	setOutput(command, output)
+	if err := command.Execute(); err != nil {
+		t.Fatalf("adapter verify: %v", err)
+	}
+	var result struct {
+		AdapterID string `json:"adapter_id"`
+		Ready     bool   `json:"ready"`
+		Stages    []struct {
+			Name   string `json:"name"`
+			Passed bool   `json:"passed"`
+		} `json:"stages"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &result); err != nil {
+		t.Fatalf("output = %s: %v", output.String(), err)
+	}
+	if result.AdapterID != "copilot-vscode" || result.Ready || len(result.Stages) == 0 {
+		t.Fatalf("verify result = %#v", result)
+	}
+}
+
+func TestAdapterVerifyCopilotInstalledSettingsAreNotEnough(t *testing.T) {
+	home := t.TempDir()
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	run := func(args ...string) (string, error) {
+		command := New(Version{})
+		output := new(bytes.Buffer)
+		command.SetArgs(append([]string{"--home", home}, args...))
+		setOutput(command, output)
+		err := command.Execute()
+		return output.String(), err
+	}
+	if _, err := run("init"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, err := run("adapter", "install", "copilot-vscode", "--json"); err != nil {
+		t.Fatalf("install copilot-vscode: %v", err)
+	}
+	output, err := run("adapter", "verify", "copilot-vscode", "--since", "1h", "--json")
+	if err != nil {
+		t.Fatalf("adapter verify: %v", err)
+	}
+	var result struct {
+		Ready  bool `json:"ready"`
+		Stages []struct {
+			Name   string `json:"name"`
+			Passed bool   `json:"passed"`
+		} `json:"stages"`
+	}
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatalf("output = %s: %v", output, err)
+	}
+	if result.Ready {
+		t.Fatalf("installed settings verified without local Copilot evidence: %#v", result)
+	}
+	foundEvidenceStage := false
+	for _, stage := range result.Stages {
+		if stage.Name == "copilot_model_call" {
+			foundEvidenceStage = true
+			if stage.Passed {
+				t.Fatalf("copilot evidence stage passed without local evidence: %#v", result)
+			}
+		}
+	}
+	if !foundEvidenceStage {
+		t.Fatalf("verify result missing evidence stage: %#v", result)
+	}
+}
+
+func TestAdapterVerifyCopilotRejectsGenericIngestedUsage(t *testing.T) {
+	home := t.TempDir()
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, err := runQLog(t, home, "adapter", "install", "copilot-vscode"); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if _, err := runQLog(t, home, "project", "register", "--path", t.TempDir(), "--name", "Project", "--slug", "project"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	projectOutput, err := runQLog(t, home, "project", "show", "project", "--json")
+	if err != nil {
+		t.Fatalf("project show: %v", err)
+	}
+	var project struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(projectOutput), &project); err != nil {
+		t.Fatalf("decode project: %v", err)
+	}
+	fixture := filepath.Join(t.TempDir(), "fake-copilot.ndjson")
+	event := `{"source":"fixture","session_id":"session","event_type":"model.call","project_id":"` + project.ID + `","payload":{"provider":"github","model":"gpt-5","agent_name":"GitHub Copilot Chat","input_tokens":1,"output_tokens":2,"capture_quality":"otel_reported"}}` + "\n"
+	if err := os.WriteFile(fixture, []byte(event), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	if _, err := runQLog(t, home, "ingest", "file", fixture); err != nil {
+		t.Fatalf("ingest fake copilot: %v", err)
+	}
+
+	output, err := runQLog(t, home, "adapter", "verify", "copilot-vscode", "--project", "project", "--json")
+	if err != nil {
+		t.Fatalf("adapter verify: %v", err)
+	}
+	var result struct {
+		Ready bool `json:"ready"`
+	}
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatalf("decode verify: %v", err)
+	}
+	if result.Ready {
+		t.Fatalf("generic ingested usage verified Copilot: %s", output)
+	}
+}
+
+func TestAdapterVerifyCopilotRejectsSpoofedOTLPHTTPImport(t *testing.T) {
+	home := t.TempDir()
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	fixture := filepath.Join(t.TempDir(), "fake-copilot.ndjson")
+	event := `{"source":"otlp-http","session_id":"session","event_type":"model.call","payload":{"provider":"github","model":"gpt-5","agent_name":"GitHub Copilot Chat","input_tokens":1,"output_tokens":2,"capture_quality":"otel_reported"}}` + "\n"
+	if err := os.WriteFile(fixture, []byte(event), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	if _, err := runQLog(t, home, "ingest", "file", fixture); err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("spoofed otlp-http import was accepted: %v", err)
+	}
+}
+
+func TestAdapterVerifyCopilotAcceptsOTLPHTTPUsage(t *testing.T) {
+	home := t.TempDir()
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	worktree := filepath.Join(t.TempDir(), "project")
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, err := runQLog(t, home, "adapter", "install", "copilot-vscode"); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if _, err := runQLog(t, home, "project", "register", "--path", worktree, "--name", "Project", "--slug", "project"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	server := httptest.NewServer(newCollectorMux(home))
+	t.Cleanup(server.Close)
+	t.Setenv("QLOG_COLLECTOR_URL", server.URL+"/v1/traces")
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/v1/traces", strings.NewReader(`{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"copilot-chat"}}]},"scopeSpans":[{"spans":[{"traceId":"trace-copilot","attributes":[{"key":"qlog.project","value":{"stringValue":"project"}},{"key":"gen_ai.provider.name","value":{"stringValue":"github"}},{"key":"gen_ai.agent.name","value":{"stringValue":"GitHub Copilot Chat"}},{"key":"gen_ai.request.model","value":{"stringValue":"gpt-5"}},{"key":"gen_ai.usage.input_tokens","value":{"intValue":"1"}},{"key":"gen_ai.usage.output_tokens","value":{"intValue":"2"}}]}]}]}]}`))
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("collector request: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("collector response = %d", response.StatusCode)
+	}
+
+	output, err := runQLog(t, home, "adapter", "verify", "copilot-vscode", "--project", "project", "--json")
+	if err != nil {
+		t.Fatalf("adapter verify: %v", err)
+	}
+	var result struct {
+		Ready bool `json:"ready"`
+	}
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatalf("decode verify: %v", err)
+	}
+	if !result.Ready {
+		t.Fatalf("OTLP Copilot usage did not verify: %s", output)
+	}
+}
+
 func TestCollectorRejectsPublicBindingWithoutExplicitOptIn(t *testing.T) {
 	if err := validateListenAddress("0.0.0.0:4318", false); err == nil {
 		t.Fatal("public binding was accepted")
@@ -57,16 +244,40 @@ func TestCollectorStatusShowsLocalEndpoints(t *testing.T) {
 		err := command.Execute()
 		return output.String(), err
 	}
-	output, err := run("collector", "status", "--json")
+	output, err := run("collector", "status", "--json", "--listen", "127.0.0.1:1")
 	if err != nil {
 		t.Fatalf("collector status: %v", err)
 	}
 	var status struct {
 		Listen    string   `json:"listen"`
+		Home      string   `json:"home"`
+		Database  string   `json:"database"`
 		Endpoints []string `json:"endpoints"`
+		Reachable bool     `json:"reachable"`
+		Running   bool     `json:"running"`
+		Health    string   `json:"health"`
 	}
-	if err := json.Unmarshal([]byte(output), &status); err != nil || status.Listen != "127.0.0.1:4318" || len(status.Endpoints) != 2 {
+	if err := json.Unmarshal([]byte(output), &status); err != nil || status.Listen != "127.0.0.1:1" || len(status.Endpoints) != 3 || !containsString(status.Endpoints, "/healthz") || status.Home == "" || status.Database == "" || status.Reachable || status.Running || status.Health == "" {
 		t.Fatalf("collector status output = %q, %#v, %v", output, status, err)
+	}
+}
+
+func TestCollectorLifecycleCommandsExist(t *testing.T) {
+	command := New(Version{})
+	collector, _, err := command.Find([]string{"collector"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"install", "start", "stop", "restart", "logs", "uninstall"} {
+		found := false
+		for _, child := range collector.Commands() {
+			if child.Name() == name {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("collector command %q not found", name)
+		}
 	}
 }
 
@@ -96,6 +307,42 @@ func TestHookClaudeCodePostsLifecycleEvent(t *testing.T) {
 	}
 	if !bytes.Contains(received, []byte(`"source":"claude-code-hook"`)) || !bytes.Contains(received, []byte(`"capture_quality":"lifecycle_only"`)) || bytes.Contains(received, []byte("transcript_path")) {
 		t.Fatalf("posted body = %s", received)
+	}
+}
+
+func TestHookClaudeCodeIngestsDirectlyByDefault(t *testing.T) {
+	home := t.TempDir()
+	worktree := filepath.Join(t.TempDir(), "project")
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, err := runQLog(t, home, "project", "register", "--path", worktree, "--name", "Project", "--slug", "project"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	output, err := runQLogWithInput(t, home, strings.NewReader(`{"session_id":"session-1","hook_event_name":"Stop","cwd":"`+filepath.ToSlash(worktree)+`","prompt":"must-not-store","transcript_path":"must-not-store"}`), "hook", "claude-code")
+	if err != nil {
+		t.Fatalf("hook claude-code: %v output=%q", err, output)
+	}
+	if !strings.Contains(output, "hook: ingested") {
+		t.Fatalf("hook output = %q", output)
+	}
+	verify, err := runQLog(t, home, "verify")
+	if err != nil {
+		t.Fatalf("verify after hook ingest: %v output=%q", err, verify)
+	}
+	report, err := runQLog(t, home, "report", "usage", "--group-by", "project,agent,capture_quality", "--json")
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	var usage struct {
+		Rows        []any `json:"rows"`
+		TotalTokens int64 `json:"total_tokens"`
+	}
+	if err := json.Unmarshal([]byte(report), &usage); err != nil {
+		t.Fatalf("decode usage = %s: %v", report, err)
+	}
+	if len(usage.Rows) != 0 || usage.TotalTokens != 0 {
+		t.Fatalf("Claude lifecycle event invented usage: %s", report)
 	}
 }
 
@@ -253,4 +500,13 @@ func TestSetupAppliedJSONPreservesPathAndBackup(t *testing.T) {
 	if change.Path != pluginPath || change.BackupPath == "" || change.Action != "updated" {
 		t.Fatalf("applied change = %#v", change)
 	}
+}
+
+func containsString(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
 }

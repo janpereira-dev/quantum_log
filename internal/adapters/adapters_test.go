@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -81,8 +82,104 @@ func TestCopilotVSCodeInstallConfiguresNativeOTelWithoutContentCapture(t *testin
 	if err != nil {
 		t.Fatalf("Status() error = %v", err)
 	}
-	if !status.Installed || status.CaptureQuality != CaptureOTELReported {
+	if !status.Installed || status.CaptureQuality != CaptureExperimental {
 		t.Fatalf("status = %#v", status)
+	}
+}
+
+func TestVSCodeCopilotInstallHandlesJSONCAndPreservesSettings(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	settingsPath := filepath.Join(configHome, "Code", "User", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	before := `{
+  // keep this user setting
+  "editor.fontSize": 14,
+  "editor.snippetSuggestions": "inline, }",
+}
+`
+	if err := os.WriteFile(settingsPath, []byte(before), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	adapter := newVSCodeCopilotAdapter()
+	result, err := adapter.Install(context.Background(), InstallOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Changed || result.Changes[0].BackupPath == "" {
+		t.Fatalf("install result = %#v", result)
+	}
+	contents, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(contents)
+	if !strings.Contains(text, "// keep this user setting") || !strings.Contains(text, "editor.fontSize") || !strings.Contains(text, "inline, }") || !strings.Contains(text, "github.copilot.chat.otel.enabled") || strings.Contains(text, "github.copilot.chat.otel.captureContent\": true") {
+		t.Fatalf("settings after install = %s", text)
+	}
+}
+
+func TestVSCodeCopilotUninstallRestoresPreexistingManagedSetting(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	settingsPath := filepath.Join(configHome, "Code", "User", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	before := `{
+  // user-owned Copilot setting
+  "github.copilot.chat.otel.enabled": false
+}
+`
+	if err := os.WriteFile(settingsPath, []byte(before), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	adapter := newVSCodeCopilotAdapter()
+	if _, err := adapter.Install(context.Background(), InstallOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.Uninstall(context.Background(), InstallOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	after := string(mustReadFile(t, settingsPath))
+	if !strings.Contains(after, `"github.copilot.chat.otel.enabled": false`) {
+		t.Fatalf("preexisting setting not restored: %s", after)
+	}
+	if strings.Contains(after, qlogVSCodeManagedKey) || strings.Contains(after, "github.copilot.chat.otel.exporterType") {
+		t.Fatalf("qlog-managed settings remained: %s", after)
+	}
+}
+
+func TestVSCodeCopilotUninstallRemovesOnlyManagedSettings(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	adapter := newVSCodeCopilotAdapter()
+	if _, err := adapter.Install(context.Background(), InstallOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	settingsPath := filepath.Join(configHome, "Code", "User", "settings.json")
+	settings := readSettingsMap(t, settingsPath)
+	settings["editor.fontSize"] = float64(14)
+	settings["github.copilot.chat.otel.outfile"] = "C:/tmp/copilot.jsonl"
+	writeSettingsMap(t, settingsPath, settings)
+
+	result, err := adapter.Uninstall(context.Background(), InstallOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Changed {
+		t.Fatalf("uninstall result = %#v", result)
+	}
+	after := readSettingsMap(t, settingsPath)
+	if _, found := after["github.copilot.chat.otel.enabled"]; found {
+		t.Fatalf("managed setting remained: %#v", after)
+	}
+	if after["editor.fontSize"] != float64(14) || after["github.copilot.chat.otel.outfile"] != "C:/tmp/copilot.jsonl" {
+		t.Fatalf("unrelated settings not preserved: %#v", after)
 	}
 }
 
@@ -120,31 +217,89 @@ func TestOpenCodeInstallWritesGlobalPluginPostingLocalEvents(t *testing.T) {
 	}
 }
 
-func TestClaudeCodeInstallWritesLifecycleHooks(t *testing.T) {
+func TestClaudeCodeInstallPreservesExistingHooksAndAddsHome(t *testing.T) {
 	configHome := t.TempDir()
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	settingsPath := filepath.Join(configHome, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	existing := map[string]any{
+		"hooks": map[string]any{
+			"Stop":         []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": "user-stop-hook"}}}},
+			"SessionStart": []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": "qlog hook claude-code"}}}},
+		},
+	}
+	writeSettingsMap(t, settingsPath, existing)
 	adapter, found := Default().Get("claude-code")
 	if !found {
 		t.Fatal("claude-code adapter missing")
 	}
-	result, err := adapter.Install(context.Background(), InstallOptions{})
+	qlogHome := filepath.Join(t.TempDir(), "qlog-home")
+	absHome, err := filepath.Abs(qlogHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := adapter.Install(context.Background(), InstallOptions{Home: absHome})
 	if err != nil {
 		t.Fatalf("install claude-code: %v", err)
 	}
 	if !result.Changed {
 		t.Fatalf("install result = %#v", result)
 	}
-	settingsPath := filepath.Join(configHome, ".claude", "settings.json")
-	contents, err := os.ReadFile(settingsPath)
-	if err != nil {
-		t.Fatalf("read settings: %v", err)
+	settings := readSettingsMap(t, settingsPath)
+	hooks, ok := settings["hooks"].(map[string]any)
+	if !ok {
+		t.Fatalf("settings hooks missing: %#v", settings)
 	}
-	text := string(contents)
-	for _, want := range []string{"SessionStart", "UserPromptSubmit", "Stop", "SubagentStop", "qlog hook claude-code"} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("settings missing %q: %s", want, text)
+	for _, event := range []string{"SessionStart", "UserPromptSubmit", "Stop", "SubagentStop"} {
+		if _, ok := hooks[event]; !ok {
+			t.Fatalf("settings missing hook event %q: %#v", event, hooks)
 		}
 	}
+	commands := collectHookCommands(settings)
+	wantCommand := "qlog --home " + strconv.Quote(absHome) + " hook claude-code"
+	for _, want := range []string{"user-stop-hook", wantCommand} {
+		if !containsAdapterString(commands, want) {
+			t.Fatalf("settings commands missing %q: %#v", want, commands)
+		}
+	}
+	if containsAdapterString(commands, "qlog hook claude-code") {
+		t.Fatalf("old qlog hook command was not updated: %#v", commands)
+	}
+}
+
+func collectHookCommands(value any) []string {
+	commands := []string{}
+	appendHookCommands(value, &commands)
+	return commands
+}
+
+func appendHookCommands(value any, commands *[]string) {
+	switch typed := value.(type) {
+	case map[string]any:
+		if hookType, _ := typed["type"].(string); hookType == "command" {
+			if command, _ := typed["command"].(string); command != "" {
+				*commands = append(*commands, command)
+			}
+		}
+		for _, child := range typed {
+			appendHookCommands(child, commands)
+		}
+	case []any:
+		for _, child := range typed {
+			appendHookCommands(child, commands)
+		}
+	}
+}
+
+func containsAdapterString(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
 }
 
 func assertSetting(t *testing.T, settings map[string]any, key string, want any) {
@@ -152,6 +307,39 @@ func assertSetting(t *testing.T, settings map[string]any, key string, want any) 
 	if got := settings[key]; got != want {
 		t.Fatalf("%s = %#v, want %#v", key, got, want)
 	}
+}
+
+func readSettingsMap(t *testing.T, path string) map[string]any {
+	t.Helper()
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings := map[string]any{}
+	if err := json.Unmarshal(contents, &settings); err != nil {
+		t.Fatal(err)
+	}
+	return settings
+}
+
+func writeSettingsMap(t *testing.T, path string, settings map[string]any) {
+	t.Helper()
+	contents, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(contents, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mustReadFile(t *testing.T, path string) []byte {
+	t.Helper()
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return contents
 }
 
 func TestDefaultRegistryAdaptersExposeSetupLifecycle(t *testing.T) {

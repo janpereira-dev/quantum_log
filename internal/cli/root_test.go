@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -266,6 +268,17 @@ func runQLog(t *testing.T, home string, args ...string) (string, error) {
 	command := New(Version{Version: "0.1.0", Commit: "test", BuildDate: "2026-07-16"})
 	output := new(bytes.Buffer)
 	command.SetArgs(append([]string{"--home", home}, args...))
+	setOutput(command, output)
+	err := command.Execute()
+	return output.String(), err
+}
+
+func runQLogWithInput(t *testing.T, home string, input io.Reader, args ...string) (string, error) {
+	t.Helper()
+	command := New(Version{Version: "0.1.0", Commit: "test", BuildDate: "2026-07-16"})
+	output := new(bytes.Buffer)
+	command.SetArgs(append([]string{"--home", home}, args...))
+	command.SetIn(input)
 	setOutput(command, output)
 	err := command.Execute()
 	return output.String(), err
@@ -674,5 +687,32 @@ func TestUsageProjectReportsAgentAndCaptureQuality(t *testing.T) {
 	}
 	if !strings.Contains(output, "project | opencode | anthropic/claude-sonnet | agent_reported | 30 tokens") {
 		t.Fatalf("usage project output = %q", output)
+	}
+}
+
+func TestCollectorHandlerDoesNotHoldWriterLockBetweenRequests(t *testing.T) {
+	home := t.TempDir()
+	worktree := filepath.Join(t.TempDir(), "project")
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, err := runQLog(t, home, "project", "register", "--path", worktree, "--name", "Project", "--slug", "project"); err != nil {
+		t.Fatalf("register project: %v", err)
+	}
+
+	handler := newCollectorMux(home)
+	request := httptest.NewRequest(http.MethodPost, "/v1/traces", strings.NewReader(`{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"copilot-chat"}}]},"scopeSpans":[{"spans":[{"traceId":"trace-live","attributes":[{"key":"qlog.project","value":{"stringValue":"project"}},{"key":"gen_ai.provider.name","value":{"stringValue":"github"}},{"key":"gen_ai.request.model","value":{"stringValue":"gpt-5"}},{"key":"gen_ai.usage.input_tokens","value":{"intValue":"1"}},{"key":"gen_ai.usage.output_tokens","value":{"intValue":"2"}}]}]}]}]}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("collector response = %d: %s", response.Code, response.Body.String())
+	}
+
+	if output, err := runQLog(t, home, "adapter", "verify", "copilot-vscode", "--json"); err != nil {
+		t.Fatalf("adapter verify should read after collector request: output=%q err=%v", output, err)
+	}
+	if output, err := runQLog(t, home, "usage", "project", "project", "--json"); err != nil {
+		t.Fatalf("usage should read after collector request: output=%q err=%v", output, err)
 	}
 }

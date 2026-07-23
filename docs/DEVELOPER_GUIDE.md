@@ -10,7 +10,7 @@ Think of it as a tamper-evident local SQLite ledger plus a CLI/TUI/MCP surface.
 
 ## 1. What version is this?
 
-`0.3.0` — first M4 auto-capture release. It remains compatible with v0.2.0 local homes and databases, then adds `qlog setup`, collector endpoints, agent hooks/plugins, and project-first usage reporting.
+`0.3.0` — first setup-first M4 auto-capture surface. It remains compatible with v0.2.0 local homes and databases, then adds `qlog setup`, collector endpoints, agent hooks/plugins, and project-first usage reporting. M4 remains `IN_PROGRESS` until real Copilot-originated evidence is recorded in `docs/verification/m4-evidence.md`.
 
 ## 2. Prerequisites
 
@@ -188,11 +188,18 @@ Run setup after installation to configure qlog-owned capture integrations for su
 ```bash
 ./qlog setup --dry-run
 ./qlog setup opencode --yes
+./qlog collector install
+./qlog collector start
+./qlog adapter verify copilot-vscode
 ./qlog collector status --json
 ./qlog collector serve
 ./qlog adapter status --json
 ./qlog adapter test opencode
+./qlog usage project QUANTUM_LOG
+./qlog collector logs
 ```
+
+`qlog collector serve` remains the foreground debug path. Use `qlog collector start` for managed background capture on supported platforms.
 
 Setup targets: `opencode`, `claude-code`, `codex`, `pi`, `copilot-vscode`, `openclaw`, and `hermes`.
 
@@ -200,11 +207,11 @@ Current adapter evidence:
 
 | Adapter | Capture path | Capture quality |
 |---|---|---|
-| `copilot-vscode` | GitHub Copilot VS Code OpenTelemetry to local `/v1/traces`, with content capture disabled. | `otel_reported` when usage fields exist. |
-| `opencode` | Global OpenCode plugin posts sanitized events to local `/v1/events`. | `agent_reported` when usage exists; otherwise `lifecycle_only`. |
-| `codex` | Codex app-server `rawResponse/completed` events can be forwarded to `/v1/events`. | `agent_reported` only for non-null usage. |
-| `claude-code` | Claude Code lifecycle hooks call `qlog hook claude-code`. | `lifecycle_only`; no token support claimed. |
-| `pi`, `openclaw`, `hermes` | Setup-capable fallback targets while source verification continues. | `lifecycle_only` or `unavailable`. |
+| `copilot-vscode` | VS Code GitHub Copilot OTel settings to local `/v1/traces`, content capture disabled. | `CAPTURE_EXPERIMENTAL`; promote only after `docs/verification/m4-evidence.md` records real Copilot-originated tokens in SQLite. |
+| `opencode` | Global OpenCode plugin posts sanitized events to local `/v1/events`. | `agent_reported` when plugin payload includes usage; otherwise `lifecycle_only`. |
+| `codex` | Codex app-server `rawResponse/completed` events can be forwarded to `/v1/events`. | `agent_reported` only when `usage` is non-null. |
+| `claude-code` | `.claude/settings.json` lifecycle hooks call `qlog hook claude-code`. | `lifecycle_only`; no token capability is claimed. |
+| `pi`, `openclaw`, `hermes` | Setup-capable fallback targets. | `lifecycle_only` or `unavailable` until verified token sources exist. |
 
 Rules:
 - `--dry-run` shows planned file changes without writing.

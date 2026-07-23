@@ -45,6 +45,14 @@ type modelCallPayload struct {
 }
 
 func Import(ctx context.Context, store *storepkg.Store, reader io.Reader) (int, error) {
+	return importWithTrust(ctx, store, reader, false)
+}
+
+func ImportTrusted(ctx context.Context, store *storepkg.Store, reader io.Reader) (int, error) {
+	return importWithTrust(ctx, store, reader, true)
+}
+
+func importWithTrust(ctx context.Context, store *storepkg.Store, reader io.Reader, trusted bool) (int, error) {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	count := 0
@@ -59,6 +67,9 @@ func Import(ctx context.Context, store *storepkg.Store, reader io.Reader) (int, 
 		}
 		if parsed.Source == "" {
 			parsed.Source = "ndjson"
+		}
+		if !trusted && parsed.Source == "otlp-http" {
+			return count, fmt.Errorf("import NDJSON line %d: source %q is reserved for qlog collector events", line, parsed.Source)
 		}
 		if parsed.Payload == nil {
 			parsed.Payload = json.RawMessage("{}")
