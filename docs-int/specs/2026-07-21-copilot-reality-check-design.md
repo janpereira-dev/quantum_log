@@ -24,7 +24,7 @@ M4 remains `IN_PROGRESS` until this Copilot path has evidence from setup through
 | VS Code setup | Use correct platform paths, parse JSONC, write atomically, and keep backups. |
 | Uninstall | Remove only qlog-owned Copilot OTel settings and preserve user settings. |
 | Verification | Add `qlog adapter verify copilot-vscode` that proves collector-to-SQLite-to-report behavior. |
-| Evidence | Add `docs/verification/m4-evidence.md` and keep M4 status honest. |
+| Evidence | Add `docs-int/verification/m4-evidence.md` and keep M4 status honest. |
 
 ## Out of Scope
 
@@ -44,7 +44,7 @@ VS Code Copilot OTel
   -> sanitized model.call payload
   -> SQLite raw_events + model_calls
   -> qlog usage project <slug>
-  -> docs/verification/m4-evidence.md
+  -> docs-int/verification/m4-evidence.md
 ```
 
 The receiver remains local-first and loopback-only by default. Content capture stays disabled in the Copilot settings managed by qlog.
@@ -157,7 +157,7 @@ Documentation must say:
 - [ ] `adapter verify copilot-vscode` reports staged readiness and persisted capture evidence.
 - [ ] `qlog usage project <slug>` shows real Copilot model/tokens with `capture_quality=otel_reported` after a real Copilot run.
 - [ ] Prompt, response, tool arguments, tool results, secrets, and authorization fields are not persisted.
-- [ ] `docs/verification/m4-evidence.md` records commands, outputs, platform, Copilot/VS Code evidence, and remaining gaps.
+- [ ] `docs-int/verification/m4-evidence.md` records commands, outputs, platform, Copilot/VS Code evidence, and remaining gaps.
 - [ ] README and developer guide downgrade M4 claims until evidence supports verification.
 
 ## Validation Plan
@@ -191,6 +191,6 @@ qlog collector logs
 Do not tag `v0.3.1` until:
 
 - CI passes.
-- `docs/verification/m4-evidence.md` exists.
+- `docs-int/verification/m4-evidence.md` exists.
 - The evidence file clearly states whether Copilot is `CAPTURE_VERIFIED` or still `CAPTURE_EXPERIMENTAL`.
 - The tag is created from `main`, not a feature branch.
