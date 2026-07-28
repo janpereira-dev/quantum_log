@@ -21,7 +21,7 @@ matrix. `FAIL`, `NOT_RUN`, or `BLOCKED` prevents verification. Files, stubs,
 templates, unit tests, and registrations alone do not prove capability.
 
 Each milestone records its matrix at
-`docs/verification/milestone-<n>-evidence.md`. The matrix columns are AC ID,
+`docs-int/verification/milestone-<n>-evidence.md`. The matrix columns are AC ID,
 criterion, test, command, result, evidence, and state.
 
 ## Delivery Sequence
