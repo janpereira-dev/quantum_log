@@ -379,7 +379,7 @@ git commit -m "feat(cli): add qlog setup"
 - Modify: `README.md`
 - Modify: `docs/DEVELOPER_GUIDE.md`
 - Modify: `cmd/qlog/main.go`
-- Modify: `docs/superpowers/specs/2026-07-20-agent-auto-capture-design.md` if implementation terms changed.
+- Modify: `docs-int/specs/2026-07-20-agent-auto-capture-design.md` if implementation terms changed.
 
 **Interfaces:**
 - Consumes all previous tasks.
@@ -424,7 +424,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add README.md docs/DEVELOPER_GUIDE.md cmd/qlog/main.go docs/superpowers/specs/2026-07-20-agent-auto-capture-design.md
+git add README.md docs/DEVELOPER_GUIDE.md cmd/qlog/main.go docs-int/specs/2026-07-20-agent-auto-capture-design.md
 git commit -m "docs: document M4 agent setup"
 ```
 
