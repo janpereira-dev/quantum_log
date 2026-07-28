@@ -25,7 +25,7 @@
 ### Task 1: Add milestone status and evidence scaffolding
 
 **Files:**
-- Create: `docs/verification/milestone-1-evidence.md`
+- Create: `docs-int/verification/milestone-1-evidence.md`
 - Modify: `README.md`
 - Modify: `QUANTUM_LOG_MASTER_PROMPT.md`
 - Test: manual documentation consistency review
@@ -50,12 +50,12 @@ Expected: current claims overstate availability and require replacement.
 - [ ] **Step 3: Add state and evidence contracts**
 
 Add the six-state milestone contract and evidence-matrix rules from
-`docs/superpowers/specs/2026-07-19-m1-m6-recovery-design.md`. Replace public
+`docs-int/specs/2026-07-19-m1-m6-recovery-design.md`. Replace public
 claims with only current evidence-backed states.
 
 - [ ] **Step 4: Verify documentation consistency**
 
-Run: `rg -n "VERIFIED|CAPTURE_VERIFIED|Milestone" README.md QUANTUM_LOG_MASTER_PROMPT.md docs/verification/milestone-1-evidence.md`
+Run: `rg -n "VERIFIED|CAPTURE_VERIFIED|Milestone" README.md QUANTUM_LOG_MASTER_PROMPT.md docs-int/verification/milestone-1-evidence.md`
 
 Expected: no M1-M6 feature is publicly described as verified before evidence.
 
@@ -359,7 +359,7 @@ Expected: PASS.
 ### Task 7: Run M1 acceptance verification and publish evidence
 
 **Files:**
-- Modify: `docs/verification/milestone-1-evidence.md`
+- Modify: `docs-int/verification/milestone-1-evidence.md`
 - Modify: `README.md`
 - Modify: `CHANGELOG.md`
 
@@ -387,7 +387,7 @@ the evidence matrix.
 Run isolated-home commands covering `qlog --version`, idempotent `qlog init`,
 `qlog doctor --json`, `qlog verify`, `qlog project register`, `qlog project
 detect`, and `qlog project current --json`. Preserve sanitized fixture output
-under `docs/verification/artifacts/m1/`.
+under `docs-int/verification/artifacts/m1/`.
 
 - [ ] **Step 3: Complete Evidence Matrix**
 
@@ -397,6 +397,6 @@ Link test names, command output, and generated hashes. Do not set M1 to
 
 - [ ] **Step 4: Final documentation consistency check**
 
-Run: `rg -n "VERIFIED|IMPLEMENTED|CAPTURE_VERIFIED|M1" README.md CHANGELOG.md docs/verification/milestone-1-evidence.md`
+Run: `rg -n "VERIFIED|IMPLEMENTED|CAPTURE_VERIFIED|M1" README.md CHANGELOG.md docs-int/verification/milestone-1-evidence.md`
 
 Expected: public claims exactly match evidence state.

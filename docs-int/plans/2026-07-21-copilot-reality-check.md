@@ -14,7 +14,7 @@
 - Collector remains loopback-only by default.
 - Unsupported OTLP content types must still return `415`.
 - Prompt, response, tool arguments, tool results, secrets, and authorization fields must not be persisted.
-- M4 remains `IN_PROGRESS` until `docs/verification/m4-evidence.md` proves real Copilot-originated capture.
+- M4 remains `IN_PROGRESS` until `docs-int/verification/m4-evidence.md` proves real Copilot-originated capture.
 - `v0.3.1` scope is Copilot-first; do not verify unrelated agents in this plan.
 - Tag releases from `main`, not feature branches.
 
@@ -34,7 +34,7 @@
 - `internal/cli/capture_commands_test.go`: CLI tests for collector lifecycle command shape and adapter verify output.
 - `internal/storage/sqlite/store.go`: query helper for recent Copilot reported model calls if existing report API is insufficient.
 - `README.md` and `docs/DEVELOPER_GUIDE.md`: honest M4/Copilot state.
-- `docs/verification/m4-evidence.md`: evidence checklist and current verification output.
+- `docs-int/verification/m4-evidence.md`: evidence checklist and current verification output.
 
 ---
 
@@ -43,10 +43,10 @@
 **Files:**
 - Modify: `README.md:13-94`
 - Modify: `docs/DEVELOPER_GUIDE.md`
-- Create: `docs/verification/m4-evidence.md`
+- Create: `docs-int/verification/m4-evidence.md`
 
 **Interfaces:**
-- Consumes: approved spec `docs/superpowers/specs/2026-07-21-copilot-reality-check-design.md`.
+- Consumes: approved spec `docs-int/specs/2026-07-21-copilot-reality-check-design.md`.
 - Produces: honest docs that later tasks update with verification evidence.
 
 - [ ] **Step 1: Write the failing doc check**
@@ -54,7 +54,7 @@
 Run:
 
 ```bash
-rg "M4 \| `IMPLEMENTED`|functional with honest capture-quality labels|CAPTURE_VERIFIED" README.md docs/DEVELOPER_GUIDE.md docs/verification/m4-evidence.md
+rg "M4 \| `IMPLEMENTED`|functional with honest capture-quality labels|CAPTURE_VERIFIED" README.md docs/DEVELOPER_GUIDE.md docs-int/verification/m4-evidence.md
 ```
 
 Expected before the change: at least one match in README or developer guide claiming M4 implemented/functional without evidence.
@@ -70,7 +70,7 @@ Change the M4 row to this exact text:
 Change the setup table rows to:
 
 ```markdown
-| `copilot-vscode` | VS Code GitHub Copilot OTel settings to local `/v1/traces`, content capture disabled. | `CAPTURE_EXPERIMENTAL`; promote only after `docs/verification/m4-evidence.md` records real Copilot-originated tokens in SQLite. |
+| `copilot-vscode` | VS Code GitHub Copilot OTel settings to local `/v1/traces`, content capture disabled. | `CAPTURE_EXPERIMENTAL`; promote only after `docs-int/verification/m4-evidence.md` records real Copilot-originated tokens in SQLite. |
 | `opencode` | Global OpenCode plugin posts sanitized events to local `/v1/events`. | `agent_reported` when plugin payload includes usage; otherwise `lifecycle_only`. |
 | `codex` | Codex app-server `rawResponse/completed` events can be forwarded to `/v1/events`. | `agent_reported` only when `usage` is non-null. |
 | `claude-code` | `.claude/settings.json` lifecycle hooks call `qlog hook claude-code`. | `lifecycle_only`; no token capability is claimed. |
@@ -79,7 +79,7 @@ Change the setup table rows to:
 
 - [ ] **Step 3: Add evidence skeleton**
 
-Create `docs/verification/m4-evidence.md` with:
+Create `docs-int/verification/m4-evidence.md` with:
 
 ```markdown
 # M4 Evidence
@@ -114,7 +114,7 @@ Pending real Copilot run.
 Run:
 
 ```bash
-rg "M4 \| `IMPLEMENTED`|functional with honest capture-quality labels|CAPTURE_VERIFIED" README.md docs/DEVELOPER_GUIDE.md docs/verification/m4-evidence.md
+rg "M4 \| `IMPLEMENTED`|functional with honest capture-quality labels|CAPTURE_VERIFIED" README.md docs/DEVELOPER_GUIDE.md docs-int/verification/m4-evidence.md
 ```
 
 Expected: no false claim that M4 is implemented or Copilot is verified. `CAPTURE_VERIFIED` may appear only as a future criterion.
@@ -122,7 +122,7 @@ Expected: no false claim that M4 is implemented or Copilot is verified. `CAPTURE
 - [ ] **Step 5: Commit**
 
 ```bash
-git add README.md docs/DEVELOPER_GUIDE.md docs/verification/m4-evidence.md
+git add README.md docs/DEVELOPER_GUIDE.md docs-int/verification/m4-evidence.md
 git commit -m "docs: mark copilot capture experimental"
 ```
 
@@ -1123,7 +1123,7 @@ git commit -m "feat(adapters): verify copilot capture evidence"
 ### Task 6: Update Evidence and Run Full Verification
 
 **Files:**
-- Modify: `docs/verification/m4-evidence.md`
+- Modify: `docs-int/verification/m4-evidence.md`
 - Modify: `docs/DEVELOPER_GUIDE.md`
 - Modify: `README.md` if command list changed.
 
@@ -1200,7 +1200,7 @@ Project attribution result: `quantum-log` via <method> with <confidence> confide
 - [ ] **Step 5: Commit evidence/docs**
 
 ```bash
-git add README.md docs/DEVELOPER_GUIDE.md docs/verification/m4-evidence.md
+git add README.md docs/DEVELOPER_GUIDE.md docs-int/verification/m4-evidence.md
 git commit -m "docs: record copilot capture evidence"
 ```
 
@@ -1251,7 +1251,7 @@ Create PR body:
 - [ ] go vet ./...
 - [ ] golangci-lint run
 - [ ] git diff --check
-- [ ] Windows Copilot E2E recorded in docs/verification/m4-evidence.md
+- [ ] Windows Copilot E2E recorded in docs-int/verification/m4-evidence.md
 
 Closes #12
 ```
