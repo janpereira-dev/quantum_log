@@ -1,0 +1,10 @@
+id: QL-EVAL-006
+name: token-cost-reconciliation
+fixture: fixtures/usage-cost.json
+assertions:
+  operation_sum_equals_task_total: true
+  task_sum_equals_session_total: true
+  reported_values_preserved: true
+  estimated_values_have_pricing_version: true
+  converted_values_have_rate_metadata: true
+  decimal_tolerance: "0.000001"

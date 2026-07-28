@@ -1,0 +1,805 @@
+diff --git a/internal/adapters/adapters.go b/internal/adapters/adapters.go
+index 7fb4557..2f0c51e 100644
+--- a/internal/adapters/adapters.go
++++ b/internal/adapters/adapters.go
+@@ -45,6 +45,7 @@ type Detection struct {
+ 
+ type InstallOptions struct {
+ 	DryRun bool
++	Home   string
+ }
+ 
+ type InstallResult struct {
+diff --git a/internal/adapters/adapters_test.go b/internal/adapters/adapters_test.go
+index 24fe5aa..5d585da 100644
+--- a/internal/adapters/adapters_test.go
++++ b/internal/adapters/adapters_test.go
+@@ -5,6 +5,7 @@ import (
+ 	"encoding/json"
+ 	"os"
+ 	"path/filepath"
++	"strconv"
+ 	"strings"
+ 	"testing"
+ )
+@@ -216,31 +217,89 @@ func TestOpenCodeInstallWritesGlobalPluginPostingLocalEvents(t *testing.T) {
+ 	}
+ }
+ 
+-func TestClaudeCodeInstallWritesLifecycleHooks(t *testing.T) {
++func TestClaudeCodeInstallPreservesExistingHooksAndAddsHome(t *testing.T) {
+ 	configHome := t.TempDir()
+ 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
++	settingsPath := filepath.Join(configHome, ".claude", "settings.json")
++	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {
++		t.Fatal(err)
++	}
++	existing := map[string]any{
++		"hooks": map[string]any{
++			"Stop":         []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": "user-stop-hook"}}}},
++			"SessionStart": []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": "qlog hook claude-code"}}}},
++		},
++	}
++	writeSettingsMap(t, settingsPath, existing)
+ 	adapter, found := Default().Get("claude-code")
+ 	if !found {
+ 		t.Fatal("claude-code adapter missing")
+ 	}
+-	result, err := adapter.Install(context.Background(), InstallOptions{})
++	qlogHome := filepath.Join(t.TempDir(), "qlog-home")
++	absHome, err := filepath.Abs(qlogHome)
++	if err != nil {
++		t.Fatal(err)
++	}
++	result, err := adapter.Install(context.Background(), InstallOptions{Home: absHome})
+ 	if err != nil {
+ 		t.Fatalf("install claude-code: %v", err)
+ 	}
+ 	if !result.Changed {
+ 		t.Fatalf("install result = %#v", result)
+ 	}
+-	settingsPath := filepath.Join(configHome, ".claude", "settings.json")
+-	contents, err := os.ReadFile(settingsPath)
+-	if err != nil {
+-		t.Fatalf("read settings: %v", err)
++	settings := readSettingsMap(t, settingsPath)
++	hooks, ok := settings["hooks"].(map[string]any)
++	if !ok {
++		t.Fatalf("settings hooks missing: %#v", settings)
+ 	}
+-	text := string(contents)
+-	for _, want := range []string{"SessionStart", "UserPromptSubmit", "Stop", "SubagentStop", "qlog hook claude-code"} {
+-		if !strings.Contains(text, want) {
+-			t.Fatalf("settings missing %q: %s", want, text)
++	for _, event := range []string{"SessionStart", "UserPromptSubmit", "Stop", "SubagentStop"} {
++		if _, ok := hooks[event]; !ok {
++			t.Fatalf("settings missing hook event %q: %#v", event, hooks)
++		}
++	}
++	commands := collectHookCommands(settings)
++	wantCommand := "qlog --home " + strconv.Quote(absHome) + " hook claude-code"
++	for _, want := range []string{"user-stop-hook", wantCommand} {
++		if !containsAdapterString(commands, want) {
++			t.Fatalf("settings commands missing %q: %#v", want, commands)
++		}
++	}
++	if containsAdapterString(commands, "qlog hook claude-code") {
++		t.Fatalf("old qlog hook command was not updated: %#v", commands)
++	}
++}
++
++func collectHookCommands(value any) []string {
++	commands := []string{}
++	appendHookCommands(value, &commands)
++	return commands
++}
++
++func appendHookCommands(value any, commands *[]string) {
++	switch typed := value.(type) {
++	case map[string]any:
++		if hookType, _ := typed["type"].(string); hookType == "command" {
++			if command, _ := typed["command"].(string); command != "" {
++				*commands = append(*commands, command)
++			}
++		}
++		for _, child := range typed {
++			appendHookCommands(child, commands)
++		}
++	case []any:
++		for _, child := range typed {
++			appendHookCommands(child, commands)
++		}
++	}
++}
++
++func containsAdapterString(items []string, want string) bool {
++	for _, item := range items {
++		if item == want {
++			return true
+ 		}
+ 	}
++	return false
+ }
+ 
+ func assertSetting(t *testing.T, settings map[string]any, key string, want any) {
+diff --git a/internal/adapters/claude_code.go b/internal/adapters/claude_code.go
+index 86e91cc..8fa9004 100644
+--- a/internal/adapters/claude_code.go
++++ b/internal/adapters/claude_code.go
+@@ -8,6 +8,8 @@ import (
+ 	"os"
+ 	"os/exec"
+ 	"path/filepath"
++	"strconv"
++	"strings"
+ 	"time"
+ )
+ 
+@@ -28,7 +30,7 @@ func (claudeCodeAdapter) Detect(context.Context) (Detection, error) {
+ }
+ 
+ func (a claudeCodeAdapter) Install(_ context.Context, options InstallOptions) (InstallResult, error) {
+-	change, err := a.applySettings(options.DryRun)
++	change, err := a.applySettings(options.DryRun, options.Home)
+ 	if err != nil {
+ 		return InstallResult{}, err
+ 	}
+@@ -39,7 +41,7 @@ func (a claudeCodeAdapter) Install(_ context.Context, options InstallOptions) (I
+ }
+ 
+ func (a claudeCodeAdapter) PlanInstall(_ context.Context, options SetupOptions) (SetupPlan, error) {
+-	change, err := a.applySettings(true)
++	change, err := a.applySettings(true, options.Home)
+ 	if err != nil {
+ 		return SetupPlan{}, err
+ 	}
+@@ -101,10 +103,10 @@ func (claudeCodeAdapter) Normalize(record RawRecord) (RawRecord, error) { return
+ 
+ func (claudeCodeAdapter) ExtractProjectSignals(RawRecord) ProjectSignals { return ProjectSignals{} }
+ 
+-func (a claudeCodeAdapter) applySettings(dryRun bool) (SetupChange, error) {
++func (a claudeCodeAdapter) applySettings(dryRun bool, home string) (SetupChange, error) {
+ 	path := a.settingsPath()
+ 	current, _ := os.ReadFile(path)
+-	next, err := claudeSettingsWithQlogHooks(current)
++	next, err := claudeSettingsWithQlogHooks(current, claudeCodeHookCommand(home))
+ 	if err != nil {
+ 		return SetupChange{}, err
+ 	}
+@@ -115,7 +117,7 @@ func (a claudeCodeAdapter) applySettings(dryRun bool) (SetupChange, error) {
+ 	if string(current) == string(next) {
+ 		action = "unchanged"
+ 	}
+-	change := SetupChange{Path: path, Action: action, Description: "Claude Code lifecycle hooks call qlog hook claude-code"}
++	change := SetupChange{Path: path, Action: action, Description: "Claude Code lifecycle hooks call " + claudeCodeHookCommand(home)}
+ 	if dryRun || action == "unchanged" {
+ 		return change, nil
+ 	}
+@@ -144,10 +146,17 @@ func (claudeCodeAdapter) settingsPath() string {
+ 
+ func claudeSettingsHasQlog(path string) bool {
+ 	contents, err := os.ReadFile(path)
+-	return err == nil && bytesContains(contents, []byte("qlog hook claude-code"))
++	return err == nil && bytesContains(contents, []byte("qlog")) && bytesContains(contents, []byte("hook claude-code"))
+ }
+ 
+-func claudeSettingsWithQlogHooks(current []byte) ([]byte, error) {
++func claudeCodeHookCommand(home string) string {
++	if strings.TrimSpace(home) == "" {
++		return "qlog hook claude-code"
++	}
++	return "qlog --home " + strconv.Quote(home) + " hook claude-code"
++}
++
++func claudeSettingsWithQlogHooks(current []byte, command string) ([]byte, error) {
+ 	settings := map[string]any{}
+ 	if len(current) > 0 {
+ 		if err := json.Unmarshal(current, &settings); err != nil {
+@@ -158,14 +167,61 @@ func claudeSettingsWithQlogHooks(current []byte) ([]byte, error) {
+ 	if hooks == nil {
+ 		hooks = map[string]any{}
+ 	}
+-	entry := []map[string]any{{"hooks": []map[string]any{{"type": "command", "command": "qlog hook claude-code"}}}}
+ 	for _, event := range []string{"SessionStart", "UserPromptSubmit", "Stop", "SubagentStop"} {
+-		hooks[event] = entry
++		hooks[event] = claudeHookEntriesWithQlog(hooks[event], command)
+ 	}
+ 	settings["hooks"] = hooks
+ 	return json.MarshalIndent(settings, "", "  ")
+ }
+ 
++func claudeHookEntriesWithQlog(current any, command string) []any {
++	entries, _ := current.([]any)
++	next := make([]any, 0, len(entries)+1)
++	for _, entry := range entries {
++		cleaned, keep := claudeHookEntryWithoutQlog(entry)
++		if keep {
++			next = append(next, cleaned)
++		}
++	}
++	return append(next, map[string]any{"hooks": []any{map[string]any{"type": "command", "command": command}}})
++}
++
++func claudeHookEntryWithoutQlog(entry any) (any, bool) {
++	object, ok := entry.(map[string]any)
++	if !ok {
++		return entry, true
++	}
++	rawHooks, ok := object["hooks"].([]any)
++	if !ok {
++		return entry, true
++	}
++	cleanHooks := make([]any, 0, len(rawHooks))
++	for _, hook := range rawHooks {
++		if !isQlogClaudeCommandHook(hook) {
++			cleanHooks = append(cleanHooks, hook)
++		}
++	}
++	if len(cleanHooks) == 0 {
++		return nil, false
++	}
++	clone := make(map[string]any, len(object))
++	for key, value := range object {
++		clone[key] = value
++	}
++	clone["hooks"] = cleanHooks
++	return clone, true
++}
++
++func isQlogClaudeCommandHook(hook any) bool {
++	object, ok := hook.(map[string]any)
++	if !ok {
++		return false
++	}
++	command, _ := object["command"].(string)
++	typeName, _ := object["type"].(string)
++	return typeName == "command" && strings.Contains(command, "qlog") && strings.Contains(command, "hook claude-code")
++}
++
+ func bytesContains(haystack, needle []byte) bool {
+ 	for i := 0; i+len(needle) <= len(haystack); i++ {
+ 		if string(haystack[i:i+len(needle)]) == string(needle) {
+diff --git a/internal/adapters/setup.go b/internal/adapters/setup.go
+index 76f591e..479d91f 100644
+--- a/internal/adapters/setup.go
++++ b/internal/adapters/setup.go
+@@ -34,6 +34,7 @@ const (
+ type SetupOptions struct {
+ 	DryRun bool
+ 	Yes    bool
++	Home   string
+ }
+ 
+ type SetupChange struct {
+diff --git a/internal/cli/capture_commands_test.go b/internal/cli/capture_commands_test.go
+index 5f98486..9807074 100644
+--- a/internal/cli/capture_commands_test.go
++++ b/internal/cli/capture_commands_test.go
+@@ -244,15 +244,20 @@ func TestCollectorStatusShowsLocalEndpoints(t *testing.T) {
+ 		err := command.Execute()
+ 		return output.String(), err
+ 	}
+-	output, err := run("collector", "status", "--json")
++	output, err := run("collector", "status", "--json", "--listen", "127.0.0.1:1")
+ 	if err != nil {
+ 		t.Fatalf("collector status: %v", err)
+ 	}
+ 	var status struct {
+ 		Listen    string   `json:"listen"`
++		Home      string   `json:"home"`
++		Database  string   `json:"database"`
+ 		Endpoints []string `json:"endpoints"`
++		Reachable bool     `json:"reachable"`
++		Running   bool     `json:"running"`
++		Health    string   `json:"health"`
+ 	}
+-	if err := json.Unmarshal([]byte(output), &status); err != nil || status.Listen != "127.0.0.1:4318" || len(status.Endpoints) != 2 {
++	if err := json.Unmarshal([]byte(output), &status); err != nil || status.Listen != "127.0.0.1:1" || len(status.Endpoints) != 3 || !containsString(status.Endpoints, "/healthz") || status.Home == "" || status.Database == "" || status.Reachable || status.Running || status.Health == "" {
+ 		t.Fatalf("collector status output = %q, %#v, %v", output, status, err)
+ 	}
+ }
+@@ -305,6 +310,42 @@ func TestHookClaudeCodePostsLifecycleEvent(t *testing.T) {
+ 	}
+ }
+ 
++func TestHookClaudeCodeIngestsDirectlyByDefault(t *testing.T) {
++	home := t.TempDir()
++	worktree := filepath.Join(t.TempDir(), "project")
++	if _, err := runQLog(t, home, "init"); err != nil {
++		t.Fatalf("init: %v", err)
++	}
++	if _, err := runQLog(t, home, "project", "register", "--path", worktree, "--name", "Project", "--slug", "project"); err != nil {
++		t.Fatalf("register: %v", err)
++	}
++	output, err := runQLogWithInput(t, home, strings.NewReader(`{"session_id":"session-1","hook_event_name":"Stop","cwd":"`+filepath.ToSlash(worktree)+`","prompt":"must-not-store","transcript_path":"must-not-store"}`), "hook", "claude-code")
++	if err != nil {
++		t.Fatalf("hook claude-code: %v output=%q", err, output)
++	}
++	if !strings.Contains(output, "hook: ingested") {
++		t.Fatalf("hook output = %q", output)
++	}
++	verify, err := runQLog(t, home, "verify")
++	if err != nil {
++		t.Fatalf("verify after hook ingest: %v output=%q", err, verify)
++	}
++	report, err := runQLog(t, home, "report", "usage", "--group-by", "project,agent,capture_quality", "--json")
++	if err != nil {
++		t.Fatalf("usage: %v", err)
++	}
++	var usage struct {
++		Rows        []any `json:"rows"`
++		TotalTokens int64 `json:"total_tokens"`
++	}
++	if err := json.Unmarshal([]byte(report), &usage); err != nil {
++		t.Fatalf("decode usage = %s: %v", report, err)
++	}
++	if len(usage.Rows) != 0 || usage.TotalTokens != 0 {
++		t.Fatalf("Claude lifecycle event invented usage: %s", report)
++	}
++}
++
+ func TestAdapterStatusTestAndUninstallCommands(t *testing.T) {
+ 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
+ 	run := func(args ...string) (string, error) {
+@@ -460,3 +501,12 @@ func TestSetupAppliedJSONPreservesPathAndBackup(t *testing.T) {
+ 		t.Fatalf("applied change = %#v", change)
+ 	}
+ }
++
++func containsString(items []string, want string) bool {
++	for _, item := range items {
++		if item == want {
++			return true
++		}
++	}
++	return false
++}
+diff --git a/internal/cli/collector.go b/internal/cli/collector.go
+index 5f8229e..aeb3d4e 100644
+--- a/internal/cli/collector.go
++++ b/internal/cli/collector.go
+@@ -1,6 +1,7 @@
+ package cli
+ 
+ import (
++	"context"
+ 	"fmt"
+ 	"net"
+ 	"net/http"
+@@ -8,6 +9,7 @@ import (
+ 	"time"
+ 
+ 	"github.com/janpereira-dev/quantum_log/internal/app"
++	"github.com/janpereira-dev/quantum_log/internal/config"
+ 	"github.com/janpereira-dev/quantum_log/internal/ingest/otlp"
+ 	"github.com/janpereira-dev/quantum_log/internal/ingest/qlogevent"
+ 	"github.com/spf13/cobra"
+@@ -21,15 +23,25 @@ func newCollectorCommand(home *string) *cobra.Command {
+ 	var allowNonLoopback bool
+ 	var jsonOutput bool
+ 	status := &cobra.Command{Use: "status", Short: "Show local collector endpoints", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
++		paths, err := config.Resolve(*home)
++		if err != nil {
++			return err
++		}
++		health := probeCollectorHealth(command.Context(), listen)
+ 		output := map[string]any{
+ 			"listen":    listen,
+-			"endpoints": []string{"/v1/traces", "/v1/events"},
++			"home":      paths.Home,
++			"database":  paths.Database,
++			"endpoints": []string{"/v1/traces", "/v1/events", "/healthz"},
+ 			"scope":     "loopback-only by default",
++			"reachable": health.Reachable,
++			"running":   health.Running,
++			"health":    health.Health,
+ 		}
+ 		if jsonOutput {
+ 			return writeJSON(command.Root().OutOrStdout(), output)
+ 		}
+-		_, err := fmt.Fprintf(command.Root().OutOrStdout(), "collector: http://%s (/v1/traces OTLP JSON/protobuf, /v1/events qlog JSON)\n", listen)
++		_, err = fmt.Fprintf(command.Root().OutOrStdout(), "collector: http://%s (/v1/traces OTLP JSON/protobuf, /v1/events qlog JSON, /healthz health) reachable=%t health=%s\n", listen, health.Reachable, health.Health)
+ 		return err
+ 	}}
+ 	status.Flags().StringVar(&listen, "listen", "127.0.0.1:4318", "OTLP/HTTP listen address")
+@@ -77,9 +89,46 @@ func newCollectorMux(home string) *http.ServeMux {
+ 	mux := http.NewServeMux()
+ 	mux.Handle("/v1/traces", requestScopedHandler{home: home, build: otlp.NewHandler})
+ 	mux.Handle("/v1/events", requestScopedHandler{home: home, build: qlogevent.NewHandler})
++	mux.HandleFunc("/healthz", func(writer http.ResponseWriter, request *http.Request) {
++		if request.Method != http.MethodGet && request.Method != http.MethodHead {
++			writer.Header().Set("Allow", "GET, HEAD")
++			http.Error(writer, "method must be GET or HEAD", http.StatusMethodNotAllowed)
++			return
++		}
++		writer.Header().Set("Content-Type", "application/json")
++		writer.WriteHeader(http.StatusOK)
++		if request.Method == http.MethodGet {
++			_, _ = writer.Write([]byte(`{"status":"ok"}`))
++		}
++	})
+ 	return mux
+ }
+ 
++type collectorHealth struct {
++	Reachable bool
++	Running   bool
++	Health    string
++}
++
++func probeCollectorHealth(ctx context.Context, listen string) collectorHealth {
++	probeCtx, cancel := context.WithTimeout(ctx, 750*time.Millisecond)
++	defer cancel()
++	request, err := http.NewRequestWithContext(probeCtx, http.MethodGet, "http://"+listen+"/healthz", nil)
++	if err != nil {
++		return collectorHealth{Health: err.Error()}
++	}
++	response, err := http.DefaultClient.Do(request)
++	if err != nil {
++		return collectorHealth{Health: err.Error()}
++	}
++	defer func() { _ = response.Body.Close() }()
++	health := collectorHealth{Reachable: true, Running: true, Health: response.Status}
++	if response.StatusCode >= 200 && response.StatusCode <= 299 {
++		health.Health = "ok"
++	}
++	return health
++}
++
+ type requestScopedHandler struct {
+ 	home  string
+ 	build func(*app.Service) http.Handler
+diff --git a/internal/cli/hook.go b/internal/cli/hook.go
+index 0a9096b..e907f19 100644
+--- a/internal/cli/hook.go
++++ b/internal/cli/hook.go
+@@ -9,12 +9,14 @@ import (
+ 	"os"
+ 	"time"
+ 
++	"github.com/janpereira-dev/quantum_log/internal/app"
++	"github.com/janpereira-dev/quantum_log/internal/ingest/qlogevent"
+ 	"github.com/spf13/cobra"
+ )
+ 
+-func newHookCommand() *cobra.Command {
++func newHookCommand(home *string) *cobra.Command {
+ 	hook := &cobra.Command{Use: "hook", Short: "Receive local agent hook payloads"}
+-	hook.AddCommand(&cobra.Command{Use: "claude-code", Short: "Forward Claude Code lifecycle hooks", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
++	hook.AddCommand(&cobra.Command{Use: "claude-code", Short: "Capture Claude Code lifecycle hooks", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+ 		body, err := io.ReadAll(command.InOrStdin())
+ 		if err != nil {
+ 			return fmt.Errorf("read hook input: %w", err)
+@@ -23,37 +25,46 @@ func newHookCommand() *cobra.Command {
+ 		if err != nil {
+ 			return err
+ 		}
+-		endpoint := os.Getenv("QLOG_COLLECTOR_URL")
+-		if endpoint == "" {
+-			endpoint = "http://127.0.0.1:4318/v1/events"
+-		}
+-		encoded, err := json.Marshal(event)
+-		if err != nil {
+-			return fmt.Errorf("encode hook event: %w", err)
++		if endpoint := os.Getenv("QLOG_COLLECTOR_URL"); endpoint != "" {
++			encoded, err := json.Marshal(event)
++			if err != nil {
++				return fmt.Errorf("encode hook event: %w", err)
++			}
++			request, err := http.NewRequestWithContext(command.Context(), http.MethodPost, endpoint, bytes.NewReader(encoded))
++			if err != nil {
++				return fmt.Errorf("create hook request: %w", err)
++			}
++			request.Header.Set("Content-Type", "application/json")
++			response, err := http.DefaultClient.Do(request)
++			if err != nil {
++				return fmt.Errorf("post hook event: %w", err)
++			}
++			defer func() { _ = response.Body.Close() }()
++			if response.StatusCode < 200 || response.StatusCode > 299 {
++				return fmt.Errorf("collector rejected hook event: %s", response.Status)
++			}
++			_, err = fmt.Fprintln(command.Root().OutOrStdout(), "hook: forwarded")
++			return err
+ 		}
+-		request, err := http.NewRequestWithContext(command.Context(), http.MethodPost, endpoint, bytes.NewReader(encoded))
++		service, err := app.Open(command.Context(), *home)
+ 		if err != nil {
+-			return fmt.Errorf("create hook request: %w", err)
++			return err
+ 		}
+-		request.Header.Set("Content-Type", "application/json")
+-		response, err := http.DefaultClient.Do(request)
++		defer func() { _ = service.Close() }()
++		count, err := qlogevent.Ingest(command.Context(), service, event)
+ 		if err != nil {
+-			return fmt.Errorf("post hook event: %w", err)
+-		}
+-		defer func() { _ = response.Body.Close() }()
+-		if response.StatusCode < 200 || response.StatusCode > 299 {
+-			return fmt.Errorf("collector rejected hook event: %s", response.Status)
++			return err
+ 		}
+-		_, err = fmt.Fprintln(command.Root().OutOrStdout(), "hook: forwarded")
++		_, err = fmt.Fprintf(command.Root().OutOrStdout(), "hook: ingested %d\n", count)
+ 		return err
+ 	}})
+ 	return hook
+ }
+ 
+-func claudeCodeHookEvent(input []byte) (map[string]any, error) {
++func claudeCodeHookEvent(input []byte) (qlogevent.Event, error) {
+ 	var raw map[string]any
+ 	if err := json.Unmarshal(input, &raw); err != nil {
+-		return nil, fmt.Errorf("decode Claude Code hook JSON: %w", err)
++		return qlogevent.Event{}, fmt.Errorf("decode Claude Code hook JSON: %w", err)
+ 	}
+ 	sessionID, _ := raw["session_id"].(string)
+ 	eventType, _ := raw["hook_event_name"].(string)
+@@ -61,17 +72,19 @@ func claudeCodeHookEvent(input []byte) (map[string]any, error) {
+ 		eventType = "ClaudeCodeHook"
+ 	}
+ 	cwd, _ := raw["cwd"].(string)
+-	return map[string]any{
+-		"source":      "claude-code-hook",
+-		"session_id":  sessionID,
+-		"event_type":  eventType,
+-		"occurred_at": time.Now().UTC().Format(time.RFC3339Nano),
+-		"project_hint": map[string]any{
+-			"cwd": cwd,
+-		},
+-		"payload": map[string]any{
+-			"agent_name":      "claude-code",
+-			"capture_quality": "lifecycle_only",
+-		},
++	payload, err := json.Marshal(map[string]any{
++		"agent_name":      "claude-code",
++		"capture_quality": "lifecycle_only",
++	})
++	if err != nil {
++		return qlogevent.Event{}, fmt.Errorf("encode Claude Code hook payload: %w", err)
++	}
++	return qlogevent.Event{
++		Source:      "claude-code-hook",
++		SessionID:   sessionID,
++		EventType:   eventType,
++		OccurredAt:  time.Now().UTC(),
++		ProjectHint: qlogevent.ProjectHint{CWD: cwd},
++		Payload:     payload,
+ 	}, nil
+ }
+diff --git a/internal/cli/root.go b/internal/cli/root.go
+index f53f32e..eb512b9 100644
+--- a/internal/cli/root.go
++++ b/internal/cli/root.go
+@@ -56,7 +56,7 @@ func New(version Version) *cobra.Command {
+ 	}
+ 	root.PersistentFlags().StringVar(&home, "home", "", "override the local QUANTUM_LOG data directory")
+ 	root.SetVersionTemplate("{{.Version}}\n")
+-	root.AddCommand(newInitCommand(&home), newDoctorCommand(&home), newVerifyCommand(&home), newMaintenanceCommand(&home), newProjectCommand(&home), newIngestCommand(&home), newUsageCommand(&home), newReportCommand(&home), newAllocationCommand(&home), newPricingCommand(&home), newTaskCommand(&home), newExportCommand(&home), newTUICommand(&home), newAdapterCommand(&home), newSetupCommand(), newCollectorCommand(&home), newHookCommand(), newRunCommand(&home), newMCPCommand(&home, version), newUnattributedCommand(&home), newBudgetCommand(&home), newAnchorCommand(&home))
++	root.AddCommand(newInitCommand(&home), newDoctorCommand(&home), newVerifyCommand(&home), newMaintenanceCommand(&home), newProjectCommand(&home), newIngestCommand(&home), newUsageCommand(&home), newReportCommand(&home), newAllocationCommand(&home), newPricingCommand(&home), newTaskCommand(&home), newExportCommand(&home), newTUICommand(&home), newAdapterCommand(&home), newSetupCommand(&home), newCollectorCommand(&home), newHookCommand(&home), newRunCommand(&home), newMCPCommand(&home, version), newUnattributedCommand(&home), newBudgetCommand(&home), newAnchorCommand(&home))
+ 	return root
+ }
+ 
+diff --git a/internal/cli/root_test.go b/internal/cli/root_test.go
+index fe7069a..d6363b0 100644
+--- a/internal/cli/root_test.go
++++ b/internal/cli/root_test.go
+@@ -273,6 +273,17 @@ func runQLog(t *testing.T, home string, args ...string) (string, error) {
+ 	return output.String(), err
+ }
+ 
++func runQLogWithInput(t *testing.T, home string, input io.Reader, args ...string) (string, error) {
++	t.Helper()
++	command := New(Version{Version: "0.1.0", Commit: "test", BuildDate: "2026-07-16"})
++	output := new(bytes.Buffer)
++	command.SetArgs(append([]string{"--home", home}, args...))
++	command.SetIn(input)
++	setOutput(command, output)
++	err := command.Execute()
++	return output.String(), err
++}
++
+ func snapshotTree(t *testing.T, root string) treeSnapshot {
+ 	t.Helper()
+ 	snapshot := treeSnapshot{}
+diff --git a/internal/cli/setup.go b/internal/cli/setup.go
+index bb9abf1..e8de48d 100644
+--- a/internal/cli/setup.go
++++ b/internal/cli/setup.go
+@@ -5,10 +5,11 @@ import (
+ 	"fmt"
+ 
+ 	"github.com/janpereira-dev/quantum_log/internal/adapters"
++	"github.com/janpereira-dev/quantum_log/internal/config"
+ 	"github.com/spf13/cobra"
+ )
+ 
+-func newSetupCommand() *cobra.Command {
++func newSetupCommand(home *string) *cobra.Command {
+ 	registry := adapters.Default()
+ 	var all, yes, dryRun, jsonOutput bool
+ 	command := &cobra.Command{Use: "setup [adapter]", Short: "Set up agent auto-capture integrations", Args: cobra.MaximumNArgs(1), RunE: func(command *cobra.Command, args []string) error {
+@@ -27,6 +28,12 @@ func newSetupCommand() *cobra.Command {
+ 			}
+ 		}
+ 
++		paths, err := config.Resolve(*home)
++		if err != nil {
++			return err
++		}
++		resolvedHome := paths.Home
++
+ 		plans := make([]adapters.SetupPlan, 0, len(items))
+ 		for _, adapter := range items {
+ 			if adapter.Descriptor().ID == "generic-jsonl" {
+@@ -35,13 +42,13 @@ func newSetupCommand() *cobra.Command {
+ 			var plan adapters.SetupPlan
+ 			var err error
+ 			if dryRun || !yes {
+-				plan, err = adapter.PlanInstall(command.Context(), adapters.SetupOptions{DryRun: true, Yes: yes})
++				plan, err = adapter.PlanInstall(command.Context(), adapters.SetupOptions{DryRun: true, Yes: yes, Home: resolvedHome})
+ 			} else {
+-				result, installErr := adapter.Install(command.Context(), adapters.InstallOptions{})
++				result, installErr := adapter.Install(command.Context(), adapters.InstallOptions{Home: resolvedHome})
+ 				if installErr != nil {
+ 					return installErr
+ 				}
+-				plan, err = adapter.PlanInstall(command.Context(), adapters.SetupOptions{Yes: yes})
++				plan, err = adapter.PlanInstall(command.Context(), adapters.SetupOptions{Yes: yes, Home: resolvedHome})
+ 				plan.Changes = installResultChanges(adapter.Descriptor().ID, result)
+ 			}
+ 			if err != nil {
+diff --git a/internal/ingest/qlogevent/handler.go b/internal/ingest/qlogevent/handler.go
+index 636864d..5860c00 100644
+--- a/internal/ingest/qlogevent/handler.go
++++ b/internal/ingest/qlogevent/handler.go
+@@ -38,12 +38,12 @@ func (h Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+ 	}
+ 	request.Body = http.MaxBytesReader(writer, request.Body, maxEventBodyBytes)
+ 	defer func() { _ = request.Body.Close() }()
+-	var event pluginEvent
++	var event Event
+ 	if err := json.NewDecoder(request.Body).Decode(&event); err != nil {
+ 		http.Error(writer, "decode event: "+err.Error(), http.StatusBadRequest)
+ 		return
+ 	}
+-	count, err := h.ingest(request.Context(), event)
++	count, err := Ingest(request.Context(), h.service, event)
+ 	if err != nil {
+ 		http.Error(writer, err.Error(), http.StatusBadRequest)
+ 		return
+@@ -52,8 +52,8 @@ func (h Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+ 	_ = json.NewEncoder(writer).Encode(map[string]int{"accepted": count})
+ }
+ 
+-func (h Handler) ingest(ctx context.Context, event pluginEvent) (int, error) {
+-	resolved, err := h.service.ResolveProject(ctx, event.ProjectHint.Project, "", event.ProjectHint.CWD)
++func Ingest(ctx context.Context, service *app.Service, event Event) (int, error) {
++	resolved, err := service.ResolveProject(ctx, event.ProjectHint.Project, "", event.ProjectHint.CWD)
+ 	if err != nil {
+ 		return 0, err
+ 	}
+@@ -83,14 +83,14 @@ func (h Handler) ingest(ctx context.Context, event pluginEvent) (int, error) {
+ 	if err := json.NewEncoder(&buffer).Encode(line); err != nil {
+ 		return 0, err
+ 	}
+-	count, err := jsonl.Import(ctx, h.service.Store, &buffer)
++	count, err := jsonl.Import(ctx, service.Store, &buffer)
+ 	if err != nil {
+ 		return 0, fmt.Errorf("import plugin event: %w", err)
+ 	}
+ 	return count, nil
+ }
+ 
+-func normalizeCodexRawResponse(event pluginEvent) pluginEvent {
++func normalizeCodexRawResponse(event Event) Event {
+ 	if event.Source != "codex-app-server" || event.EventType != "rawResponse/completed" {
+ 		return event
+ 	}
+@@ -129,16 +129,16 @@ func normalizeCodexRawResponse(event pluginEvent) pluginEvent {
+ 	return event
+ }
+ 
+-type pluginEvent struct {
++type Event struct {
+ 	Source      string          `json:"source"`
+ 	SessionID   string          `json:"session_id"`
+ 	EventType   string          `json:"event_type"`
+ 	OccurredAt  time.Time       `json:"occurred_at"`
+-	ProjectHint projectHint     `json:"project_hint"`
++	ProjectHint ProjectHint     `json:"project_hint"`
+ 	Payload     json.RawMessage `json:"payload"`
+ }
+ 
+-type projectHint struct {
++type ProjectHint struct {
+ 	Project string `json:"project"`
+ 	CWD     string `json:"cwd"`
+ }
+@@ -151,7 +151,7 @@ func sanitizePluginPayload(payload json.RawMessage) json.RawMessage {
+ 	if err := json.Unmarshal(payload, &object); err != nil {
+ 		return json.RawMessage("{}")
+ 	}
+-	for _, key := range []string{"prompt", "response", "arguments", "result", "tool_arguments", "tool_result", "authorization", "api_key", "token"} {
++	for _, key := range []string{"prompt", "response", "content", "arguments", "result", "tool_arguments", "tool_argument", "tool_args", "tool_arg", "tool_result", "tool_results", "authorization", "api_key", "api key", "api_keys", "api keys", "token", "tokens", "secret", "secrets"} {
+ 		delete(object, key)
+ 	}
+ 	next, err := json.Marshal(object)
+diff --git a/internal/ingest/qlogevent/handler_test.go b/internal/ingest/qlogevent/handler_test.go
+index 9c1b4a9..b393d24 100644
+--- a/internal/ingest/qlogevent/handler_test.go
++++ b/internal/ingest/qlogevent/handler_test.go
+@@ -3,14 +3,18 @@ package qlogevent
+ import (
+ 	"bytes"
+ 	"context"
++	"database/sql"
++	"encoding/json"
+ 	"net/http"
+ 	"net/http/httptest"
+ 	"path/filepath"
++	"strings"
+ 	"testing"
+ 	"time"
+ 
+ 	"github.com/janpereira-dev/quantum_log/internal/app"
+ 	storepkg "github.com/janpereira-dev/quantum_log/internal/storage/sqlite"
++	_ "modernc.org/sqlite"
+ )
+ 
+ func TestHandlerImportsPluginModelCallThroughSQLiteReport(t *testing.T) {
+@@ -78,3 +82,53 @@ func TestHandlerMapsCodexRawResponseCompletedUsage(t *testing.T) {
+ 		t.Fatalf("row = %#v", row)
+ 	}
+ }
++
++func TestIngestExportsReusableSanitizedEventImport(t *testing.T) {
++	ctx := context.Background()
++	service, err := app.Initialize(ctx, t.TempDir())
++	if err != nil {
++		t.Fatalf("initialize service: %v", err)
++	}
++	t.Cleanup(func() { _ = service.Close() })
++	repo := filepath.Join(t.TempDir(), "repo")
++	project, _, err := service.Store.RegisterProject(ctx, "Repo", "repo", repo)
++	if err != nil {
++		t.Fatalf("register project: %v", err)
++	}
++	payload := json.RawMessage(`{"agent_name":"claude-code","capture_quality":"lifecycle_only","prompt":"secret prompt","response":"secret response","content":"secret content","tool_args":{"value":"secret"},"tool_results":"secret result","authorization":"bearer secret","tokens":"secret tokens","api keys":"secret key","secrets":"secret"}`)
++	count, err := Ingest(ctx, service, Event{
++		Source:      "claude-code-hook",
++		SessionID:   "session-1",
++		EventType:   "Stop",
++		OccurredAt:  time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC),
++		ProjectHint: ProjectHint{CWD: repo},
++		Payload:     payload,
++	})
++	if err != nil {
++		t.Fatalf("Ingest() error = %v", err)
++	}
++	if count != 1 {
++		t.Fatalf("Ingest() count = %d", count)
++	}
++	var stored string
++	reader, err := sql.Open("sqlite", "file:"+filepath.ToSlash(service.Paths.Database)+"?mode=ro")
++	if err != nil {
++		t.Fatalf("open raw event reader: %v", err)
++	}
++	t.Cleanup(func() { _ = reader.Close() })
++	if err := reader.QueryRowContext(ctx, `SELECT payload_json_sanitized FROM raw_events WHERE source = 'claude-code-hook' AND session_id = 'session-1'`).Scan(&stored); err != nil {
++		t.Fatalf("read raw event: %v", err)
++	}
++	for _, forbidden := range []string{"secret", "prompt", "response", "content", "tool_args", "tool_results", "authorization", "tokens", "api keys", "secrets"} {
++		if strings.Contains(stored, forbidden) {
++			t.Fatalf("payload retained forbidden %q: %s", forbidden, stored)
++		}
++	}
++	report, err := service.Store.Usage(ctx, storepkg.UsageQuery{GroupBy: []string{"project", "agent", "capture_quality"}})
++	if err != nil {
++		t.Fatalf("usage: %v", err)
++	}
++	if len(report.Rows) != 0 || report.TotalTokens != 0 {
++		t.Fatalf("lifecycle event invented usage for %s: %#v", project.Slug, report)
++	}
++}

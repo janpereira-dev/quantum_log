@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -216,31 +217,89 @@ func TestOpenCodeInstallWritesGlobalPluginPostingLocalEvents(t *testing.T) {
 	}
 }
 
-func TestClaudeCodeInstallWritesLifecycleHooks(t *testing.T) {
+func TestClaudeCodeInstallPreservesExistingHooksAndAddsHome(t *testing.T) {
 	configHome := t.TempDir()
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	settingsPath := filepath.Join(configHome, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	existing := map[string]any{
+		"hooks": map[string]any{
+			"Stop":         []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": "user-stop-hook"}}}},
+			"SessionStart": []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": "qlog hook claude-code"}}}},
+		},
+	}
+	writeSettingsMap(t, settingsPath, existing)
 	adapter, found := Default().Get("claude-code")
 	if !found {
 		t.Fatal("claude-code adapter missing")
 	}
-	result, err := adapter.Install(context.Background(), InstallOptions{})
+	qlogHome := filepath.Join(t.TempDir(), "qlog-home")
+	absHome, err := filepath.Abs(qlogHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := adapter.Install(context.Background(), InstallOptions{Home: absHome})
 	if err != nil {
 		t.Fatalf("install claude-code: %v", err)
 	}
 	if !result.Changed {
 		t.Fatalf("install result = %#v", result)
 	}
-	settingsPath := filepath.Join(configHome, ".claude", "settings.json")
-	contents, err := os.ReadFile(settingsPath)
-	if err != nil {
-		t.Fatalf("read settings: %v", err)
+	settings := readSettingsMap(t, settingsPath)
+	hooks, ok := settings["hooks"].(map[string]any)
+	if !ok {
+		t.Fatalf("settings hooks missing: %#v", settings)
 	}
-	text := string(contents)
-	for _, want := range []string{"SessionStart", "UserPromptSubmit", "Stop", "SubagentStop", "qlog hook claude-code"} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("settings missing %q: %s", want, text)
+	for _, event := range []string{"SessionStart", "UserPromptSubmit", "Stop", "SubagentStop"} {
+		if _, ok := hooks[event]; !ok {
+			t.Fatalf("settings missing hook event %q: %#v", event, hooks)
 		}
 	}
+	commands := collectHookCommands(settings)
+	wantCommand := "qlog --home " + strconv.Quote(absHome) + " hook claude-code"
+	for _, want := range []string{"user-stop-hook", wantCommand} {
+		if !containsAdapterString(commands, want) {
+			t.Fatalf("settings commands missing %q: %#v", want, commands)
+		}
+	}
+	if containsAdapterString(commands, "qlog hook claude-code") {
+		t.Fatalf("old qlog hook command was not updated: %#v", commands)
+	}
+}
+
+func collectHookCommands(value any) []string {
+	commands := []string{}
+	appendHookCommands(value, &commands)
+	return commands
+}
+
+func appendHookCommands(value any, commands *[]string) {
+	switch typed := value.(type) {
+	case map[string]any:
+		if hookType, _ := typed["type"].(string); hookType == "command" {
+			if command, _ := typed["command"].(string); command != "" {
+				*commands = append(*commands, command)
+			}
+		}
+		for _, child := range typed {
+			appendHookCommands(child, commands)
+		}
+	case []any:
+		for _, child := range typed {
+			appendHookCommands(child, commands)
+		}
+	}
+}
+
+func containsAdapterString(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
 }
 
 func assertSetting(t *testing.T, settings map[string]any, key string, want any) {

@@ -1,0 +1,20 @@
+id: QL-EVAL-001
+name: agent-session-happy-path
+fixture: fixtures/session-happy-path.json
+steps:
+  - start_session
+  - start_task
+  - model_request
+  - tool_call
+  - ledger_append
+  - close_task
+  - close_session
+assertions:
+  ledger_entries_min: 1
+  session_span_count: 1
+  task_span_count: 1
+  model_span_count: 1
+  tool_span_count: 1
+  ledger_correlation: true
+  sensitive_content_exported: false
+  usage_quality_present: true

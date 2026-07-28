@@ -5,10 +5,11 @@ import (
 	"fmt"
 
 	"github.com/janpereira-dev/quantum_log/internal/adapters"
+	"github.com/janpereira-dev/quantum_log/internal/config"
 	"github.com/spf13/cobra"
 )
 
-func newSetupCommand() *cobra.Command {
+func newSetupCommand(home *string) *cobra.Command {
 	registry := adapters.Default()
 	var all, yes, dryRun, jsonOutput bool
 	command := &cobra.Command{Use: "setup [adapter]", Short: "Set up agent auto-capture integrations", Args: cobra.MaximumNArgs(1), RunE: func(command *cobra.Command, args []string) error {
@@ -27,6 +28,12 @@ func newSetupCommand() *cobra.Command {
 			}
 		}
 
+		paths, err := config.Resolve(*home)
+		if err != nil {
+			return err
+		}
+		resolvedHome := paths.Home
+
 		plans := make([]adapters.SetupPlan, 0, len(items))
 		for _, adapter := range items {
 			if adapter.Descriptor().ID == "generic-jsonl" {
@@ -35,13 +42,13 @@ func newSetupCommand() *cobra.Command {
 			var plan adapters.SetupPlan
 			var err error
 			if dryRun || !yes {
-				plan, err = adapter.PlanInstall(command.Context(), adapters.SetupOptions{DryRun: true, Yes: yes})
+				plan, err = adapter.PlanInstall(command.Context(), adapters.SetupOptions{DryRun: true, Yes: yes, Home: resolvedHome})
 			} else {
-				result, installErr := adapter.Install(command.Context(), adapters.InstallOptions{})
+				result, installErr := adapter.Install(command.Context(), adapters.InstallOptions{Home: resolvedHome})
 				if installErr != nil {
 					return installErr
 				}
-				plan, err = adapter.PlanInstall(command.Context(), adapters.SetupOptions{Yes: yes})
+				plan, err = adapter.PlanInstall(command.Context(), adapters.SetupOptions{Yes: yes, Home: resolvedHome})
 				plan.Changes = installResultChanges(adapter.Descriptor().ID, result)
 			}
 			if err != nil {

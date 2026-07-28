@@ -1,0 +1,18 @@
+id: QL-GR-009
+name: production-readiness
+severity: blocking
+scope: [release]
+required_gates:
+  - ledger-integrity
+  - telemetry-privacy
+  - cardinality-budget
+  - context-propagation
+  - collector-optional
+  - cost-accounting-truthfulness
+  - low-overhead
+  - semantic-conventions-governance
+rules:
+  - "No se libera captura de contenido habilitada por defecto."
+  - "Existe rollback/configuración para desactivar OTel sin recompilar."
+  - "Los evals aplicables están verdes."
+  - "Los hallazgos bloqueantes tienen evidencia de corrección."

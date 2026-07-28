@@ -1,0 +1,22 @@
+{
+  "session_id": "ses_test_001",
+  "task_id": "task_test_001",
+  "operation_id": "op_test_001",
+  "agent": {
+    "name": "codex",
+    "version": "test"
+  },
+  "model": {
+    "provider": "openai",
+    "name": "test-model"
+  },
+  "usage": {
+    "input_tokens": 100,
+    "output_tokens": 25,
+    "quality": "reported"
+  },
+  "content": {
+    "prompt_captured": false,
+    "response_captured": false
+  }
+}

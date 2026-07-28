@@ -273,6 +273,17 @@ func runQLog(t *testing.T, home string, args ...string) (string, error) {
 	return output.String(), err
 }
 
+func runQLogWithInput(t *testing.T, home string, input io.Reader, args ...string) (string, error) {
+	t.Helper()
+	command := New(Version{Version: "0.1.0", Commit: "test", BuildDate: "2026-07-16"})
+	output := new(bytes.Buffer)
+	command.SetArgs(append([]string{"--home", home}, args...))
+	command.SetIn(input)
+	setOutput(command, output)
+	err := command.Execute()
+	return output.String(), err
+}
+
 func snapshotTree(t *testing.T, root string) treeSnapshot {
 	t.Helper()
 	snapshot := treeSnapshot{}

@@ -1,0 +1,7 @@
+{
+  "authorization": "Bearer sk-proj-secret-example",
+  "email": "jan@example.com",
+  "path": "C:\\Users\\jan\\private-project",
+  "prompt": "do not export me",
+  "response": "secret response"
+}

@@ -244,15 +244,20 @@ func TestCollectorStatusShowsLocalEndpoints(t *testing.T) {
 		err := command.Execute()
 		return output.String(), err
 	}
-	output, err := run("collector", "status", "--json")
+	output, err := run("collector", "status", "--json", "--listen", "127.0.0.1:1")
 	if err != nil {
 		t.Fatalf("collector status: %v", err)
 	}
 	var status struct {
 		Listen    string   `json:"listen"`
+		Home      string   `json:"home"`
+		Database  string   `json:"database"`
 		Endpoints []string `json:"endpoints"`
+		Reachable bool     `json:"reachable"`
+		Running   bool     `json:"running"`
+		Health    string   `json:"health"`
 	}
-	if err := json.Unmarshal([]byte(output), &status); err != nil || status.Listen != "127.0.0.1:4318" || len(status.Endpoints) != 2 {
+	if err := json.Unmarshal([]byte(output), &status); err != nil || status.Listen != "127.0.0.1:1" || len(status.Endpoints) != 3 || !containsString(status.Endpoints, "/healthz") || status.Home == "" || status.Database == "" || status.Reachable || status.Running || status.Health == "" {
 		t.Fatalf("collector status output = %q, %#v, %v", output, status, err)
 	}
 }
@@ -302,6 +307,42 @@ func TestHookClaudeCodePostsLifecycleEvent(t *testing.T) {
 	}
 	if !bytes.Contains(received, []byte(`"source":"claude-code-hook"`)) || !bytes.Contains(received, []byte(`"capture_quality":"lifecycle_only"`)) || bytes.Contains(received, []byte("transcript_path")) {
 		t.Fatalf("posted body = %s", received)
+	}
+}
+
+func TestHookClaudeCodeIngestsDirectlyByDefault(t *testing.T) {
+	home := t.TempDir()
+	worktree := filepath.Join(t.TempDir(), "project")
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, err := runQLog(t, home, "project", "register", "--path", worktree, "--name", "Project", "--slug", "project"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	output, err := runQLogWithInput(t, home, strings.NewReader(`{"session_id":"session-1","hook_event_name":"Stop","cwd":"`+filepath.ToSlash(worktree)+`","prompt":"must-not-store","transcript_path":"must-not-store"}`), "hook", "claude-code")
+	if err != nil {
+		t.Fatalf("hook claude-code: %v output=%q", err, output)
+	}
+	if !strings.Contains(output, "hook: ingested") {
+		t.Fatalf("hook output = %q", output)
+	}
+	verify, err := runQLog(t, home, "verify")
+	if err != nil {
+		t.Fatalf("verify after hook ingest: %v output=%q", err, verify)
+	}
+	report, err := runQLog(t, home, "report", "usage", "--group-by", "project,agent,capture_quality", "--json")
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	var usage struct {
+		Rows        []any `json:"rows"`
+		TotalTokens int64 `json:"total_tokens"`
+	}
+	if err := json.Unmarshal([]byte(report), &usage); err != nil {
+		t.Fatalf("decode usage = %s: %v", report, err)
+	}
+	if len(usage.Rows) != 0 || usage.TotalTokens != 0 {
+		t.Fatalf("Claude lifecycle event invented usage: %s", report)
 	}
 }
 
@@ -459,4 +500,13 @@ func TestSetupAppliedJSONPreservesPathAndBackup(t *testing.T) {
 	if change.Path != pluginPath || change.BackupPath == "" || change.Action != "updated" {
 		t.Fatalf("applied change = %#v", change)
 	}
+}
+
+func containsString(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
 }

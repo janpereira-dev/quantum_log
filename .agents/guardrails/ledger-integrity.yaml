@@ -1,0 +1,15 @@
+id: QL-GR-001
+name: ledger-integrity
+severity: blocking
+scope: [ledger, storage, adapters, telemetry]
+rules:
+  - id: append-only
+    assertion: "Las entradas confirmadas no se actualizan ni eliminan físicamente."
+    remediation: "Crear correction, reversal o tombstone enlazado."
+  - id: idempotency
+    assertion: "Toda operación capturada dispone de operation_id y control de duplicados."
+  - id: telemetry-independence
+    assertion: "Un fallo de OTel/Collector no revierte ni impide el commit del ledger."
+  - id: integrity-chain
+    assertion: "Las mutaciones compensatorias participan en la cadena de integridad."
+evidence_required: [unit_tests, integration_tests, corruption_test, exporter_offline_test]

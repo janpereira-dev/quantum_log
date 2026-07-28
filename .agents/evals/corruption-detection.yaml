@@ -1,0 +1,11 @@
+id: QL-EVAL-007
+name: ledger-corruption-detection
+steps:
+  - create_three_entries
+  - modify_second_entry_out_of_band
+  - run_integrity_verification
+assertions:
+  corruption_detected: true
+  first_invalid_entry_identified: true
+  original_data_not_auto_rewritten: true
+  security_event_emitted: true

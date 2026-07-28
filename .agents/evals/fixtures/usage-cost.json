@@ -1,0 +1,26 @@
+{
+  "operations": [
+    {
+      "input_tokens": 1000,
+      "output_tokens": 200,
+      "cost": "0.012300",
+      "quality": "reported"
+    },
+    {
+      "input_tokens": 500,
+      "output_tokens": 100,
+      "cost": "0.006150",
+      "quality": "estimated",
+      "pricing_version": "fixture-v1"
+    }
+  ],
+  "task_total": "0.018450",
+  "session_total": "0.018450",
+  "currency": "USD",
+  "conversion": {
+    "to": "EUR",
+    "rate": "0.920000",
+    "source": "fixture",
+    "timestamp": "2026-07-21T00:00:00Z"
+  }
+}

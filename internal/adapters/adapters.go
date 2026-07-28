@@ -45,6 +45,7 @@ type Detection struct {
 
 type InstallOptions struct {
 	DryRun bool
+	Home   string
 }
 
 type InstallResult struct {

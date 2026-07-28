@@ -1,0 +1,48 @@
+version: 1.0.0
+resource:
+  required:
+    - service.name
+    - service.version
+    - service.instance.id
+    - deployment.environment.name
+spans:
+  quantum_log.session:
+    kind: INTERNAL
+    required_attributes:
+      - quantum_log.session.id
+      - quantum_log.agent.name
+  quantum_log.task:
+    kind: INTERNAL
+    required_attributes:
+      - quantum_log.task.id
+      - quantum_log.session.id
+  quantum_log.ledger.append:
+    kind: INTERNAL
+    required_attributes:
+      - quantum_log.operation.id
+    post_commit_attributes:
+      - quantum_log.ledger.entry.id
+metrics:
+  quantum_log.operations:
+    instrument: Counter
+    unit: "{operation}"
+    allowed_attributes: [operation.type, result, agent.name]
+  quantum_log.operation.duration:
+    instrument: Histogram
+    unit: s
+    allowed_attributes: [operation.type, result, agent.name]
+  quantum_log.ledger.append.duration:
+    instrument: Histogram
+    unit: s
+    allowed_attributes: [result, storage.engine]
+  quantum_log.telemetry.queue.size:
+    instrument: UpDownCounter
+    unit: "{item}"
+    allowed_attributes: [signal]
+  quantum_log.tokens:
+    instrument: Counter
+    unit: "{token}"
+    allowed_attributes: [token.type, data.quality, provider, model.family]
+content_capture:
+  default: deny
+  opt_in_requires: [explicit_user_setting, expiry, local_indicator, audit_event]

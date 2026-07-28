@@ -34,6 +34,7 @@ const (
 type SetupOptions struct {
 	DryRun bool
 	Yes    bool
+	Home   string
 }
 
 type SetupChange struct {
