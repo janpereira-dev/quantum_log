@@ -26,7 +26,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - `./qlog adapter status --json`
   - `./qlog adapter test opencode`
 - MCP server: `./qlog mcp stdio`
-- Release dry run: `goreleaser snapshot --clean` (maintainers only; see `docs/releases/distribution.md`)
+- Release dry run: `goreleaser snapshot --clean` (maintainers only; see `docs-int/releases/distribution.md`)
 
 ## Architecture
 
@@ -50,7 +50,7 @@ Key boundaries:
 - `internal/tui/` is the Bubble Tea terminal UI and uses the same query services as CLI reports.
 - `internal/mcpserver/` exposes stdio MCP tools for agent integration.
 - `fixtures/` are explicit test data only, not real activity.
-- `docs/verification/` contains milestone acceptance evidence; do not mark a milestone `VERIFIED` without full PASS evidence there.
+- `docs-int/verification/` contains milestone acceptance evidence; do not mark a milestone `VERIFIED` without full PASS evidence there.
 
 ## Storage and privacy constraints
 

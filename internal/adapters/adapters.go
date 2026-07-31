@@ -35,6 +35,7 @@ type Descriptor struct {
 	ID           string       `json:"id"`
 	Name         string       `json:"name"`
 	Version      string       `json:"version"`
+	Stable       bool         `json:"stable"`
 	Capabilities Capabilities `json:"capabilities"`
 }
 
@@ -116,6 +117,17 @@ func (r *Registry) List() []Adapter {
 		items = append(items, r.adapters[id])
 	}
 	return items
+}
+
+// Stable returns M4 adapters supported by default setup and verification flows.
+func (r *Registry) Stable() []Adapter {
+	stable := make([]Adapter, 0, 4)
+	for _, adapter := range r.List() {
+		if adapter.Descriptor().Stable {
+			stable = append(stable, adapter)
+		}
+	}
+	return stable
 }
 
 func Default() *Registry {

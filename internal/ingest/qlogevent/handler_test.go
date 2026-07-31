@@ -17,7 +17,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-func TestHandlerImportsPluginModelCallThroughSQLiteReport(t *testing.T) {
+func TestHandlerKeepsOpenCodePluginEventsLifecycleOnly(t *testing.T) {
 	ctx := context.Background()
 	service, err := app.Initialize(ctx, t.TempDir())
 	if err != nil {
@@ -45,7 +45,7 @@ func TestHandlerImportsPluginModelCallThroughSQLiteReport(t *testing.T) {
 		t.Fatalf("rows = %#v", report.Rows)
 	}
 	row := report.Rows[0]
-	if row.ProjectSlug != project.Slug || row.AgentName != "opencode" || row.TotalTokens != 68 || row.CaptureQuality != "agent_reported" {
+	if row.ProjectSlug != project.Slug || row.AgentName != "opencode" || row.TotalTokens != 0 || row.CaptureQuality != "lifecycle_only" {
 		t.Fatalf("row = %#v", row)
 	}
 }
@@ -130,5 +130,19 @@ func TestIngestExportsReusableSanitizedEventImport(t *testing.T) {
 	}
 	if len(report.Rows) != 0 || report.TotalTokens != 0 {
 		t.Fatalf("lifecycle event invented usage for %s: %#v", project.Slug, report)
+	}
+}
+
+func TestPluginPayloadAllowlistDropsRemoteURLAndTranscript(t *testing.T) {
+	got := sanitizePluginPayload(json.RawMessage(`{"provider":"x","model":"y","remote_url":"https://user:password@example.test","transcript_path":"private","input_tokens":1}`))
+	if bytes.Contains(got, []byte("remote_url")) || bytes.Contains(got, []byte("transcript_path")) {
+		t.Fatalf("payload = %s", got)
+	}
+}
+
+func TestPluginPayloadDropsNegativeUsageCounters(t *testing.T) {
+	got := sanitizePluginPayload(json.RawMessage(`{"agent_name":"opencode","input_tokens":-1,"output_tokens":2,"capture_quality":"agent_reported"}`))
+	if bytes.Contains(got, []byte("input_tokens")) {
+		t.Fatalf("payload retained negative usage = %s", got)
 	}
 }

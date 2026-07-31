@@ -2,9 +2,12 @@ package cli
 
 import (
 	"context"
+	"encoding/xml"
 	"fmt"
 	"net"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,26 +25,24 @@ func newCollectorCommand(home *string) *cobra.Command {
 	var listen string
 	var allowNonLoopback bool
 	var jsonOutput bool
-	status := &cobra.Command{Use: "status", Short: "Show local collector endpoints", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+	status := &cobra.Command{Use: "status", Short: "Show managed collector status", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
 		paths, err := config.Resolve(*home)
 		if err != nil {
 			return err
 		}
-		health := probeCollectorHealth(command.Context(), listen)
-		output := map[string]any{
-			"listen":    listen,
-			"home":      paths.Home,
-			"database":  paths.Database,
-			"endpoints": []string{"/v1/traces", "/v1/events", "/healthz"},
-			"scope":     "loopback-only by default",
-			"reachable": health.Reachable,
-			"running":   health.Running,
-			"health":    health.Health,
+		output, err := newCollectorManager().Status(command.Context(), listen)
+		if err != nil {
+			return err
 		}
+		output.Home = paths.Home
+		output.Database = paths.Database
+		output.Endpoints = []string{"/v1/traces", "/v1/events", "/healthz"}
+		output.Scope = "loopback-only by default"
+		output.Health = output.Message
 		if jsonOutput {
 			return writeJSON(command.Root().OutOrStdout(), output)
 		}
-		_, err = fmt.Fprintf(command.Root().OutOrStdout(), "collector: http://%s (/v1/traces OTLP JSON/protobuf, /v1/events qlog JSON, /healthz health) reachable=%t health=%s\n", listen, health.Reachable, health.Health)
+		_, err = fmt.Fprintf(command.Root().OutOrStdout(), "collector: service=%s installed=%t running=%t reachable=%t listen=%s health=%s\n", output.ServiceID, output.Installed, output.Running, output.Reachable, output.Listen, output.Message)
 		return err
 	}}
 	status.Flags().StringVar(&listen, "listen", "127.0.0.1:4318", "OTLP/HTTP listen address")
@@ -69,18 +70,18 @@ func newCollectorCommand(home *string) *cobra.Command {
 	collector.AddCommand(
 		status,
 		serve,
-		collectorLifecycleCommand("install", "Install managed collector", func(manager collectorManager, home, listen string) (string, error) {
+		collectorLifecycleCommand("install", "Install managed collector", func(manager collectorManager, home, listen string) (CollectorStatus, error) {
 			return manager.Install(home, listen)
 		}, home, &listen),
-		collectorLifecycleCommand("start", "Start managed collector", func(manager collectorManager, home, listen string) (string, error) {
+		collectorLifecycleCommand("start", "Start managed collector", func(manager collectorManager, home, listen string) (CollectorStatus, error) {
 			return manager.Start(home, listen)
 		}, home, &listen),
-		collectorLifecycleCommand("stop", "Stop managed collector", func(manager collectorManager, _, _ string) (string, error) { return manager.Stop() }, home, &listen),
-		collectorLifecycleCommand("restart", "Restart managed collector", func(manager collectorManager, home, listen string) (string, error) {
+		collectorLifecycleCommand("stop", "Stop managed collector", func(manager collectorManager, _, _ string) (CollectorStatus, error) { return manager.Stop() }, home, &listen),
+		collectorLifecycleCommand("restart", "Restart managed collector", func(manager collectorManager, home, listen string) (CollectorStatus, error) {
 			return manager.Restart(home, listen)
 		}, home, &listen),
-		collectorLifecycleCommand("logs", "Show managed collector logs", func(manager collectorManager, _, _ string) (string, error) { return manager.Logs() }, home, &listen),
-		collectorLifecycleCommand("uninstall", "Uninstall managed collector", func(manager collectorManager, _, _ string) (string, error) { return manager.Uninstall() }, home, &listen),
+		collectorLogsCommand(),
+		collectorLifecycleCommand("uninstall", "Uninstall managed collector", func(manager collectorManager, _, _ string) (CollectorStatus, error) { return manager.Uninstall() }, home, &listen),
 	)
 	return collector
 }
@@ -108,6 +109,23 @@ type collectorHealth struct {
 	Reachable bool
 	Running   bool
 	Health    string
+}
+
+// CollectorStatus separates persistent-service state from collector health.
+type CollectorStatus struct {
+	Installed bool     `json:"installed"`
+	Running   bool     `json:"running"`
+	Reachable bool     `json:"reachable"`
+	Listen    string   `json:"listen"`
+	ServiceID string   `json:"service_id"`
+	StatePath string   `json:"state_path"`
+	LogPath   string   `json:"log_path"`
+	Message   string   `json:"message"`
+	Health    string   `json:"health,omitempty"`
+	Home      string   `json:"home,omitempty"`
+	Database  string   `json:"database,omitempty"`
+	Endpoints []string `json:"endpoints,omitempty"`
+	Scope     string   `json:"scope,omitempty"`
 }
 
 func probeCollectorHealth(ctx context.Context, listen string) collectorHealth {
@@ -147,21 +165,40 @@ func (h requestScopedHandler) ServeHTTP(writer http.ResponseWriter, request *htt
 }
 
 type collectorManager interface {
-	Install(home, listen string) (string, error)
-	Start(home, listen string) (string, error)
-	Stop() (string, error)
-	Restart(home, listen string) (string, error)
+	Install(home, listen string) (CollectorStatus, error)
+	Start(home, listen string) (CollectorStatus, error)
+	Stop() (CollectorStatus, error)
+	Restart(home, listen string) (CollectorStatus, error)
+	Status(ctx context.Context, listen string) (CollectorStatus, error)
 	Logs() (string, error)
-	Uninstall() (string, error)
+	Uninstall() (CollectorStatus, error)
 }
 
-func collectorLifecycleCommand(name, short string, run func(collectorManager, string, string) (string, error), home *string, listen *string) *cobra.Command {
-	return &cobra.Command{Use: name, Short: short, Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
-		message, err := run(newCollectorManager(), *home, *listen)
+func collectorLifecycleCommand(name, short string, run func(collectorManager, string, string) (CollectorStatus, error), home *string, listen *string) *cobra.Command {
+	var jsonOutput bool
+	command := &cobra.Command{Use: name, Short: short, Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+		status, err := run(newCollectorManager(), *home, *listen)
 		if err != nil {
 			return err
 		}
-		_, err = fmt.Fprintln(command.Root().OutOrStdout(), message)
+		if jsonOutput {
+			return writeJSON(command.Root().OutOrStdout(), status)
+		}
+		_, err = fmt.Fprintln(command.Root().OutOrStdout(), status.Message)
+		return err
+	}}
+	command.Flags().StringVar(listen, "listen", defaultCollectorListen, "OTLP/HTTP listen address")
+	command.Flags().BoolVar(&jsonOutput, "json", false, "output JSON")
+	return command
+}
+
+func collectorLogsCommand() *cobra.Command {
+	return &cobra.Command{Use: "logs", Short: "Show managed collector logs", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+		logs, err := newCollectorManager().Logs()
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprint(command.Root().OutOrStdout(), logs)
 		return err
 	}}
 }
@@ -179,4 +216,51 @@ func validateListenAddress(address string, allowNonLoopback bool) error {
 		return fmt.Errorf("refusing non-loopback listener %q without --allow-non-loopback", address)
 	}
 	return nil
+}
+
+func validateCollectorListen(listen string) error {
+	return validateListenAddress(listen, false)
+}
+
+func windowsCollectorTaskDefinition(executable, home, listen string) string {
+	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><Triggers><LogonTrigger><Enabled>true</Enabled></LogonTrigger></Triggers><Principals><Principal id="Author"><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><StartWhenAvailable>true</StartWhenAvailable></Settings><Actions Context="Author"><Exec><Command>%s</Command><Arguments>--home &quot;%s&quot; collector serve --listen %s</Arguments></Exec></Actions></Task>`, xmlEscape(executable), xmlEscape(home), xmlEscape(listen))
+}
+
+func darwinCollectorLaunchAgentDefinition(executable, home, listen string) string {
+	logPath := collectorLogPathForHome(home)
+	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>Label</key><string>dev.quantum-log.collector</string><key>ProgramArguments</key><array><string>%s</string><string>--home</string><string>%s</string><string>collector</string><string>serve</string><string>--listen</string><string>%s</string></array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardOutPath</key><string>%s</string><key>StandardErrorPath</key><string>%s</string></dict></plist>`, xmlEscape(executable), xmlEscape(home), xmlEscape(listen), xmlEscape(logPath), xmlEscape(logPath))
+}
+
+func linuxCollectorUnitDefinition(executable, home, listen string) string {
+	return fmt.Sprintf("[Unit]\nDescription=QUANTUM_LOG Collector\n\n[Service]\nExecStart=%s --home %s collector serve --listen %s\nRestart=on-failure\nStandardOutput=append:%s\nStandardError=append:%s\n\n[Install]\nWantedBy=default.target\n", systemdQuote(executable), systemdQuote(home), systemdQuote(listen), systemdQuote(collectorLogPathForHome(home)), systemdQuote(collectorLogPathForHome(home)))
+}
+
+func collectorLogPathForHome(home string) string {
+	return strings.TrimRight(home, "/\\") + "/collector/collector.log"
+}
+
+func xmlEscape(value string) string {
+	var escaped strings.Builder
+	_ = xml.EscapeText(&escaped, []byte(value))
+	return escaped.String()
+}
+
+func systemdQuote(value string) string {
+	return `"` + strings.ReplaceAll(value, `"`, `\"`) + `"`
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func readCollectorHome(path string) string {
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(contents))
 }

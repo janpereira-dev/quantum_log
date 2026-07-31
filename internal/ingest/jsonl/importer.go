@@ -14,6 +14,7 @@ import (
 )
 
 type event struct {
+	IngestionIdentity    string          `json:"upstream_event_id"`
 	Source               string          `json:"source"`
 	SessionID            string          `json:"session_id"`
 	EventType            string          `json:"event_type"`
@@ -78,10 +79,14 @@ func importWithTrust(ctx context.Context, store *storepkg.Store, reader io.Reade
 		if parsed.EvidenceJSON != nil {
 			evidence = string(parsed.EvidenceJSON)
 		}
-		if _, err := store.AppendRawEvent(ctx, storepkg.RawEventInput{Source: parsed.Source, SessionID: parsed.SessionID, EventType: parsed.EventType, Payload: parsed.Payload, OccurredAt: parsed.OccurredAt, ProjectID: parsed.ProjectID, ProjectLocationID: parsed.ProjectLocationID, WorkContextID: parsed.WorkContextID, ResolutionMethod: parsed.ResolutionMethod, ResolutionConfidence: parsed.ResolutionConfidence, EvidenceJSON: evidence}); err != nil {
+		appendResult, err := store.AppendRawEvent(ctx, storepkg.RawEventInput{IngestionIdentity: parsed.IngestionIdentity, Source: parsed.Source, SessionID: parsed.SessionID, EventType: parsed.EventType, Payload: parsed.Payload, OccurredAt: parsed.OccurredAt, ProjectID: parsed.ProjectID, ProjectLocationID: parsed.ProjectLocationID, WorkContextID: parsed.WorkContextID, ResolutionMethod: parsed.ResolutionMethod, ResolutionConfidence: parsed.ResolutionConfidence, EvidenceJSON: evidence})
+		if err != nil {
 			return count, fmt.Errorf("import NDJSON line %d: %w", line, err)
 		}
-		if err := normalizeModelCall(ctx, store, parsed); err != nil {
+		if !appendResult.Accepted {
+			continue
+		}
+		if err := normalizeModelCall(ctx, store, parsed, appendResult.ID); err != nil {
 			return count, fmt.Errorf("normalize NDJSON line %d: %w", line, err)
 		}
 		count++
@@ -92,7 +97,7 @@ func importWithTrust(ctx context.Context, store *storepkg.Store, reader io.Reade
 	return count, nil
 }
 
-func normalizeModelCall(ctx context.Context, store *storepkg.Store, parsed event) error {
+func normalizeModelCall(ctx context.Context, store *storepkg.Store, parsed event, rawEventID string) error {
 	eventType := strings.ReplaceAll(strings.ToLower(parsed.EventType), "_", ".")
 	if eventType != "model.call" {
 		return nil
@@ -111,6 +116,7 @@ func normalizeModelCall(ctx context.Context, store *storepkg.Store, parsed event
 		return err
 	}
 	_, err := store.RecordModelCall(ctx, storepkg.ModelCallInput{
+		RawEventID:             rawEventID,
 		ProjectID:              parsed.ProjectID,
 		ProjectLocationID:      parsed.ProjectLocationID,
 		WorkContextID:          parsed.WorkContextID,

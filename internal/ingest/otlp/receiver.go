@@ -133,26 +133,34 @@ func (r Receiver) event(ctx context.Context, resource, span map[string]string, i
 		occurredAt = time.Now().UTC()
 	}
 	payload := map[string]any{
-		"provider":            provider,
-		"model":               model,
-		"agent_name":          first(span, resource, "gen_ai.agent.name", "service.name"),
-		"input_tokens":        number(span, "gen_ai.usage.input_tokens", "gen_ai.usage.prompt_tokens"),
-		"output_tokens":       number(span, "gen_ai.usage.output_tokens", "gen_ai.usage.completion_tokens"),
-		"reasoning_tokens":    number(span, "gen_ai.usage.reasoning.output_tokens", "gen_ai.usage.reasoning_tokens"),
-		"cached_input_tokens": number(span, "gen_ai.usage.cache_read.input_tokens"),
-		"cache_write_tokens":  number(span, "gen_ai.usage.cache_creation.input_tokens"),
-		"capture_quality":     "otel_reported",
-		"working_directory":   resolved.CWD,
-		"git_root":            first(span, resource, "qlog.git.root"),
-		"git_branch":          first(span, resource, "github.copilot.git.branch", "copilot_chat.repo.head_branch_name", "vcs.ref.head.name"),
-		"git_commit":          first(span, resource, "github.copilot.git.commit_sha", "copilot_chat.repo.head_commit_hash", "vcs.ref.head.revision"),
-		"workspace":           first(span, resource, "qlog.workspace"),
+		"provider":        provider,
+		"model":           model,
+		"agent_name":      first(span, resource, "gen_ai.agent.name", "service.name"),
+		"capture_quality": "otel_reported",
+	}
+	if isCopilotTelemetry(payload["agent_name"].(string)) {
+		payload["capture_quality"] = "lifecycle_only"
+	} else {
+		for _, item := range []struct {
+			name  string
+			value int64
+		}{
+			{"input_tokens", number(span, "gen_ai.usage.input_tokens", "gen_ai.usage.prompt_tokens")},
+			{"output_tokens", number(span, "gen_ai.usage.output_tokens", "gen_ai.usage.completion_tokens")},
+			{"reasoning_tokens", number(span, "gen_ai.usage.reasoning.output_tokens", "gen_ai.usage.reasoning_tokens")},
+			{"cached_input_tokens", number(span, "gen_ai.usage.cache_read.input_tokens")},
+			{"cache_write_tokens", number(span, "gen_ai.usage.cache_creation.input_tokens")},
+		} {
+			if item.value >= 0 {
+				payload[item.name] = item.value
+			}
+		}
 	}
 	sessionID := first(span, resource, "session.id", "gen_ai.conversation.id")
 	if sessionID == "" {
 		sessionID = input.TraceID
 	}
-	return map[string]any{
+	line := map[string]any{
 		"source":                        "otlp-http",
 		"session_id":                    sessionID,
 		"event_type":                    eventType,
@@ -163,7 +171,15 @@ func (r Receiver) event(ctx context.Context, resource, span map[string]string, i
 		"project_resolution_confidence": string(resolved.Resolution.Confidence),
 		"project_resolution_evidence":   map[string]string{"source": "central-project-resolver"},
 		"payload":                       payload,
-	}, nil
+	}
+	if input.TraceID != "" {
+		line["upstream_event_id"] = input.TraceID
+	}
+	return line, nil
+}
+
+func isCopilotTelemetry(agentName string) bool {
+	return strings.Contains(strings.ToLower(agentName), "copilot")
 }
 
 type exportTraceServiceRequest struct {

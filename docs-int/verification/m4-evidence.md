@@ -1,15 +1,69 @@
 # M4 Evidence
 
-M4 is `IN_PROGRESS` until this file records real Copilot-originated OTLP data flowing into SQLite and `qlog usage project`.
+M4 is `IN_PROGRESS`. Synthetic tests and local setup state do not prove real-agent capture.
+
+## Stable Scope And Source-Evidence Gates
+
+M4 stable auto-capture scope is exactly `claude-code`, `codex`, `copilot-vscode`, and `opencode`. Generic JSONL import is retained for manual import, not presented as M4 auto-capture. Do not change an adapter to a reported capture quality until every source-evidence cell is independently reviewed and clean-device real-agent acceptance is recorded.
+
+| Adapter | Target OS | Supported source version | Official source URL | Documented configuration key/hook | Emitted identity | Token fields | Privacy setting | Available quality | Release evidence |
+|---|---|---|---|---|---|---|---|---|---|
+| claude-code | Windows, macOS, Linux | not recorded | not recorded | qlog-managed lifecycle hooks | lifecycle event | none | qlog hook sanitization | `lifecycle_only` | IN_PROGRESS: no clean-device real-agent evidence |
+| codex | Windows, macOS, Linux | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | `unavailable` | IN_PROGRESS: no forwarding source evidence |
+| copilot-vscode | Windows, macOS, Linux | not recorded | not recorded | not recorded | not recorded | not recorded | content capture disabled in qlog-managed settings | `unavailable` | IN_PROGRESS: no Copilot source or real-agent evidence |
+| opencode | Windows, macOS, Linux | not recorded | not recorded | qlog-managed plugin lifecycle events | session identifier when supplied | not recorded | plugin allowlist excludes prompt, response, and tool content | `lifecycle_only` | IN_PROGRESS: no documented usage schema or clean-device real-agent evidence |
+
+Codex, Copilot, and OpenCode token capture remain unavailable. No documentation row above authorizes a reported token quality.
 
 ## Current State
 
 | Adapter | State | Evidence |
 |---|---|---|
-| copilot-vscode | CAPTURE_EXPERIMENTAL | Setup exists. OTLP receiver tests are synthetic until a real Copilot run is recorded below. |
-| opencode | CAPTURE_EXPERIMENTAL | Plugin path exists; real usage depends on payload usage fields. |
-| codex | CAPTURE_EXPERIMENTAL | `rawResponse/completed` path exists; real usage depends on non-null usage. |
+| copilot-vscode | UNAVAILABLE | No independently reviewed official VS Code Copilot OTLP source and version are recorded. |
+| opencode | LIFECYCLE_ONLY | Plugin records lifecycle/tool events only; token field names have not been source-verified. |
+| codex | UNAVAILABLE | No documented collector-forwarding integration is recorded. |
 | claude-code | LIFECYCLE_ONLY | Lifecycle hooks exist; token capture is not claimed. |
+
+Adapter verification is fail-closed. `qlog adapter verify <adapter> --project <slug> --json` emits its stage result and exits non-zero while any required setup, availability, collector, capture-quality, source-evidence, or fresh durable-evidence stage fails. Reported-token quality additionally requires a linked normalized model call with source-reported tokens. Source-evidence gates above therefore keep Codex, Copilot VS Code, and OpenCode unverified.
+
+Reports retain measurement quality. `lifecycle_only` evidence has no model-call or token counters; `unavailable` is not fabricated usage; reported qualities require source counters; and estimated cost remains labelled `estimated_cost_*`. Use `qlog report usage --json`, `qlog usage project <slug> --json`, and `qlog session summary <session-id> --json` to inspect persisted evidence.
+
+Replays are suppressed by durable sanitized ingestion identity before raw-event append and model-call normalization. Acceptance requires no increase to raw-event, model-call, token, or estimated-cost totals. Current qlog JSON event responses expose accepted count only, so record the report outputs and durable IDs when proving a replay result.
+
+## Clean-Device Acceptance Protocol
+
+Do not mark M4 released or VERIFIED without a completed record for every source-evidence-complete matrix row on its supported OS/device combination. Synthetic tests, setup files, collector health, and manually injected events never satisfy this gate.
+
+Record each acceptance run with:
+
+- Device OS/version/architecture
+- qlog version/hash
+- Agent version and official source URL
+- Installer consent transcript or manual bootstrap record
+- `qlog collector status --json` output
+- Sanitized raw-event ID and model-call ID when applicable
+- `qlog adapter verify --json` output and exit code before and after replay
+- `qlog report usage --json` or `qlog usage project <slug> --json` output
+- Replay result
+- Privacy inspection result
+
+Run this sequence in a clean project and isolated qlog home:
+
+```text
+qlog init
+qlog project register --path <clean-project> --name <name>
+<consented installer bootstrap or qlog setup --yes>
+qlog collector status --json
+<one real-agent action>
+qlog adapter verify <adapter> --project <slug> --json
+qlog usage project <slug> --json
+<repeat same upstream event or documented snapshot replay>
+qlog adapter verify <adapter> --project <slug> --json
+qlog verify
+qlog doctor --json
+```
+
+For lifecycle-only adapters, first event must create sanitized raw evidence with zero tokens. For a source-evidence-complete reported-token adapter, it must create exactly one linked normalized model call and one quality-labelled report row with source-reported tokens. Replay must be suppressed. Privacy inspection must find no prompt, response, tool data, secret, authorization, or credential-bearing remote URL in persisted payload, evidence, hashes, exports, or logs. If any requirement is absent, retain `IN_PROGRESS`.
 
 ## Required Copilot Verification
 
@@ -96,7 +150,7 @@ M4 remains `IN_PROGRESS`. This pass verifies the final review fixes without clai
 | `git diff --check` | PASS. |
 | `go run ./cmd/qlog --home C:\Users\cowbo\AppData\Local\Temp\opencode\quantum-log-v031-verify init` | PASS. Initialized isolated ledger. |
 | `go run ./cmd/qlog --home C:\Users\cowbo\AppData\Local\Temp\opencode\quantum-log-v031-verify project register --path . --name QUANTUM_LOG` | PASS. Registered `quantum-log` at this worktree path. |
-| `go run ./cmd/qlog --home C:\Users\cowbo\AppData\Local\Temp\opencode\quantum-log-v031-verify setup copilot-vscode --yes` | PASS. Reported `capture=experimental` and preserved `github.copilot.chat.otel.captureContent=false`. |
+| `go run ./cmd/qlog --home C:\Users\cowbo\AppData\Local\Temp\opencode\quantum-log-v031-verify setup copilot-vscode --yes` | PASS. Historical output used `capture=experimental`; Task 1 supersedes that label with `capture=unavailable` pending source evidence. The content-capture setting remained `false`. |
 | `go run ./cmd/qlog --home C:\Users\cowbo\AppData\Local\Temp\opencode\quantum-log-v031-verify collector install` | PASS. Installed managed collector. |
 | `go run ./cmd/qlog --home C:\Users\cowbo\AppData\Local\Temp\opencode\quantum-log-v031-verify collector start` | PASS. Started collector with pid `42736`. |
 | `go run ./cmd/qlog --home C:\Users\cowbo\AppData\Local\Temp\opencode\quantum-log-v031-verify adapter verify copilot-vscode --json` while collector was running | PASS. Completed without SQLite lock contention. Returned `ready=false` because no real Copilot event exists yet. |

@@ -9,11 +9,44 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const defaultCollectorListen = "127.0.0.1:4318"
+
+var newSetupCollectorManager = newCollectorManager
+
+// BootstrapResult reports the consented collector and adapter setup actions.
+type BootstrapResult struct {
+	Consent   bool                     `json:"consent"`
+	Collector CollectorBootstrapStatus `json:"collector"`
+	Adapters  []adapters.SetupPlan     `json:"adapters"`
+}
+
+// CollectorBootstrapStatus distinguishes requested operations from their results.
+type CollectorBootstrapStatus struct {
+	Installed bool     `json:"installed"`
+	Started   bool     `json:"started"`
+	Actions   []string `json:"actions"`
+}
+
 func newSetupCommand(home *string) *cobra.Command {
 	registry := adapters.Default()
 	var all, yes, dryRun, jsonOutput bool
 	command := &cobra.Command{Use: "setup [adapter]", Short: "Set up agent auto-capture integrations", Args: cobra.MaximumNArgs(1), RunE: func(command *cobra.Command, args []string) error {
-		items := registry.List()
+		if len(args) == 0 && !all {
+			paths, err := config.Resolve(*home)
+			if err != nil {
+				return err
+			}
+			result, err := bootstrapSupportedAdapters(command.Context(), paths.Home, yes, dryRun, registry, newSetupCollectorManager())
+			if err != nil {
+				return err
+			}
+			if jsonOutput {
+				return writeJSON(command.Root().OutOrStdout(), result)
+			}
+			return writeBootstrapResult(command.Root().OutOrStdout(), result)
+		}
+
+		items := registry.Stable()
 		if len(args) == 1 {
 			adapter, found := registry.Get(args[0])
 			if !found {
@@ -78,10 +111,112 @@ func newSetupCommand(home *string) *cobra.Command {
 	return command
 }
 
+func bootstrapSupportedAdapters(ctx context.Context, home string, yes, dryRun bool, registry *adapters.Registry, manager collectorManager) (BootstrapResult, error) {
+	paths, err := config.Resolve(home)
+	if err != nil {
+		return BootstrapResult{}, err
+	}
+	items := registry.Stable()
+	plans, err := planSetupAdapters(ctx, paths.Home, items, yes, dryRun)
+	if err != nil {
+		return BootstrapResult{}, err
+	}
+	result := BootstrapResult{Consent: yes, Adapters: plans}
+	if !yes || dryRun {
+		if dryRun {
+			result.Collector.Actions = []string{"dry run: collector install and start skipped"}
+		}
+		return result, nil
+	}
+
+	installed, err := manager.Install(paths.Home, defaultCollectorListen)
+	if err != nil {
+		return BootstrapResult{}, err
+	}
+	result.Collector.Installed = true
+	result.Collector.Actions = append(result.Collector.Actions, installed.Message)
+	started, err := manager.Start(paths.Home, defaultCollectorListen)
+	if err != nil {
+		return BootstrapResult{}, err
+	}
+	result.Collector.Started = true
+	result.Collector.Actions = append(result.Collector.Actions, started.Message)
+
+	for index, adapter := range items {
+		detection, err := adapter.Detect(ctx)
+		if err != nil {
+			return BootstrapResult{}, err
+		}
+		if !detection.Available {
+			result.Adapters[index].Changes = skippedSetupChanges(result.Adapters[index].Changes, detection.Evidence)
+			continue
+		}
+		installResult, err := adapter.Install(ctx, adapters.InstallOptions{Home: paths.Home})
+		if err != nil {
+			return BootstrapResult{}, err
+		}
+		result.Adapters[index].Changes = installResultChanges(adapter.Descriptor().ID, installResult)
+	}
+	return result, nil
+}
+
+func planSetupAdapters(ctx context.Context, home string, items []adapters.Adapter, yes, dryRun bool) ([]adapters.SetupPlan, error) {
+	plans := make([]adapters.SetupPlan, 0, len(items))
+	for _, adapter := range items {
+		plan, err := adapter.PlanInstall(ctx, adapters.SetupOptions{DryRun: true, Yes: yes, Home: home})
+		if err != nil {
+			return nil, err
+		}
+		if dryRun {
+			for index := range plan.Changes {
+				plan.Changes[index].Description = "dry run: " + plan.Changes[index].Description
+			}
+		}
+		plans = append(plans, plan)
+	}
+	return plans, nil
+}
+
+func skippedSetupChanges(changes []adapters.SetupChange, reason string) []adapters.SetupChange {
+	if len(changes) == 0 {
+		return []adapters.SetupChange{{Action: "skipped", Description: reason}}
+	}
+	skipped := make([]adapters.SetupChange, len(changes))
+	for index, change := range changes {
+		change.Action = "skipped"
+		change.BackupPath = ""
+		change.Description = reason
+		skipped[index] = change
+	}
+	return skipped
+}
+
+func writeBootstrapResult(writer interface{ Write([]byte) (int, error) }, result BootstrapResult) error {
+	if _, err := fmt.Fprintf(writer, "consent=%t collector installed=%t started=%t\n", result.Consent, result.Collector.Installed, result.Collector.Started); err != nil {
+		return err
+	}
+	for _, action := range result.Collector.Actions {
+		if _, err := fmt.Fprintf(writer, "  collector %s\n", action); err != nil {
+			return err
+		}
+	}
+	for _, plan := range result.Adapters {
+		if _, err := fmt.Fprintf(writer, "%s | %s | capture=%s\n", plan.AdapterID, plan.State, plan.CaptureQuality); err != nil {
+			return err
+		}
+		for _, change := range plan.Changes {
+			if _, err := fmt.Fprintf(writer, "  %s %s\n", change.Action, change.Path); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func setupDefaultAdapters(ctx context.Context, items []adapters.Adapter) ([]adapters.Adapter, error) {
 	result := make([]adapters.Adapter, 0, len(items))
 	for _, item := range items {
-		if item.Descriptor().ID == "generic-jsonl" {
+		if !item.Descriptor().Stable {
 			continue
 		}
 		status, err := item.Status(ctx)

@@ -34,6 +34,49 @@ func TestInstallerContracts(t *testing.T) {
 	}
 }
 
+func TestOfficialQlogInstallersExposeConsentedBootstrapAndOptOut(t *testing.T) {
+	for _, name := range []string{"installers/install.ps1", "installers/install.sh"} {
+		contents, err := os.ReadFile(filepath.Join("..", "..", filepath.FromSlash(name)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{"--bootstrap", "--no-bootstrap", "qlog setup --yes", "consent"} {
+			if !strings.Contains(string(contents), want) {
+				t.Fatalf("%s missing %q", name, want)
+			}
+		}
+	}
+}
+
+func TestM4EvidenceDocumentsStableScopeAndCleanDeviceGate(t *testing.T) {
+	contents, err := os.ReadFile(filepath.Join("..", "..", "docs-int", "verification", "m4-evidence.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"codex",
+		"claude-code",
+		"copilot-vscode",
+		"opencode",
+		"IN_PROGRESS",
+		"real-agent",
+		"## Clean-Device Acceptance Protocol",
+		"Device OS/version/architecture",
+		"adapter verify --json",
+		"Replay result",
+		"Privacy inspection result",
+	} {
+		if !strings.Contains(string(contents), want) {
+			t.Fatalf("M4 evidence missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"M4 is VERIFIED", "Pi", "OpenClaw", "Hermes"} {
+		if strings.Contains(string(contents), forbidden) {
+			t.Fatalf("M4 evidence contains unsupported completion or adapter claim %q", forbidden)
+		}
+	}
+}
+
 func TestShellInstallDryRunDoesNotWrite(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX shell smoke test runs on Unix CI jobs")

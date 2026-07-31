@@ -18,7 +18,7 @@ type claudeCodeAdapter struct{}
 func newClaudeCodeAdapter() claudeCodeAdapter { return claudeCodeAdapter{} }
 
 func (claudeCodeAdapter) Descriptor() Descriptor {
-	return Descriptor{ID: "claude-code", Name: "Claude Code", Version: "hooks", Capabilities: Capabilities{SessionLifecycle: true, ProjectIdentity: true, WorkingDirectory: true, StructuredEvents: true}}
+	return Descriptor{ID: "claude-code", Name: "Claude Code", Version: "hooks", Stable: true, Capabilities: Capabilities{SessionLifecycle: true, ProjectIdentity: true, WorkingDirectory: true, StructuredEvents: true}}
 }
 
 func (claudeCodeAdapter) Detect(context.Context) (Detection, error) {
@@ -61,7 +61,7 @@ func (a claudeCodeAdapter) Status(ctx context.Context) (SetupStatus, error) {
 	if detection.Available || installed {
 		state = SetupPartial
 	}
-	return SetupStatus{AdapterID: "claude-code", Available: detection.Available, Installed: installed, State: state, CaptureQuality: CaptureLifecycleOnly, Evidence: detection.Evidence, Notes: []string{"Claude Code hook capture is lifecycle-only until official token usage is available"}}, nil
+	return SetupStatus{AdapterID: "claude-code", Available: detection.Available, Installed: installed, State: state, InstallationState: state, CaptureQuality: CaptureLifecycleOnly, Evidence: detection.Evidence, Notes: []string{"Claude Code hook capture is lifecycle-only until official token usage is available"}}, nil
 }
 
 func (a claudeCodeAdapter) Test(ctx context.Context) (TestResult, error) {

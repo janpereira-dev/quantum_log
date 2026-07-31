@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -24,16 +25,16 @@ func TestDefaultRegistryDeclaresOnlyVerifiedCapabilities(t *testing.T) {
 		t.Fatal("generic JSONL must not claim metrics supplied only by callers")
 	}
 	copilot, found := registry.Get("copilot-vscode")
-	if !found || !copilot.Descriptor().Capabilities.InputTokens || !copilot.Descriptor().Capabilities.CacheTokens || !copilot.Descriptor().Capabilities.MCPCalls {
-		t.Fatalf("copilot-vscode must declare verified OTel token/cache/MCP capabilities")
+	if !found || copilot.Descriptor().Capabilities != (Capabilities{}) {
+		t.Fatalf("copilot-vscode must not claim unavailable telemetry capabilities")
 	}
 	opencode, found := registry.Get("opencode")
-	if !found || !opencode.Descriptor().Capabilities.ToolCalls || !opencode.Descriptor().Capabilities.SessionLifecycle || !opencode.Descriptor().Capabilities.StructuredEvents {
+	if !found || opencode.Descriptor().Capabilities.InputTokens || opencode.Descriptor().Capabilities.OutputTokens || !opencode.Descriptor().Capabilities.ToolCalls || !opencode.Descriptor().Capabilities.SessionLifecycle || !opencode.Descriptor().Capabilities.StructuredEvents {
 		t.Fatalf("opencode must declare plugin lifecycle/tool capture capabilities")
 	}
 	codex, found := registry.Get("codex")
-	if !found || !codex.Descriptor().Capabilities.InputTokens || !codex.Descriptor().Capabilities.OutputTokens || !codex.Descriptor().Capabilities.CacheTokens || !codex.Descriptor().Capabilities.ReasoningTokens || !codex.Descriptor().Capabilities.StructuredEvents {
-		t.Fatalf("codex must declare app-server rawResponse usage capabilities")
+	if !found || codex.Descriptor().Capabilities != (Capabilities{}) {
+		t.Fatalf("codex must not claim undocumented forwarding capabilities")
 	}
 	claude, found := registry.Get("claude-code")
 	if !found || !claude.Descriptor().Capabilities.SessionLifecycle || !claude.Descriptor().Capabilities.StructuredEvents || claude.Descriptor().Capabilities.InputTokens {
@@ -47,6 +48,57 @@ func TestDefaultRegistryDeclaresOnlyVerifiedCapabilities(t *testing.T) {
 		if adapter.Descriptor().Capabilities != (Capabilities{}) {
 			t.Fatalf("%s minimal adapter claimed unsupported capture capability", id)
 		}
+	}
+}
+
+func TestStableAdaptersContainOnlyM4Contract(t *testing.T) {
+	ids := make([]string, 0)
+	for _, adapter := range Default().Stable() {
+		ids = append(ids, adapter.Descriptor().ID)
+		if !adapter.Descriptor().Stable {
+			t.Fatalf("stable adapter %q lacks stable descriptor flag", adapter.Descriptor().ID)
+		}
+	}
+	if want := []string{"claude-code", "codex", "copilot-vscode", "opencode"}; !slices.Equal(ids, want) {
+		t.Fatalf("stable adapter ids = %v, want %v", ids, want)
+	}
+}
+
+func TestClaudeCodeStatusIsLifecycleOnly(t *testing.T) {
+	status, err := newClaudeCodeAdapter().Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.CaptureQuality != CaptureLifecycleOnly {
+		t.Fatalf("quality = %q", status.CaptureQuality)
+	}
+	if status.InstallationState == "" {
+		t.Fatal("installation state is required")
+	}
+	if status.CollectorReachable || status.RecentEvidence {
+		t.Fatalf("unverified status = %#v", status)
+	}
+}
+
+func TestUnverifiedTokenAdaptersReportUnavailable(t *testing.T) {
+	for _, adapter := range []Adapter{newCodexAdapter(), newVSCodeCopilotAdapter()} {
+		status, err := adapter.Status(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.CaptureQuality != CaptureUnavailable {
+			t.Fatalf("%s quality = %q", status.AdapterID, status.CaptureQuality)
+		}
+	}
+}
+
+func TestOpenCodeStatusIsLifecycleOnly(t *testing.T) {
+	status, err := newOpenCodeAdapter().Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.CaptureQuality != CaptureLifecycleOnly {
+		t.Fatalf("quality = %q", status.CaptureQuality)
 	}
 }
 
@@ -82,7 +134,7 @@ func TestCopilotVSCodeInstallConfiguresNativeOTelWithoutContentCapture(t *testin
 	if err != nil {
 		t.Fatalf("Status() error = %v", err)
 	}
-	if !status.Installed || status.CaptureQuality != CaptureExperimental {
+	if !status.Installed || status.CaptureQuality != CaptureUnavailable {
 		t.Fatalf("status = %#v", status)
 	}
 }
@@ -212,7 +264,7 @@ func TestOpenCodeInstallWritesGlobalPluginPostingLocalEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Status() error = %v", err)
 	}
-	if !status.Installed || status.CaptureQuality != CaptureAgentReported {
+	if !status.Installed || status.CaptureQuality != CaptureLifecycleOnly {
 		t.Fatalf("status = %#v", status)
 	}
 }

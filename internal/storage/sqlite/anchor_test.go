@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -20,7 +21,7 @@ func TestLedgerAnchorsAndTruncationDetection(t *testing.T) {
 		if _, err := store.AppendRawEvent(context.Background(), RawEventInput{
 			Source:     "s1",
 			SessionID:  "sess",
-			EventType:  "tool",
+			EventType:  fmt.Sprintf("tool.%d", i),
 			Payload:    []byte("{}"),
 			OccurredAt: now,
 		}); err != nil {

@@ -13,17 +13,7 @@ func (a codexAdapter) Descriptor() Descriptor {
 		ID:      "codex",
 		Name:    "Codex",
 		Version: "app-server-raw-events",
-		Capabilities: Capabilities{
-			ModelIdentity:    true,
-			InputTokens:      true,
-			OutputTokens:     true,
-			ReasoningTokens:  true,
-			CacheTokens:      true,
-			SessionLifecycle: true,
-			ProjectIdentity:  true,
-			WorkingDirectory: true,
-			StructuredEvents: true,
-		},
+		Stable:  true,
 	}
 }
 
@@ -32,8 +22,8 @@ func (a codexAdapter) PlanInstall(ctx context.Context, options SetupOptions) (Se
 	if err != nil {
 		return SetupPlan{}, err
 	}
-	plan.CaptureQuality = CaptureAgentReported
-	plan.Notes = []string{"Codex app-server rawResponse/completed events can provide exact upstream usage when experimentalRawEvents is enabled; usage may be null and must not be estimated"}
+	plan.CaptureQuality = CaptureUnavailable
+	plan.Notes = []string{"no documented collector forwarding integration recorded"}
 	return plan, nil
 }
 
@@ -42,8 +32,8 @@ func (a codexAdapter) Status(ctx context.Context) (SetupStatus, error) {
 	if err != nil {
 		return SetupStatus{}, err
 	}
-	status.CaptureQuality = CaptureAgentReported
-	status.Notes = []string{"requires Codex app-server rawResponse/completed forwarding to qlog /v1/events with non-null usage"}
+	status.CaptureQuality = CaptureUnavailable
+	status.Notes = []string{"no documented collector forwarding integration recorded"}
 	return status, nil
 }
 
@@ -52,9 +42,7 @@ func (a codexAdapter) Test(ctx context.Context) (TestResult, error) {
 	if err != nil {
 		return TestResult{}, err
 	}
-	result.CaptureQuality = CaptureAgentReported
-	if result.Passed {
-		result.Message += "; token capture requires rawResponse/completed usage forwarding"
-	}
+	result.CaptureQuality = CaptureUnavailable
+	result.Message += "; no documented collector forwarding integration recorded"
 	return result, nil
 }

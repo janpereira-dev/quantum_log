@@ -3,12 +3,14 @@
 package cli
 
 import (
-	"fmt"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 )
+
+const windowsCollectorTaskName = `QUANTUM_LOG Collector`
 
 type windowsCollectorManager struct{}
 
@@ -22,88 +24,128 @@ func collectorStateDir() string {
 	return filepath.Join(home, "AppData", "Local", "QUANTUM_LOG", "collector")
 }
 
-func collectorPIDPath() string { return filepath.Join(collectorStateDir(), "collector.pid") }
-
 func collectorLogPath() string { return filepath.Join(collectorStateDir(), "collector.log") }
 
-func (windowsCollectorManager) Install(_, _ string) (string, error) {
+func collectorTaskDefinitionPath() string {
+	return filepath.Join(collectorStateDir(), "collector-task.xml")
+}
+
+func windowsCollectorStatus(ctx context.Context, listen string) (CollectorStatus, error) {
+	status := CollectorStatus{Listen: listen, ServiceID: windowsCollectorTaskName, StatePath: collectorStateDir(), LogPath: collectorLogPath()}
+	output, err := exec.CommandContext(ctx, "schtasks.exe", "/Query", "/TN", windowsCollectorTaskName, "/FO", "LIST", "/V").CombinedOutput()
+	if err == nil {
+		status.Installed = true
+		status.Running = strings.Contains(string(output), "Running")
+	}
+	health := probeCollectorHealth(ctx, listen)
+	status.Reachable = health.Reachable
+	if health.Reachable {
+		status.Running = true
+	}
+	status.Message = health.Health
+	return status, nil
+}
+
+func (windowsCollectorManager) Install(home, listen string) (CollectorStatus, error) {
+	if err := validateCollectorListen(listen); err != nil {
+		return CollectorStatus{}, err
+	}
 	if err := os.MkdirAll(collectorStateDir(), 0o700); err != nil {
-		return "", err
+		return CollectorStatus{}, err
 	}
-	return fmt.Sprintf("collector installed for user session at %s", collectorStateDir()), nil
+	executable, err := os.Executable()
+	if err != nil {
+		return CollectorStatus{}, err
+	}
+	if err := os.WriteFile(collectorTaskDefinitionPath(), []byte(windowsCollectorTaskDefinition(executable, home, listen)), 0o600); err != nil {
+		return CollectorStatus{}, err
+	}
+	if err := exec.Command("schtasks.exe", "/Create", "/TN", windowsCollectorTaskName, "/XML", collectorTaskDefinitionPath(), "/F").Run(); err != nil {
+		return CollectorStatus{}, err
+	}
+	status, err := windowsCollectorStatus(context.Background(), listen)
+	if err != nil {
+		return CollectorStatus{}, err
+	}
+	status.Message = "collector task installed"
+	return status, nil
 }
 
-func (windowsCollectorManager) Start(home, listen string) (string, error) {
-	if err := os.MkdirAll(collectorStateDir(), 0o700); err != nil {
-		return "", err
+func (windowsCollectorManager) Start(home, listen string) (CollectorStatus, error) {
+	if err := validateCollectorListen(listen); err != nil {
+		return CollectorStatus{}, err
 	}
-	if pidBytes, err := os.ReadFile(collectorPIDPath()); err == nil && strings.TrimSpace(string(pidBytes)) != "" {
-		return "", fmt.Errorf("collector pid file already exists at %s; run qlog collector stop before starting another collector", collectorPIDPath())
+	if _, err := (windowsCollectorManager{}).Install(home, listen); err != nil {
+		return CollectorStatus{}, err
 	}
-	exe, err := os.Executable()
+	if err := exec.Command("schtasks.exe", "/Run", "/TN", windowsCollectorTaskName).Run(); err != nil {
+		return CollectorStatus{}, err
+	}
+	status, err := windowsCollectorStatus(context.Background(), listen)
 	if err != nil {
-		return "", err
+		return CollectorStatus{}, err
 	}
-	logFile, err := os.OpenFile(collectorLogPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = logFile.Close() }()
-	args := []string{"collector", "serve", "--listen", listen}
-	if home != "" {
-		args = append([]string{"--home", home}, args...)
-	}
-	cmd := exec.Command(exe, args...)
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
-	if err := cmd.Start(); err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(collectorPIDPath(), []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0o600); err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Process.Release()
-		return "", err
-	}
-	if err := cmd.Process.Release(); err != nil {
-		_ = cmd.Process.Kill()
-		_ = os.Remove(collectorPIDPath())
-		return "", err
-	}
-	return fmt.Sprintf("collector started with pid %d", cmd.Process.Pid), nil
+	status.Message = "collector task start requested; health=" + status.Message
+	return status, nil
 }
 
-func (windowsCollectorManager) Stop() (string, error) {
-	pidBytes, err := os.ReadFile(collectorPIDPath())
+func (windowsCollectorManager) Stop() (CollectorStatus, error) {
+	status, err := windowsCollectorStatus(context.Background(), defaultCollectorListen)
 	if err != nil {
-		return "collector is not running", nil
+		return CollectorStatus{}, err
 	}
-	pid := strings.TrimSpace(string(pidBytes))
-	if pid == "" {
-		_ = os.Remove(collectorPIDPath())
-		return "collector is not running", nil
+	if !status.Installed {
+		status.Message = "collector task is not installed"
+		return status, nil
 	}
-	_ = exec.Command("taskkill", "/PID", pid, "/T", "/F").Run()
-	_ = os.Remove(collectorPIDPath())
-	return "collector stopped", nil
+	if err := exec.Command("schtasks.exe", "/End", "/TN", windowsCollectorTaskName).Run(); err != nil {
+		return CollectorStatus{}, err
+	}
+	status, err = windowsCollectorStatus(context.Background(), defaultCollectorListen)
+	if err != nil {
+		return CollectorStatus{}, err
+	}
+	status.Message = "collector task stopped"
+	return status, nil
 }
 
-func (manager windowsCollectorManager) Restart(home, listen string) (string, error) {
-	_, _ = manager.Stop()
+func (manager windowsCollectorManager) Restart(home, listen string) (CollectorStatus, error) {
+	if _, err := manager.Stop(); err != nil {
+		return CollectorStatus{}, err
+	}
 	return manager.Start(home, listen)
+}
+
+func (windowsCollectorManager) Status(ctx context.Context, listen string) (CollectorStatus, error) {
+	if err := validateCollectorListen(listen); err != nil {
+		return CollectorStatus{}, err
+	}
+	return windowsCollectorStatus(ctx, listen)
 }
 
 func (windowsCollectorManager) Logs() (string, error) {
 	contents, err := os.ReadFile(collectorLogPath())
-	if err != nil {
-		return "collector log is empty", nil
+	if os.IsNotExist(err) {
+		return "collector log is empty\n", nil
 	}
-	return string(contents), nil
+	return string(contents), err
 }
 
-func (manager windowsCollectorManager) Uninstall() (string, error) {
-	_, _ = manager.Stop()
-	if err := os.RemoveAll(collectorStateDir()); err != nil {
-		return "", err
+func (manager windowsCollectorManager) Uninstall() (CollectorStatus, error) {
+	status, err := manager.Stop()
+	if err != nil {
+		return CollectorStatus{}, err
 	}
-	return "collector uninstalled", nil
+	if status.Installed {
+		if err := exec.Command("schtasks.exe", "/Delete", "/TN", windowsCollectorTaskName, "/F").Run(); err != nil {
+			return CollectorStatus{}, err
+		}
+	}
+	if err := os.RemoveAll(collectorStateDir()); err != nil {
+		return CollectorStatus{}, err
+	}
+	status.Installed = false
+	status.Running = false
+	status.Message = "collector task uninstalled"
+	return status, nil
 }

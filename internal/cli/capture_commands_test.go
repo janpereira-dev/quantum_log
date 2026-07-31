@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -13,6 +14,19 @@ import (
 
 	"github.com/janpereira-dev/quantum_log/internal/adapters"
 )
+
+func TestUnsupportedAdaptersAreNotSelectedByDefaultSetup(t *testing.T) {
+	items, err := setupDefaultAdapters(context.Background(), adapters.Default().List())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, adapter := range items {
+		switch adapter.Descriptor().ID {
+		case "pi", "openclaw", "hermes":
+			t.Fatalf("unsupported adapter selected: %s", adapter.Descriptor().ID)
+		}
+	}
+}
 
 func TestAdapterCommandsExposeCapabilitiesAndSafeDryRun(t *testing.T) {
 	run := func(args ...string) (string, error) {
@@ -47,8 +61,8 @@ func TestAdapterVerifyCopilotReportsMissingEvidence(t *testing.T) {
 	output := new(bytes.Buffer)
 	command.SetArgs([]string{"--home", home, "adapter", "verify", "copilot-vscode", "--json"})
 	setOutput(command, output)
-	if err := command.Execute(); err != nil {
-		t.Fatalf("adapter verify: %v", err)
+	if err := command.Execute(); err == nil {
+		t.Fatalf("adapter verify succeeded: %s", output)
 	}
 	var result struct {
 		AdapterID string `json:"adapter_id"`
@@ -63,6 +77,21 @@ func TestAdapterVerifyCopilotReportsMissingEvidence(t *testing.T) {
 	}
 	if result.AdapterID != "copilot-vscode" || result.Ready || len(result.Stages) == 0 {
 		t.Fatalf("verify result = %#v", result)
+	}
+}
+
+func TestAdapterVerifyReturnsNonZeroForMissingRequiredEvidence(t *testing.T) {
+	home := t.TempDir()
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	output, err := runQLog(t, home, "adapter", "verify", "opencode", "--json")
+	if err == nil {
+		t.Fatalf("verify succeeded: %s", output)
+	}
+	if !strings.Contains(output, `"ready":false`) {
+		t.Fatalf("output = %s", output)
 	}
 }
 
@@ -85,8 +114,8 @@ func TestAdapterVerifyCopilotInstalledSettingsAreNotEnough(t *testing.T) {
 		t.Fatalf("install copilot-vscode: %v", err)
 	}
 	output, err := run("adapter", "verify", "copilot-vscode", "--since", "1h", "--json")
-	if err != nil {
-		t.Fatalf("adapter verify: %v", err)
+	if err == nil {
+		t.Fatalf("adapter verify succeeded: %s", output)
 	}
 	var result struct {
 		Ready  bool `json:"ready"`
@@ -103,7 +132,7 @@ func TestAdapterVerifyCopilotInstalledSettingsAreNotEnough(t *testing.T) {
 	}
 	foundEvidenceStage := false
 	for _, stage := range result.Stages {
-		if stage.Name == "copilot_model_call" {
+		if stage.Name == "raw_evidence" {
 			foundEvidenceStage = true
 			if stage.Passed {
 				t.Fatalf("copilot evidence stage passed without local evidence: %#v", result)
@@ -148,8 +177,8 @@ func TestAdapterVerifyCopilotRejectsGenericIngestedUsage(t *testing.T) {
 	}
 
 	output, err := runQLog(t, home, "adapter", "verify", "copilot-vscode", "--project", "project", "--json")
-	if err != nil {
-		t.Fatalf("adapter verify: %v", err)
+	if err == nil {
+		t.Fatalf("adapter verify succeeded: %s", output)
 	}
 	var result struct {
 		Ready bool `json:"ready"`
@@ -179,7 +208,7 @@ func TestAdapterVerifyCopilotRejectsSpoofedOTLPHTTPImport(t *testing.T) {
 	}
 }
 
-func TestAdapterVerifyCopilotAcceptsOTLPHTTPUsage(t *testing.T) {
+func TestAdapterVerifyCopilotRejectsOTLPWithoutSourceEvidence(t *testing.T) {
 	home := t.TempDir()
 	configHome := t.TempDir()
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
@@ -212,8 +241,8 @@ func TestAdapterVerifyCopilotAcceptsOTLPHTTPUsage(t *testing.T) {
 	}
 
 	output, err := runQLog(t, home, "adapter", "verify", "copilot-vscode", "--project", "project", "--json")
-	if err != nil {
-		t.Fatalf("adapter verify: %v", err)
+	if err == nil {
+		t.Fatalf("adapter verify succeeded: %s", output)
 	}
 	var result struct {
 		Ready bool `json:"ready"`
@@ -221,8 +250,8 @@ func TestAdapterVerifyCopilotAcceptsOTLPHTTPUsage(t *testing.T) {
 	if err := json.Unmarshal([]byte(output), &result); err != nil {
 		t.Fatalf("decode verify: %v", err)
 	}
-	if !result.Ready {
-		t.Fatalf("OTLP Copilot usage did not verify: %s", output)
+	if result.Ready {
+		t.Fatalf("unverified Copilot OTLP usage passed verification: %s", output)
 	}
 }
 
@@ -446,6 +475,9 @@ func TestSetupDefaultWithoutAllSkipsUnavailableAdapters(t *testing.T) {
 	configHome := t.TempDir()
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
 	t.Setenv("PATH", "")
+	previousManager := newSetupCollectorManager
+	newSetupCollectorManager = func() collectorManager { return &fakeCollectorManager{} }
+	t.Cleanup(func() { newSetupCollectorManager = previousManager })
 	run := func(args ...string) (string, error) {
 		command := New(Version{})
 		output := new(bytes.Buffer)
@@ -458,12 +490,17 @@ func TestSetupDefaultWithoutAllSkipsUnavailableAdapters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("setup default: %v", err)
 	}
-	var plans []adapters.SetupPlan
-	if err := json.Unmarshal([]byte(output), &plans); err != nil {
+	var result BootstrapResult
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
 		t.Fatalf("decode setup output = %q: %v", output, err)
 	}
-	if len(plans) != 0 {
-		t.Fatalf("plans = %#v", plans)
+	if !result.Consent || len(result.Adapters) != 4 {
+		t.Fatalf("bootstrap result = %#v", result)
+	}
+	for _, plan := range result.Adapters {
+		if len(plan.Changes) != 1 || plan.Changes[0].Action != "skipped" {
+			t.Fatalf("adapter plan = %#v", plan)
+		}
 	}
 	if _, err := os.Stat(filepath.Join(configHome, ".config")); !os.IsNotExist(err) {
 		t.Fatalf("default setup created config for unavailable adapters: %v", err)

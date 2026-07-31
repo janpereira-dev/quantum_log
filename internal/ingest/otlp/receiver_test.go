@@ -52,7 +52,7 @@ func TestReceiverImportsStandardOTLPJSONThroughCentralResolver(t *testing.T) {
 	}
 }
 
-func TestReceiverImportsCopilotOTLPTokensCacheReasoningAndProjectMetadata(t *testing.T) {
+func TestReceiverKeepsUnverifiedCopilotOTLPLifecycleOnly(t *testing.T) {
 	ctx := context.Background()
 	service, err := app.Initialize(ctx, t.TempDir())
 	if err != nil {
@@ -82,10 +82,10 @@ func TestReceiverImportsCopilotOTLPTokensCacheReasoningAndProjectMetadata(t *tes
 		t.Fatalf("rows = %#v", report.Rows)
 	}
 	row := report.Rows[0]
-	if row.ProjectSlug != project.Slug || row.AgentName != "GitHub Copilot Chat" || row.Provider != "github" || row.Model != "gpt-5-resolved" || row.CaptureQuality != "otel_reported" {
+	if row.ProjectSlug != project.Slug || row.AgentName != "GitHub Copilot Chat" || row.Provider != "github" || row.Model != "gpt-5-resolved" || row.CaptureQuality != "lifecycle_only" {
 		t.Fatalf("row identity = %#v", row)
 	}
-	if row.InputTokens != 11 || row.OutputTokens != 13 || row.CachedInputTokens != 17 || row.CacheWriteTokens != 19 || row.ReasoningTokens != 23 || row.TotalTokens != 83 {
+	if row.InputTokens != 0 || row.OutputTokens != 0 || row.CachedInputTokens != 0 || row.CacheWriteTokens != 0 || row.ReasoningTokens != 0 || row.TotalTokens != 0 {
 		t.Fatalf("row tokens = %#v", row)
 	}
 }
@@ -139,7 +139,7 @@ func TestReceiverAcceptsOTLPProtobuf(t *testing.T) {
 	if err != nil {
 		t.Fatalf("usage: %v", err)
 	}
-	if len(report.Rows) != 1 || report.Rows[0].AgentName != "copilot-chat" || report.Rows[0].TotalTokens != 24 || report.Rows[0].CaptureQuality != "otel_reported" {
+	if len(report.Rows) != 1 || report.Rows[0].AgentName != "copilot-chat" || report.Rows[0].TotalTokens != 0 || report.Rows[0].CaptureQuality != "lifecycle_only" {
 		t.Fatalf("usage rows = %#v", report.Rows)
 	}
 }
@@ -209,5 +209,47 @@ func TestReceiverDoesNotUseRemoteRepositoryURLAsWorkingDirectory(t *testing.T) {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("payload retained remote URL data %q: %s", forbidden, encoded)
 		}
+	}
+}
+
+func TestOTLPUsesTraceIDAsUpstreamIdentity(t *testing.T) {
+	service, err := app.Initialize(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatalf("initialize service: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	line, err := Receiver{service: service}.event(context.Background(), map[string]string{}, map[string]string{
+		"gen_ai.provider.name": "example",
+		"gen_ai.request.model": "model",
+	}, span{TraceID: "trace-1"})
+	if err != nil {
+		t.Fatalf("event: %v", err)
+	}
+	if line["upstream_event_id"] != "trace-1" {
+		t.Fatalf("event = %#v", line)
+	}
+}
+
+func TestCopilotOTLPRemainsLifecycleOnlyWithoutSourceEvidence(t *testing.T) {
+	service, err := app.Initialize(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatalf("initialize service: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	line, err := Receiver{service: service}.event(context.Background(), map[string]string{}, map[string]string{
+		"service.name":              "copilot-chat",
+		"gen_ai.provider.name":      "github",
+		"gen_ai.request.model":      "gpt-5",
+		"gen_ai.usage.input_tokens": "1",
+	}, span{})
+	if err != nil {
+		t.Fatalf("event: %v", err)
+	}
+	payload, err := json.Marshal(line["payload"])
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	if !bytes.Contains(payload, []byte(`"capture_quality":"lifecycle_only"`)) || bytes.Contains(payload, []byte("input_tokens")) {
+		t.Fatalf("payload = %s", payload)
 	}
 }

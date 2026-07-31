@@ -16,9 +16,10 @@ import (
 )
 
 type adapterVerifyStage struct {
-	Name    string `json:"name"`
-	Passed  bool   `json:"passed"`
-	Message string `json:"message"`
+	Name     string `json:"name"`
+	Passed   bool   `json:"passed"`
+	Required bool   `json:"required"`
+	Message  string `json:"message"`
 }
 
 type adapterVerifyResult struct {
@@ -51,7 +52,7 @@ func newAdapterCommand(home *string) *cobra.Command {
 
 	var detectJSON bool
 	detect := &cobra.Command{Use: "detect [adapter]", Short: "Detect installed adapters without changing files", Args: cobra.MaximumNArgs(1), RunE: func(command *cobra.Command, args []string) error {
-		items := registry.List()
+		items := registry.Stable()
 		if len(args) == 1 {
 			adapter, found := registry.Get(args[0])
 			if !found {
@@ -105,7 +106,7 @@ func newAdapterCommand(home *string) *cobra.Command {
 
 	var statusJSON bool
 	status := &cobra.Command{Use: "status [adapter]", Short: "Show adapter setup status", Args: cobra.MaximumNArgs(1), RunE: func(command *cobra.Command, args []string) error {
-		items := registry.List()
+		items := registry.Stable()
 		if len(args) == 1 {
 			adapter, found := registry.Get(args[0])
 			if !found {
@@ -128,7 +129,7 @@ func newAdapterCommand(home *string) *cobra.Command {
 			return writeJSON(command.Root().OutOrStdout(), statuses)
 		}
 		for _, status := range statuses {
-			if _, err := fmt.Fprintf(command.Root().OutOrStdout(), "%s | %s | installed=%t | capture=%s | %s\n", status.AdapterID, status.State, status.Installed, status.CaptureQuality, status.Evidence); err != nil {
+			if _, err := fmt.Fprintf(command.Root().OutOrStdout(), "%s | %s | installed=%t | capture=%s | %s\n", status.AdapterID, status.InstallationState, status.Installed, status.CaptureQuality, status.Evidence); err != nil {
 				return err
 			}
 		}
@@ -162,24 +163,33 @@ func newAdapterCommand(home *string) *cobra.Command {
 		if !found {
 			return fmt.Errorf("unknown adapter %q", args[0])
 		}
+		if !adapter.Descriptor().Stable {
+			return fmt.Errorf("adapter %q is not a stable capture adapter", args[0])
+		}
 		result := verifyAdapter(command.Context(), *home, adapter, verifyProject, verifySince)
 		if verifyJSON {
-			return writeJSON(command.Root().OutOrStdout(), result)
-		}
-		for _, stage := range result.Stages {
-			state := "FAIL"
-			if stage.Passed {
-				state = "PASS"
-			}
-			if _, err := fmt.Fprintf(command.Root().OutOrStdout(), "%s %s: %s\n", state, stage.Name, stage.Message); err != nil {
+			if err := writeJSON(command.Root().OutOrStdout(), result); err != nil {
 				return err
+			}
+		} else {
+			for _, stage := range result.Stages {
+				state := "FAIL"
+				if stage.Passed {
+					state = "PASS"
+				}
+				if _, err := fmt.Fprintf(command.Root().OutOrStdout(), "%s %s: %s\n", state, stage.Name, stage.Message); err != nil {
+					return err
+				}
 			}
 		}
 		if !result.Ready {
-			return nil
+			return adapterVerificationError{AdapterID: result.AdapterID}
 		}
-		_, err := fmt.Fprintln(command.Root().OutOrStdout(), result.Message)
-		return err
+		if !verifyJSON {
+			_, err := fmt.Fprintln(command.Root().OutOrStdout(), result.Message)
+			return err
+		}
+		return nil
 	}}
 	verify.Flags().StringVar(&verifyProject, "project", "", "project slug")
 	verify.Flags().StringVar(&verifySince, "since", "1h", "lookback duration for local capture evidence")
@@ -212,51 +222,89 @@ func newAdapterCommand(home *string) *cobra.Command {
 	return command
 }
 
+type adapterVerificationError struct{ AdapterID string }
+
+func (e adapterVerificationError) Error() string {
+	return fmt.Sprintf("adapter %s is not verified", e.AdapterID)
+}
+
+type adapterEvidenceContract struct {
+	Source                string
+	Quality               adapters.CaptureQuality
+	SourceEvidence        bool
+	SourceEvidenceMessage string
+}
+
+func evidenceContract(adapterID string) adapterEvidenceContract {
+	switch adapterID {
+	case "claude-code":
+		return adapterEvidenceContract{Source: "claude-code-hook", Quality: adapters.CaptureLifecycleOnly, SourceEvidence: true, SourceEvidenceMessage: "Claude Code hooks emit lifecycle evidence only"}
+	case "opencode":
+		return adapterEvidenceContract{Source: "opencode-plugin", Quality: adapters.CaptureLifecycleOnly, SourceEvidenceMessage: "documented source-backed OpenCode usage evidence is required before verification"}
+	case "codex":
+		return adapterEvidenceContract{Source: "codex-app-server", Quality: adapters.CaptureUnavailable, SourceEvidenceMessage: "no documented Codex collector forwarding integration is recorded"}
+	case "copilot-vscode":
+		return adapterEvidenceContract{Source: "otlp-http", Quality: adapters.CaptureUnavailable, SourceEvidenceMessage: "no documented Copilot VS Code source evidence is recorded"}
+	default:
+		return adapterEvidenceContract{SourceEvidenceMessage: "adapter is outside stable verification scope"}
+	}
+}
+
+func requiredStagesPassed(stages []adapterVerifyStage) bool {
+	for _, stage := range stages {
+		if stage.Required && !stage.Passed {
+			return false
+		}
+	}
+	return true
+}
+
 func verifyAdapter(ctx context.Context, home string, adapter adapters.Adapter, projectSlug, since string) adapterVerifyResult {
 	status, err := adapter.Status(ctx)
 	stages := []adapterVerifyStage{}
 	if err != nil {
-		stages = append(stages, adapterVerifyStage{Name: "status", Passed: false, Message: err.Error()})
+		stages = append(stages, adapterVerifyStage{Name: "status", Passed: false, Required: true, Message: err.Error()})
 		return adapterVerifyResult{AdapterID: adapter.Descriptor().ID, Stages: stages, Message: "adapter status failed"}
 	}
-	stages = append(stages, adapterVerifyStage{Name: "settings", Passed: status.Installed, Message: string(status.State)})
-	if adapter.Descriptor().ID != "copilot-vscode" {
-		stages = append(stages, adapterVerifyStage{Name: "availability", Passed: status.Available, Message: status.Evidence})
-		test, testErr := adapter.Test(ctx)
-		if testErr != nil {
-			stages = append(stages, adapterVerifyStage{Name: "test", Passed: false, Message: testErr.Error()})
-			return adapterVerifyResult{AdapterID: adapter.Descriptor().ID, Stages: stages, Message: "generic adapter verification failed"}
-		}
-		stages = append(stages, adapterVerifyStage{Name: "test", Passed: test.Passed, Message: test.Message})
-		ready := status.Installed && status.Available && test.Passed
-		return adapterVerifyResult{AdapterID: adapter.Descriptor().ID, Ready: ready, Stages: stages, Message: "generic adapter verification complete"}
-	}
+	contract := evidenceContract(adapter.Descriptor().ID)
+	stages = append(stages,
+		adapterVerifyStage{Name: "settings", Passed: status.Installed, Required: true, Message: string(status.InstallationState)},
+		adapterVerifyStage{Name: "availability", Passed: status.Available, Required: true, Message: status.Evidence},
+	)
 	collectorOK, collectorMessage := verifyCollectorReachability(ctx)
-	stages = append(stages, adapterVerifyStage{Name: "collector", Passed: collectorOK, Message: collectorMessage})
+	stages = append(stages, adapterVerifyStage{Name: "collector", Passed: collectorOK, Required: true, Message: collectorMessage})
 	duration, err := time.ParseDuration(since)
 	if err != nil {
-		stages = append(stages, adapterVerifyStage{Name: "since", Passed: false, Message: err.Error()})
-		return adapterVerifyResult{AdapterID: "copilot-vscode", Stages: stages, Message: "invalid verification window"}
+		stages = append(stages, adapterVerifyStage{Name: "since", Passed: false, Required: true, Message: err.Error()})
+		return adapterVerifyResult{AdapterID: adapter.Descriptor().ID, Stages: stages, Message: "invalid verification window"}
 	}
 	service, err := app.OpenReadOnly(ctx, home)
 	if err != nil {
-		stages = append(stages, adapterVerifyStage{Name: "database", Passed: false, Message: err.Error()})
-		return adapterVerifyResult{AdapterID: "copilot-vscode", Stages: stages, Message: "database unavailable"}
+		stages = append(stages, adapterVerifyStage{Name: "database", Passed: false, Required: true, Message: err.Error()})
+		return adapterVerifyResult{AdapterID: adapter.Descriptor().ID, Stages: stages, Message: "database unavailable"}
 	}
 	defer func() { _ = service.Close() }()
 	now := time.Now().UTC()
-	foundCopilot, err := service.Store.HasRecentCopilotOTLPModelCall(ctx, sqlite.CopilotOTLPEvidenceQuery{From: now.Add(-duration), To: now, ProjectSlug: projectSlug})
+	foundEvidence, err := service.Store.HasRecentAdapterEvidence(ctx, sqlite.AdapterEvidenceQuery{AdapterID: adapter.Descriptor().ID, Source: contract.Source, From: now.Add(-duration), To: now, ProjectSlug: projectSlug, RequiredQuality: string(contract.Quality)})
 	if err != nil {
-		stages = append(stages, adapterVerifyStage{Name: "usage", Passed: false, Message: err.Error()})
-		return adapterVerifyResult{AdapterID: "copilot-vscode", Stages: stages, Message: "usage query failed"}
+		stages = append(stages, adapterVerifyStage{Name: "raw_evidence", Passed: false, Required: true, Message: err.Error()})
+		return adapterVerifyResult{AdapterID: adapter.Descriptor().ID, Stages: stages, Message: "evidence query failed"}
 	}
-	stages = append(stages, adapterVerifyStage{Name: "copilot_model_call", Passed: foundCopilot, Message: "requires recent otlp-http Copilot model.call with otel_reported tokens in local storage"})
-	ready := status.Installed && collectorOK && foundCopilot
-	message := "Copilot capture is not verified yet"
+	evidenceMessage := fmt.Sprintf("requires recent %s evidence from %s with %s quality", adapter.Descriptor().ID, contract.Source, contract.Quality)
+	if contract.Quality != adapters.CaptureLifecycleOnly {
+		evidenceMessage += " and one linked normalized model call with source-reported tokens"
+	}
+	stages = append(stages,
+		adapterVerifyStage{Name: "capture_quality", Passed: status.CaptureQuality == contract.Quality, Required: true, Message: fmt.Sprintf("expected %s, got %s", contract.Quality, status.CaptureQuality)},
+		adapterVerifyStage{Name: "raw_evidence", Passed: foundEvidence, Required: true, Message: evidenceMessage},
+		adapterVerifyStage{Name: "source_evidence", Passed: contract.SourceEvidence, Required: true, Message: contract.SourceEvidenceMessage},
+	)
+	ready := requiredStagesPassed(stages)
+	message := fmt.Sprintf("%s capture is not verified yet", adapter.Descriptor().Name)
 	if ready {
-		message = "Copilot capture verified"
+		message = fmt.Sprintf("%s capture verified", adapter.Descriptor().Name)
 	}
-	return adapterVerifyResult{AdapterID: "copilot-vscode", Ready: ready, Stages: stages, Message: message}
+	return adapterVerifyResult{AdapterID: adapter.Descriptor().ID, Ready: ready, Stages: stages, Message: message}
 }
 
 func verifyCollectorReachability(ctx context.Context) (bool, string) {
