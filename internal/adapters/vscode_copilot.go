@@ -15,7 +15,7 @@ func newVSCodeCopilotAdapter() vscodeCopilotAdapter {
 }
 
 func (a vscodeCopilotAdapter) Descriptor() Descriptor {
-	return Descriptor{ID: a.id, Name: a.name, Version: "otel", Stable: true}
+	return Descriptor{ID: a.id, Name: a.name, Version: "otel", Stable: true, Capabilities: Capabilities{ModelIdentity: true, InputTokens: true, OutputTokens: true, ReasoningTokens: true, CacheTokens: true, StructuredEvents: true}}
 }
 
 func (a vscodeCopilotAdapter) Install(_ context.Context, options InstallOptions) (InstallResult, error) {
@@ -34,7 +34,7 @@ func (a vscodeCopilotAdapter) PlanInstall(_ context.Context, options SetupOption
 	if options.DryRun {
 		change.Description = "dry run: " + change.Description
 	}
-	return SetupPlan{AdapterID: a.id, State: SetupAvailable, CaptureQuality: CaptureUnavailable, Changes: []SetupChange{change}, Notes: []string{"Copilot telemetry remains unavailable until an independently reviewed documented VS Code source and version are recorded"}}, nil
+	return SetupPlan{AdapterID: a.id, State: SetupAvailable, CaptureQuality: CaptureOTELReported, Changes: []SetupChange{change}, Notes: []string{"Copilot OTel reports documented model and token fields; clean-device real-agent acceptance remains required"}}, nil
 }
 
 func (a vscodeCopilotAdapter) Uninstall(_ context.Context, options InstallOptions) (InstallResult, error) {
@@ -58,7 +58,7 @@ func (a vscodeCopilotAdapter) Status(ctx context.Context) (SetupStatus, error) {
 	if installed {
 		state = SetupInstalled
 	}
-	return SetupStatus{AdapterID: a.id, Available: detection.Available, Installed: installed, State: state, InstallationState: state, CaptureQuality: CaptureUnavailable, Evidence: detection.Evidence, Notes: []string{"Copilot telemetry remains unavailable until an independently reviewed documented VS Code source and version are recorded"}}, nil
+	return SetupStatus{AdapterID: a.id, Available: detection.Available, Installed: installed, State: state, InstallationState: state, CaptureQuality: CaptureOTELReported, Evidence: detection.Evidence, Notes: []string{"Copilot OTel reports documented model and token fields; clean-device real-agent acceptance remains required"}}, nil
 }
 
 func (a vscodeCopilotAdapter) Test(ctx context.Context) (TestResult, error) {
@@ -66,7 +66,7 @@ func (a vscodeCopilotAdapter) Test(ctx context.Context) (TestResult, error) {
 	if err != nil {
 		return TestResult{}, err
 	}
-	return TestResult{AdapterID: a.id, Passed: status.Installed, CaptureQuality: CaptureUnavailable, Message: status.Evidence, TestedAt: time.Now().UTC()}, nil
+	return TestResult{AdapterID: a.id, Passed: status.Installed, CaptureQuality: CaptureOTELReported, Message: status.Evidence, TestedAt: time.Now().UTC()}, nil
 }
 
 func (a vscodeCopilotAdapter) settingsPath() string {

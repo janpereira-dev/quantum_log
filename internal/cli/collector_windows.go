@@ -4,15 +4,23 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"unicode/utf16"
+
+	"golang.org/x/sys/windows"
 )
 
 const windowsCollectorTaskName = `QUANTUM_LOG Collector`
 
 type windowsCollectorManager struct{}
+
+var runWindowsSchedulerCommand = func(args ...string) ([]byte, error) {
+	return exec.Command("schtasks.exe", args...).CombinedOutput()
+}
 
 func newCollectorManager() collectorManager { return windowsCollectorManager{} }
 
@@ -57,10 +65,17 @@ func (windowsCollectorManager) Install(home, listen string) (CollectorStatus, er
 	if err != nil {
 		return CollectorStatus{}, err
 	}
-	if err := os.WriteFile(collectorTaskDefinitionPath(), []byte(windowsCollectorTaskDefinition(executable, home, listen)), 0o600); err != nil {
+	if err := validateWindowsCollectorExecutable(executable); err != nil {
 		return CollectorStatus{}, err
 	}
-	if err := exec.Command("schtasks.exe", "/Create", "/TN", windowsCollectorTaskName, "/XML", collectorTaskDefinitionPath(), "/F").Run(); err != nil {
+	userID, err := currentWindowsTokenIdentity()
+	if err != nil {
+		return CollectorStatus{}, err
+	}
+	if err := writeWindowsCollectorTaskDefinition(collectorTaskDefinitionPath(), executable, home, listen, userID); err != nil {
+		return CollectorStatus{}, err
+	}
+	if err := createWindowsCollectorTask(collectorTaskDefinitionPath()); err != nil {
 		return CollectorStatus{}, err
 	}
 	status, err := windowsCollectorStatus(context.Background(), listen)
@@ -69,6 +84,58 @@ func (windowsCollectorManager) Install(home, listen string) (CollectorStatus, er
 	}
 	status.Message = "collector task installed"
 	return status, nil
+}
+
+func currentWindowsTokenIdentity() (string, error) {
+	token, err := windows.OpenCurrentProcessToken()
+	if err != nil {
+		return "", fmt.Errorf("open current process token: %w", err)
+	}
+	defer func() { _ = token.Close() }()
+
+	tokenUser, err := token.GetTokenUser()
+	if err != nil {
+		return "", fmt.Errorf("get current process token user: %w", err)
+	}
+	account, domain, _, err := tokenUser.User.Sid.LookupAccount("")
+	if err != nil {
+		return "", fmt.Errorf("resolve current process token user: %w", err)
+	}
+	if account == "" || domain == "" {
+		return "", fmt.Errorf("resolve current process token user: empty account or domain")
+	}
+	return domain + `\` + account, nil
+}
+
+func writeWindowsCollectorTaskDefinition(path, executable, home, listen, userID string) error {
+	definition := strings.Replace(windowsCollectorTaskDefinition(executable, home, listen, userID), `encoding="UTF-8"`, `encoding="UTF-16"`, 1)
+	encoded := utf16.Encode([]rune(definition))
+	contents := make([]byte, 2, 2+len(encoded)*2)
+	contents[0], contents[1] = 0xFF, 0xFE
+	for _, codeUnit := range encoded {
+		contents = append(contents, byte(codeUnit), byte(codeUnit>>8))
+	}
+	return os.WriteFile(path, contents, 0o600)
+}
+
+func createWindowsCollectorTask(definitionPath string) error {
+	output, err := runWindowsSchedulerCommand("/Create", "/TN", windowsCollectorTaskName, "/XML", definitionPath, "/F")
+	if err == nil {
+		return nil
+	}
+	diagnostic := strings.TrimSpace(string(output))
+	if diagnostic == "" {
+		return fmt.Errorf("Task Scheduler operation /Create for task %q failed: %w", windowsCollectorTaskName, err)
+	}
+	return fmt.Errorf("Task Scheduler operation /Create for task %q failed: %w: %s", windowsCollectorTaskName, err, diagnostic)
+}
+
+func validateWindowsCollectorExecutable(executable string) error {
+	path := strings.ToLower(filepath.ToSlash(executable))
+	if strings.HasSuffix(path, ".test.exe") || strings.Contains(path, "/go-build") {
+		return fmt.Errorf("cannot install managed collector from transient executable %q; build or install a durable qlog.exe, then run that binary to install the managed collector", executable)
+	}
+	return nil
 }
 
 func (windowsCollectorManager) Start(home, listen string) (CollectorStatus, error) {

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -76,12 +77,12 @@ func (a claudeCodeAdapter) Test(ctx context.Context) (TestResult, error) {
 	return TestResult{AdapterID: "claude-code", Passed: detection.Available, CaptureQuality: CaptureLifecycleOnly, Message: message, TestedAt: time.Now().UTC()}, nil
 }
 
-func (claudeCodeAdapter) Uninstall(_ context.Context, options InstallOptions) (InstallResult, error) {
-	action := "no files changed: Claude Code hook removal is not implemented yet"
-	if options.DryRun {
-		action = "dry run: " + action
+func (a claudeCodeAdapter) Uninstall(_ context.Context, options InstallOptions) (InstallResult, error) {
+	change, err := a.removeSettings(options.DryRun)
+	if err != nil {
+		return InstallResult{}, err
 	}
-	return InstallResult{Actions: []string{action}}, nil
+	return InstallResult{Changed: !options.DryRun && change.Action == "removed", Actions: []string{formatChange(change)}, Changes: []SetupChange{change}}, nil
 }
 
 func (a claudeCodeAdapter) HealthCheck(ctx context.Context) error {
@@ -134,6 +135,36 @@ func (a claudeCodeAdapter) applySettings(dryRun bool, home string) (SetupChange,
 	return change, os.WriteFile(path, next, 0o600)
 }
 
+func (a claudeCodeAdapter) removeSettings(dryRun bool) (SetupChange, error) {
+	path := a.settingsPath()
+	current, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return SetupChange{Path: path, Action: "unchanged", Description: "Claude Code qlog lifecycle hooks already absent"}, nil
+	}
+	if err != nil {
+		return SetupChange{}, err
+	}
+	next, err := claudeSettingsWithoutQlogHooks(current)
+	if err != nil {
+		return SetupChange{}, err
+	}
+	change := SetupChange{Path: path, Action: "unchanged", Description: "Claude Code qlog lifecycle hooks already absent"}
+	if string(current) == string(next) {
+		return change, nil
+	}
+	change.Action = "removed"
+	change.Description = "removed qlog-owned Claude Code lifecycle hooks"
+	if dryRun {
+		return change, nil
+	}
+	backup := path + ".qlog-backup-" + time.Now().UTC().Format("20060102150405")
+	if err := os.WriteFile(backup, current, 0o600); err != nil {
+		return SetupChange{}, err
+	}
+	change.BackupPath = backup
+	return change, os.WriteFile(path, next, 0o600)
+}
+
 func (claudeCodeAdapter) settingsPath() string {
 	if root := os.Getenv("QLOG_ADAPTER_CONFIG_HOME"); root != "" {
 		return filepath.Join(root, ".claude", "settings.json")
@@ -171,6 +202,49 @@ func claudeSettingsWithQlogHooks(current []byte, command string) ([]byte, error)
 		hooks[event] = claudeHookEntriesWithQlog(hooks[event], command)
 	}
 	settings["hooks"] = hooks
+	return json.MarshalIndent(settings, "", "  ")
+}
+
+func claudeSettingsWithoutQlogHooks(current []byte) ([]byte, error) {
+	settings := map[string]any{}
+	if err := json.Unmarshal(current, &settings); err != nil {
+		return nil, err
+	}
+	hooks, ok := settings["hooks"].(map[string]any)
+	if !ok {
+		return current, nil
+	}
+	changed := false
+	for event, entries := range hooks {
+		currentEntries, ok := entries.([]any)
+		if !ok {
+			continue
+		}
+		nextEntries := make([]any, 0, len(currentEntries))
+		for _, entry := range currentEntries {
+			cleaned, keep := claudeHookEntryWithoutQlog(entry)
+			if !keep {
+				changed = true
+				continue
+			}
+			if !reflect.DeepEqual(cleaned, entry) {
+				changed = true
+			}
+			nextEntries = append(nextEntries, cleaned)
+		}
+		if len(nextEntries) == 0 {
+			delete(hooks, event)
+			changed = true
+			continue
+		}
+		hooks[event] = nextEntries
+	}
+	if !changed {
+		return current, nil
+	}
+	if len(hooks) == 0 {
+		delete(settings, "hooks")
+	}
 	return json.MarshalIndent(settings, "", "  ")
 }
 
@@ -219,7 +293,24 @@ func isQlogClaudeCommandHook(hook any) bool {
 	}
 	command, _ := object["command"].(string)
 	typeName, _ := object["type"].(string)
-	return typeName == "command" && strings.Contains(command, "qlog") && strings.Contains(command, "hook claude-code")
+	if typeName != "command" {
+		return false
+	}
+	if command == claudeCodeHookCommand("") {
+		return true
+	}
+	const prefix = "qlog --home "
+	const suffix = " hook claude-code"
+	encodedHome, ok := strings.CutPrefix(command, prefix)
+	if !ok {
+		return false
+	}
+	encodedHome, ok = strings.CutSuffix(encodedHome, suffix)
+	if !ok {
+		return false
+	}
+	home, err := strconv.Unquote(encodedHome)
+	return err == nil && home != ""
 }
 
 func bytesContains(haystack, needle []byte) bool {

@@ -108,12 +108,13 @@ type UsageQuery struct {
 }
 
 type AdapterEvidenceQuery struct {
-	AdapterID       string
-	Source          string
-	From            time.Time
-	To              time.Time
-	ProjectSlug     string
-	RequiredQuality string
+	AdapterID         string
+	AllowedAgentNames []string
+	Source            string
+	From              time.Time
+	To                time.Time
+	ProjectSlug       string
+	RequiredQuality   string
 }
 
 type UsageRow struct {
@@ -1527,9 +1528,19 @@ func (s *Store) HasRecentAdapterEvidence(ctx context.Context, query AdapterEvide
 		return false, errors.New("adapter id, source, and required quality are required")
 	}
 	where := ` WHERE r.source = ?
-		AND lower(COALESCE(json_extract(r.payload_json_sanitized, '$.agent_name'), '')) = lower(?)
 		AND lower(COALESCE(json_extract(r.payload_json_sanitized, '$.capture_quality'), '')) = lower(?)`
-	args := []any{query.Source, query.AdapterID, query.RequiredQuality}
+	args := []any{query.Source, query.RequiredQuality}
+	if len(query.AllowedAgentNames) == 0 {
+		where += ` AND lower(COALESCE(json_extract(r.payload_json_sanitized, '$.agent_name'), '')) = lower(?)`
+		args = append(args, query.AdapterID)
+	} else {
+		placeholders := make([]string, 0, len(query.AllowedAgentNames))
+		for _, agentName := range query.AllowedAgentNames {
+			placeholders = append(placeholders, "lower(?)")
+			args = append(args, agentName)
+		}
+		where += ` AND lower(COALESCE(json_extract(r.payload_json_sanitized, '$.agent_name'), '')) IN (` + strings.Join(placeholders, ", ") + `)`
+	}
 	if !query.From.IsZero() {
 		where += " AND r.occurred_at >= ?"
 		args = append(args, timestamp(query.From))

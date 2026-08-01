@@ -34,7 +34,7 @@ M4 is `IN_PROGRESS`. Its stable auto-capture scope is exactly Claude Code, Codex
 | --- | --- | --- |
 | Claude Code | `lifecycle_only` | Awaiting clean-device lifecycle evidence. |
 | Codex | `unavailable` | No documented collector-forwarding source evidence recorded. |
-| Copilot VS Code | `unavailable` | No documented Copilot VS Code source evidence recorded. |
+| Copilot VS Code | `otel_reported` | Documented VS Code OTel configuration and sanctioned Copilot model/token evidence are supported; clean-device real-agent acceptance remains required. |
 | OpenCode | `lifecycle_only` | Awaiting documented usage schema and clean-device evidence. |
 
 `lifecycle_only` records sanitized lifecycle evidence with no token counters. `unavailable` means qlog does not claim automatic counters. `agent_reported`, `otel_reported`, and `provider_reported` require documented source counters; `estimated` is visibly non-measured. Reports keep capture qualities separate and label cost fields as estimated; they never manufacture tokens or provider spend.

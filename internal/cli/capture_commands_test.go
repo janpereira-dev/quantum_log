@@ -208,7 +208,7 @@ func TestAdapterVerifyCopilotRejectsSpoofedOTLPHTTPImport(t *testing.T) {
 	}
 }
 
-func TestAdapterVerifyCopilotRejectsOTLPWithoutSourceEvidence(t *testing.T) {
+func TestAdapterVerifyCopilotAcceptsSanctionedOTLPEvidence(t *testing.T) {
 	home := t.TempDir()
 	configHome := t.TempDir()
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
@@ -226,7 +226,7 @@ func TestAdapterVerifyCopilotRejectsOTLPWithoutSourceEvidence(t *testing.T) {
 	server := httptest.NewServer(newCollectorMux(home))
 	t.Cleanup(server.Close)
 	t.Setenv("QLOG_COLLECTOR_URL", server.URL+"/v1/traces")
-	request, err := http.NewRequest(http.MethodPost, server.URL+"/v1/traces", strings.NewReader(`{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"copilot-chat"}}]},"scopeSpans":[{"spans":[{"traceId":"trace-copilot","attributes":[{"key":"qlog.project","value":{"stringValue":"project"}},{"key":"gen_ai.provider.name","value":{"stringValue":"github"}},{"key":"gen_ai.agent.name","value":{"stringValue":"GitHub Copilot Chat"}},{"key":"gen_ai.request.model","value":{"stringValue":"gpt-5"}},{"key":"gen_ai.usage.input_tokens","value":{"intValue":"1"}},{"key":"gen_ai.usage.output_tokens","value":{"intValue":"2"}}]}]}]}]}`))
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/v1/traces", strings.NewReader(`{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"copilot-chat"}}]},"scopeSpans":[{"spans":[{"traceId":"trace-copilot","spanId":"span-copilot","attributes":[{"key":"qlog.project","value":{"stringValue":"project"}},{"key":"gen_ai.provider.name","value":{"stringValue":"github"}},{"key":"gen_ai.agent.name","value":{"stringValue":"GitHub Copilot Chat"}},{"key":"gen_ai.request.model","value":{"stringValue":"gpt-5"}},{"key":"gen_ai.usage.input_tokens","value":{"intValue":"1"}},{"key":"gen_ai.usage.output_tokens","value":{"intValue":"2"}}]}]}]}]}`))
 	if err != nil {
 		t.Fatalf("create request: %v", err)
 	}
@@ -241,8 +241,8 @@ func TestAdapterVerifyCopilotRejectsOTLPWithoutSourceEvidence(t *testing.T) {
 	}
 
 	output, err := runQLog(t, home, "adapter", "verify", "copilot-vscode", "--project", "project", "--json")
-	if err == nil {
-		t.Fatalf("adapter verify succeeded: %s", output)
+	if err != nil {
+		t.Fatalf("adapter verify failed: %s: %v", output, err)
 	}
 	var result struct {
 		Ready bool `json:"ready"`
@@ -250,8 +250,8 @@ func TestAdapterVerifyCopilotRejectsOTLPWithoutSourceEvidence(t *testing.T) {
 	if err := json.Unmarshal([]byte(output), &result); err != nil {
 		t.Fatalf("decode verify: %v", err)
 	}
-	if result.Ready {
-		t.Fatalf("unverified Copilot OTLP usage passed verification: %s", output)
+	if !result.Ready {
+		t.Fatalf("sanctioned Copilot OTLP usage did not verify: %s", output)
 	}
 }
 
@@ -286,8 +286,15 @@ func TestCollectorStatusShowsLocalEndpoints(t *testing.T) {
 		Running   bool     `json:"running"`
 		Health    string   `json:"health"`
 	}
-	if err := json.Unmarshal([]byte(output), &status); err != nil || status.Listen != "127.0.0.1:1" || len(status.Endpoints) != 3 || !containsString(status.Endpoints, "/healthz") || status.Home == "" || status.Database == "" || status.Reachable || status.Running || status.Health == "" {
+	if err := json.Unmarshal([]byte(output), &status); err != nil || status.Listen != "127.0.0.1:1" || len(status.Endpoints) != 4 || !containsString(status.Endpoints, "/v1/logs") || !containsString(status.Endpoints, "/healthz") || status.Home == "" || status.Database == "" || status.Reachable || status.Running || status.Health == "" {
 		t.Fatalf("collector status output = %q, %#v, %v", output, status, err)
+	}
+}
+
+func TestCodexEvidenceContractUsesDocumentedOTLPLogs(t *testing.T) {
+	contract := evidenceContract("codex")
+	if contract.Source != "otlp-http" || contract.Quality != adapters.CaptureOTELReported || !contract.SourceEvidence {
+		t.Fatalf("Codex evidence contract = %#v", contract)
 	}
 }
 

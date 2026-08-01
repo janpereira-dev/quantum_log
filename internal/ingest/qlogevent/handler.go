@@ -49,7 +49,7 @@ func (h Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	writer.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(writer).Encode(map[string]int{"accepted": count})
+	_ = json.NewEncoder(writer).Encode(map[string]int{"accepted": count, "duplicates": 1 - count})
 }
 
 func Ingest(ctx context.Context, service *app.Service, event Event) (int, error) {

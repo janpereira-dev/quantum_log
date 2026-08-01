@@ -83,6 +83,37 @@ func TestHandlerMapsCodexRawResponseCompletedUsage(t *testing.T) {
 	}
 }
 
+func TestHandlerReportsDuplicateEvent(t *testing.T) {
+	ctx := context.Background()
+	service, err := app.Initialize(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("initialize service: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	repo := filepath.Join(t.TempDir(), "repo")
+	if _, _, err := service.Store.RegisterProject(ctx, "Repo", "repo", repo); err != nil {
+		t.Fatalf("register project: %v", err)
+	}
+	payload := `{"source":"qlog-plugin","session_id":"session-1","event_type":"agent.event","occurred_at":"2026-07-20T10:00:00Z","project_hint":{"cwd":"` + filepath.ToSlash(repo) + `"},"upstream_event_id":"event-1","payload":{}}`
+	handler := NewHandler(service)
+	for attempt, want := range []map[string]int{{"accepted": 1, "duplicates": 0}, {"accepted": 0, "duplicates": 1}} {
+		request := httptest.NewRequest(http.MethodPost, "/v1/events", bytes.NewBufferString(payload))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("attempt %d response = %d: %s", attempt+1, response.Code, response.Body.String())
+		}
+		got := map[string]int{}
+		if err := json.NewDecoder(response.Body).Decode(&got); err != nil {
+			t.Fatalf("attempt %d decode response: %v", attempt+1, err)
+		}
+		if !mapsEqual(got, want) {
+			t.Fatalf("attempt %d response = %#v, want %#v", attempt+1, got, want)
+		}
+	}
+}
+
 func TestIngestExportsReusableSanitizedEventImport(t *testing.T) {
 	ctx := context.Background()
 	service, err := app.Initialize(ctx, t.TempDir())
@@ -145,4 +176,16 @@ func TestPluginPayloadDropsNegativeUsageCounters(t *testing.T) {
 	if bytes.Contains(got, []byte("input_tokens")) {
 		t.Fatalf("payload retained negative usage = %s", got)
 	}
+}
+
+func mapsEqual(got, want map[string]int) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for key, value := range want {
+		if got[key] != value {
+			return false
+		}
+	}
+	return true
 }

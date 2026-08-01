@@ -25,16 +25,16 @@ func TestDefaultRegistryDeclaresOnlyVerifiedCapabilities(t *testing.T) {
 		t.Fatal("generic JSONL must not claim metrics supplied only by callers")
 	}
 	copilot, found := registry.Get("copilot-vscode")
-	if !found || copilot.Descriptor().Capabilities != (Capabilities{}) {
-		t.Fatalf("copilot-vscode must not claim unavailable telemetry capabilities")
+	if !found || !copilot.Descriptor().Capabilities.ModelIdentity || !copilot.Descriptor().Capabilities.InputTokens || !copilot.Descriptor().Capabilities.OutputTokens || !copilot.Descriptor().Capabilities.ReasoningTokens || !copilot.Descriptor().Capabilities.CacheTokens || !copilot.Descriptor().Capabilities.StructuredEvents {
+		t.Fatalf("copilot-vscode must declare documented OTel model and token capabilities")
 	}
 	opencode, found := registry.Get("opencode")
 	if !found || opencode.Descriptor().Capabilities.InputTokens || opencode.Descriptor().Capabilities.OutputTokens || !opencode.Descriptor().Capabilities.ToolCalls || !opencode.Descriptor().Capabilities.SessionLifecycle || !opencode.Descriptor().Capabilities.StructuredEvents {
 		t.Fatalf("opencode must declare plugin lifecycle/tool capture capabilities")
 	}
 	codex, found := registry.Get("codex")
-	if !found || codex.Descriptor().Capabilities != (Capabilities{}) {
-		t.Fatalf("codex must not claim undocumented forwarding capabilities")
+	if !found || !codex.Descriptor().Capabilities.ModelIdentity || !codex.Descriptor().Capabilities.InputTokens || !codex.Descriptor().Capabilities.OutputTokens || !codex.Descriptor().Capabilities.CacheTokens || !codex.Descriptor().Capabilities.ReasoningTokens || !codex.Descriptor().Capabilities.StructuredEvents {
+		t.Fatalf("codex must declare documented OTLP response.completed capabilities")
 	}
 	claude, found := registry.Get("claude-code")
 	if !found || !claude.Descriptor().Capabilities.SessionLifecycle || !claude.Descriptor().Capabilities.StructuredEvents || claude.Descriptor().Capabilities.InputTokens {
@@ -80,14 +80,20 @@ func TestClaudeCodeStatusIsLifecycleOnly(t *testing.T) {
 	}
 }
 
-func TestUnverifiedTokenAdaptersReportUnavailable(t *testing.T) {
-	for _, adapter := range []Adapter{newCodexAdapter(), newVSCodeCopilotAdapter()} {
-		status, err := adapter.Status(context.Background())
+func TestCodexAndCopilotReportTheirDocumentedQuality(t *testing.T) {
+	for _, want := range []struct {
+		adapter Adapter
+		quality CaptureQuality
+	}{
+		{newCodexAdapter(), CaptureOTELReported},
+		{newVSCodeCopilotAdapter(), CaptureOTELReported},
+	} {
+		status, err := want.adapter.Status(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
-		if status.CaptureQuality != CaptureUnavailable {
-			t.Fatalf("%s quality = %q", status.AdapterID, status.CaptureQuality)
+		if status.CaptureQuality != want.quality {
+			t.Fatalf("%s quality = %q, want %q", status.AdapterID, status.CaptureQuality, want.quality)
 		}
 	}
 }
@@ -134,7 +140,7 @@ func TestCopilotVSCodeInstallConfiguresNativeOTelWithoutContentCapture(t *testin
 	if err != nil {
 		t.Fatalf("Status() error = %v", err)
 	}
-	if !status.Installed || status.CaptureQuality != CaptureUnavailable {
+	if !status.Installed || status.CaptureQuality != CaptureOTELReported {
 		t.Fatalf("status = %#v", status)
 	}
 }
@@ -235,6 +241,54 @@ func TestVSCodeCopilotUninstallRemovesOnlyManagedSettings(t *testing.T) {
 	}
 }
 
+func TestCodexInstallPreservesConfigAndUninstallRestoresOnlyQlogSettings(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	configPath := filepath.Join(configHome, ".codex", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	before := "model = \"gpt-5\"\n\n[otel]\nenvironment = \"production\"\nexporter = \"none\"\n"
+	if err := os.WriteFile(configPath, []byte(before), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	adapter := newCodexAdapter()
+	first, err := adapter.Install(context.Background(), InstallOptions{})
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if !first.Changed {
+		t.Fatalf("first install = %#v", first)
+	}
+	installed := string(mustReadFile(t, configPath))
+	for _, want := range []string{
+		"model = \"gpt-5\"",
+		"environment = \"production\"",
+		"exporter = { otlp-http = { endpoint = \"http://127.0.0.1:4318/v1/logs\", protocol = \"binary\" } }",
+		"log_user_prompt = false",
+	} {
+		if !strings.Contains(installed, want) {
+			t.Fatalf("installed config missing %q:\n%s", want, installed)
+		}
+	}
+	second, err := adapter.Install(context.Background(), InstallOptions{})
+	if err != nil {
+		t.Fatalf("second install: %v", err)
+	}
+	if second.Changed {
+		t.Fatalf("second install must be idempotent: %#v", second)
+	}
+
+	if _, err := adapter.Uninstall(context.Background(), InstallOptions{}); err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+	after := string(mustReadFile(t, configPath))
+	if after != before {
+		t.Fatalf("config after uninstall = %q, want %q", after, before)
+	}
+}
+
 func TestOpenCodeInstallWritesGlobalPluginPostingLocalEvents(t *testing.T) {
 	configHome := t.TempDir()
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
@@ -318,6 +372,45 @@ func TestClaudeCodeInstallPreservesExistingHooksAndAddsHome(t *testing.T) {
 	}
 	if containsAdapterString(commands, "qlog hook claude-code") {
 		t.Fatalf("old qlog hook command was not updated: %#v", commands)
+	}
+}
+
+func TestClaudeCodeUninstallRemovesOnlyQlogHooks(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	settingsPath := filepath.Join(configHome, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	settings := map[string]any{
+		"theme": "dark",
+		"hooks": map[string]any{
+			"Stop": []any{map[string]any{"hooks": []any{
+				map[string]any{"type": "command", "command": "user-stop-hook"},
+				map[string]any{"type": "command", "command": "user-qlog hook claude-code-notify"},
+				map[string]any{"type": "command", "command": "qlog hook claude-code"},
+			}}},
+			"SessionStart": []any{map[string]any{"hooks": []any{
+				map[string]any{"type": "command", "command": "qlog --home \"C:/qlog\" hook claude-code"},
+			}}},
+		},
+	}
+	writeSettingsMap(t, settingsPath, settings)
+
+	result, err := newClaudeCodeAdapter().Uninstall(context.Background(), InstallOptions{})
+	if err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	if !result.Changed {
+		t.Fatalf("uninstall result = %#v", result)
+	}
+	after := readSettingsMap(t, settingsPath)
+	if after["theme"] != "dark" {
+		t.Fatalf("user setting not preserved: %#v", after)
+	}
+	commands := collectHookCommands(after)
+	if !containsAdapterString(commands, "user-stop-hook") || !containsAdapterString(commands, "user-qlog hook claude-code-notify") || containsAdapterString(commands, "qlog hook claude-code") || containsAdapterString(commands, "qlog --home \"C:/qlog\" hook claude-code") {
+		t.Fatalf("hooks after uninstall = %#v", commands)
 	}
 }
 

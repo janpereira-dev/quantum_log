@@ -36,7 +36,7 @@ func newCollectorCommand(home *string) *cobra.Command {
 		}
 		output.Home = paths.Home
 		output.Database = paths.Database
-		output.Endpoints = []string{"/v1/traces", "/v1/events", "/healthz"}
+		output.Endpoints = []string{"/v1/traces", "/v1/logs", "/v1/events", "/healthz"}
 		output.Scope = "loopback-only by default"
 		output.Health = output.Message
 		if jsonOutput {
@@ -47,7 +47,7 @@ func newCollectorCommand(home *string) *cobra.Command {
 	}}
 	status.Flags().StringVar(&listen, "listen", "127.0.0.1:4318", "OTLP/HTTP listen address")
 	status.Flags().BoolVar(&jsonOutput, "json", false, "output JSON")
-	serve := &cobra.Command{Use: "serve", Short: "Serve OTLP/HTTP JSON/protobuf traces", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+	serve := &cobra.Command{Use: "serve", Short: "Serve OTLP/HTTP JSON/protobuf traces and logs", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
 		if err := validateListenAddress(listen, allowNonLoopback); err != nil {
 			return err
 		}
@@ -59,7 +59,7 @@ func newCollectorCommand(home *string) *cobra.Command {
 			return err
 		}
 		server := &http.Server{Addr: listen, Handler: newCollectorMux(*home), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: time.Minute}
-		_, err = fmt.Fprintf(command.Root().OutOrStdout(), "qlog collector listening on http://%s (/v1/traces OTLP JSON/protobuf, /v1/events qlog JSON)\n", listen)
+		_, err = fmt.Fprintf(command.Root().OutOrStdout(), "qlog collector listening on http://%s (/v1/traces and /v1/logs OTLP JSON/protobuf, /v1/events qlog JSON)\n", listen)
 		if err != nil {
 			return err
 		}
@@ -89,6 +89,7 @@ func newCollectorCommand(home *string) *cobra.Command {
 func newCollectorMux(home string) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.Handle("/v1/traces", requestScopedHandler{home: home, build: otlp.NewHandler})
+	mux.Handle("/v1/logs", requestScopedHandler{home: home, build: otlp.NewHandler})
 	mux.Handle("/v1/events", requestScopedHandler{home: home, build: qlogevent.NewHandler})
 	mux.HandleFunc("/healthz", func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodGet && request.Method != http.MethodHead {
@@ -222,9 +223,9 @@ func validateCollectorListen(listen string) error {
 	return validateListenAddress(listen, false)
 }
 
-func windowsCollectorTaskDefinition(executable, home, listen string) string {
+func windowsCollectorTaskDefinition(executable, home, listen, userID string) string {
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
-<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><Triggers><LogonTrigger><Enabled>true</Enabled></LogonTrigger></Triggers><Principals><Principal id="Author"><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><StartWhenAvailable>true</StartWhenAvailable></Settings><Actions Context="Author"><Exec><Command>%s</Command><Arguments>--home &quot;%s&quot; collector serve --listen %s</Arguments></Exec></Actions></Task>`, xmlEscape(executable), xmlEscape(home), xmlEscape(listen))
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><Triggers><LogonTrigger><Enabled>true</Enabled></LogonTrigger></Triggers><Principals><Principal id="Author"><UserId>%s</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><StartWhenAvailable>true</StartWhenAvailable></Settings><Actions Context="Author"><Exec><Command>%s</Command><Arguments>--home &quot;%s&quot; collector serve --listen %s</Arguments></Exec></Actions></Task>`, xmlEscape(userID), xmlEscape(executable), xmlEscape(home), xmlEscape(listen))
 }
 
 func darwinCollectorLaunchAgentDefinition(executable, home, listen string) string {

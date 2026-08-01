@@ -52,7 +52,172 @@ func TestReceiverImportsStandardOTLPJSONThroughCentralResolver(t *testing.T) {
 	}
 }
 
-func TestReceiverKeepsUnverifiedCopilotOTLPLifecycleOnly(t *testing.T) {
+func TestReceiverReportsDuplicateTrace(t *testing.T) {
+	ctx := context.Background()
+	service, err := app.Initialize(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("initialize service: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	worktree := filepath.Join(t.TempDir(), "project")
+	if _, _, err := service.Store.RegisterProject(ctx, "Project", "project", worktree); err != nil {
+		t.Fatalf("register project: %v", err)
+	}
+	payload := `{"resourceSpans":[{"resource":{"attributes":[]},"scopeSpans":[{"spans":[{"traceId":"trace-duplicate","startTimeUnixNano":"1763294400000000000","attributes":[{"key":"qlog.project","value":{"stringValue":"project"}}]}]}]}]}`
+	handler := NewHandler(service)
+	for attempt, want := range []map[string]int{{"accepted": 1, "duplicates": 0}, {"accepted": 0, "duplicates": 1}} {
+		request := httptest.NewRequest(http.MethodPost, "/v1/traces", bytes.NewBufferString(payload))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("attempt %d response = %d: %s", attempt+1, response.Code, response.Body.String())
+		}
+		got := map[string]int{}
+		if err := json.NewDecoder(response.Body).Decode(&got); err != nil {
+			t.Fatalf("attempt %d decode response: %v", attempt+1, err)
+		}
+		if !responseCountsEqual(got, want) {
+			t.Fatalf("attempt %d response = %#v, want %#v", attempt+1, got, want)
+		}
+	}
+}
+
+func TestReceiverImportsCodexResponseCompletedLogsAndDeduplicatesReplay(t *testing.T) {
+	ctx := context.Background()
+	service, err := app.Initialize(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("initialize service: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	worktree := filepath.Join(t.TempDir(), "project")
+	project, _, err := service.Store.RegisterProject(ctx, "Project", "project", worktree)
+	if err != nil {
+		t.Fatalf("register project: %v", err)
+	}
+	payload := `{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"codex"}}]},"scopeLogs":[{"logRecords":[{"traceId":"codex-trace","spanId":"codex-span","timeUnixNano":"1763294400000000000","attributes":[{"key":"event.name","value":{"stringValue":"codex.sse_event"}},{"key":"event.kind","value":{"stringValue":"response.completed"}},{"key":"conversation.id","value":{"stringValue":"conversation-1"}},{"key":"qlog.project","value":{"stringValue":"project"}},{"key":"model","value":{"stringValue":"gpt-5"}},{"key":"input_tokens","value":{"intValue":"41"}},{"key":"output_tokens","value":{"intValue":"43"}},{"key":"cached_input_tokens","value":{"intValue":"47"}},{"key":"reasoning_output_tokens","value":{"intValue":"53"}},{"key":"user.prompt","value":{"stringValue":"must-not-persist"}},{"key":"authorization","value":{"stringValue":"Bearer secret"}},{"key":"tool.result","value":{"stringValue":"private tool output"}}]}]}]}]}`
+	handler := NewHandler(service)
+	for attempt, want := range []map[string]int{{"accepted": 1, "duplicates": 0}, {"accepted": 0, "duplicates": 1}} {
+		request := httptest.NewRequest(http.MethodPost, "/v1/logs", bytes.NewBufferString(payload))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("attempt %d response = %d: %s", attempt+1, response.Code, response.Body.String())
+		}
+		got := map[string]int{}
+		if err := json.NewDecoder(response.Body).Decode(&got); err != nil {
+			t.Fatalf("attempt %d decode response: %v", attempt+1, err)
+		}
+		if !responseCountsEqual(got, want) {
+			t.Fatalf("attempt %d response = %#v, want %#v", attempt+1, got, want)
+		}
+	}
+	report, err := service.Store.Usage(ctx, storepkg.UsageQuery{GroupBy: []string{"project", "agent", "provider", "model", "capture_quality"}})
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	if len(report.Rows) != 1 {
+		t.Fatalf("usage rows = %#v", report.Rows)
+	}
+	row := report.Rows[0]
+	if row.ProjectSlug != project.Slug || row.AgentName != "codex" || row.Provider != "openai" || row.Model != "gpt-5" || row.InputTokens != 41 || row.OutputTokens != 43 || row.CachedInputTokens != 47 || row.ReasoningTokens != 53 || row.TotalTokens != 184 || row.CaptureQuality != "otel_reported" {
+		t.Fatalf("usage row = %#v", row)
+	}
+}
+
+func TestReceiverRejectsGenericOrSpoofedLogs(t *testing.T) {
+	service, err := app.Initialize(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatalf("initialize service: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	payload := `{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"other-agent"}}]},"scopeLogs":[{"logRecords":[{"traceId":"trace","spanId":"span","attributes":[{"key":"event.name","value":{"stringValue":"codex.sse_event"}},{"key":"event.kind","value":{"stringValue":"response.completed"}},{"key":"model","value":{"stringValue":"gpt-5"}},{"key":"input_tokens","value":{"intValue":"1"}},{"key":"output_tokens","value":{"intValue":"1"}}]}]}]}]}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/logs", bytes.NewBufferString(payload))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	NewHandler(service).ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("response = %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestCodexLogEventAllowlistsOnlyModelAndUsageFields(t *testing.T) {
+	service, err := app.Initialize(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatalf("initialize service: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	line, accepted, err := (Receiver{service: service}).codexLogEvent(context.Background(), map[string]string{"service.name": "codex"}, map[string]string{
+		"event.name":             "codex.sse_event",
+		"event.kind":             "response.completed",
+		"model":                  "gpt-5",
+		"input_tokens":           "1",
+		"output_tokens":          "2",
+		"user.prompt":            "must-not-persist",
+		"response.content":       "private-response",
+		"tool.result":            "private-tool-result",
+		"authorization":          "Bearer secret",
+		"unrecognized.attribute": "private-value",
+	}, logRecord{TraceID: "trace", SpanID: "span"})
+	if err != nil || !accepted {
+		t.Fatalf("Codex log event = %#v, accepted=%t, error=%v", line, accepted, err)
+	}
+	payload, err := json.Marshal(line["payload"])
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	for _, forbidden := range []string{"must-not-persist", "private-response", "private-tool-result", "Bearer secret", "private-value"} {
+		if strings.Contains(string(payload), forbidden) {
+			t.Fatalf("payload retained %q: %s", forbidden, payload)
+		}
+	}
+}
+
+func TestReceiverImportsDistinctSpansInSameTraceAndDeduplicatesRetry(t *testing.T) {
+	ctx := context.Background()
+	service, err := app.Initialize(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("initialize service: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	worktree := filepath.Join(t.TempDir(), "project")
+	if _, _, err := service.Store.RegisterProject(ctx, "Project", "project", worktree); err != nil {
+		t.Fatalf("register project: %v", err)
+	}
+	payload := `{"resourceSpans":[{"resource":{"attributes":[]},"scopeSpans":[{"spans":[{"traceId":"trace-shared","spanId":"span-one","startTimeUnixNano":"1763294400000000000","attributes":[{"key":"qlog.project","value":{"stringValue":"project"}}]},{"traceId":"trace-shared","spanId":"span-two","startTimeUnixNano":"1763294400000000001","attributes":[{"key":"qlog.project","value":{"stringValue":"project"}}]}]}]}]}`
+	handler := NewHandler(service)
+	for attempt, want := range []map[string]int{{"accepted": 2, "duplicates": 0}, {"accepted": 0, "duplicates": 2}} {
+		request := httptest.NewRequest(http.MethodPost, "/v1/traces", bytes.NewBufferString(payload))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("attempt %d response = %d: %s", attempt+1, response.Code, response.Body.String())
+		}
+		got := map[string]int{}
+		if err := json.NewDecoder(response.Body).Decode(&got); err != nil {
+			t.Fatalf("attempt %d decode response: %v", attempt+1, err)
+		}
+		if !responseCountsEqual(got, want) {
+			t.Fatalf("attempt %d response = %#v, want %#v", attempt+1, got, want)
+		}
+	}
+}
+
+func responseCountsEqual(got, want map[string]int) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for key, value := range want {
+		if got[key] != value {
+			return false
+		}
+	}
+	return true
+}
+
+func TestReceiverImportsValidCopilotOTLPWithReportedTokensAndReplayIdentity(t *testing.T) {
 	ctx := context.Background()
 	service, err := app.Initialize(ctx, t.TempDir())
 	if err != nil {
@@ -65,13 +230,23 @@ func TestReceiverKeepsUnverifiedCopilotOTLPLifecycleOnly(t *testing.T) {
 		t.Fatalf("register project: %v", err)
 	}
 
-	payload := `{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"copilot-chat"}},{"key":"service.version","value":{"stringValue":"1.112.0"}},{"key":"session.id","value":{"stringValue":"window-1"}}]},"scopeSpans":[{"spans":[{"traceId":"trace-copilot","startTimeUnixNano":"1763294400000000000","attributes":[{"key":"gen_ai.operation.name","value":{"stringValue":"chat"}},{"key":"gen_ai.provider.name","value":{"stringValue":"github"}},{"key":"gen_ai.agent.name","value":{"stringValue":"GitHub Copilot Chat"}},{"key":"gen_ai.request.model","value":{"stringValue":"gpt-5"}},{"key":"gen_ai.response.model","value":{"stringValue":"gpt-5-resolved"}},{"key":"gen_ai.usage.input_tokens","value":{"intValue":"11"}},{"key":"gen_ai.usage.output_tokens","value":{"intValue":"13"}},{"key":"gen_ai.usage.cache_read.input_tokens","value":{"intValue":"17"}},{"key":"gen_ai.usage.cache_creation.input_tokens","value":{"intValue":"19"}},{"key":"gen_ai.usage.reasoning.output_tokens","value":{"intValue":"23"}},{"key":"qlog.cwd","value":{"stringValue":"` + filepath.ToSlash(worktree) + `"}},{"key":"github.copilot.git.branch","value":{"stringValue":"main"}},{"key":"github.copilot.git.commit_sha","value":{"stringValue":"abc123"}}]}]}]}]}`
-	request := httptest.NewRequest(http.MethodPost, "/v1/traces", bytes.NewBufferString(payload))
-	request.Header.Set("Content-Type", "application/json")
-	response := httptest.NewRecorder()
-	NewHandler(service).ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
-		t.Fatalf("response = %d: %s", response.Code, response.Body.String())
+	payload := `{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"copilot-chat"}},{"key":"service.version","value":{"stringValue":"1.112.0"}},{"key":"session.id","value":{"stringValue":"window-1"}}]},"scopeSpans":[{"spans":[{"traceId":"trace-copilot","spanId":"span-copilot","startTimeUnixNano":"1763294400000000000","attributes":[{"key":"gen_ai.operation.name","value":{"stringValue":"chat"}},{"key":"gen_ai.provider.name","value":{"stringValue":"github"}},{"key":"gen_ai.agent.name","value":{"stringValue":"GitHub Copilot Chat"}},{"key":"gen_ai.request.model","value":{"stringValue":"gpt-5"}},{"key":"gen_ai.response.model","value":{"stringValue":"gpt-5-resolved"}},{"key":"gen_ai.usage.input_tokens","value":{"intValue":"11"}},{"key":"gen_ai.usage.output_tokens","value":{"intValue":"13"}},{"key":"gen_ai.usage.cache_read.input_tokens","value":{"intValue":"17"}},{"key":"gen_ai.usage.cache_creation.input_tokens","value":{"intValue":"19"}},{"key":"gen_ai.usage.reasoning.output_tokens","value":{"intValue":"23"}},{"key":"qlog.cwd","value":{"stringValue":"` + filepath.ToSlash(worktree) + `"}},{"key":"github.copilot.git.branch","value":{"stringValue":"main"}},{"key":"github.copilot.git.commit_sha","value":{"stringValue":"abc123"}}]}]}]}]}`
+	handler := NewHandler(service)
+	for attempt, want := range []map[string]int{{"accepted": 1, "duplicates": 0}, {"accepted": 0, "duplicates": 1}} {
+		request := httptest.NewRequest(http.MethodPost, "/v1/traces", bytes.NewBufferString(payload))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("attempt %d response = %d: %s", attempt+1, response.Code, response.Body.String())
+		}
+		got := map[string]int{}
+		if err := json.NewDecoder(response.Body).Decode(&got); err != nil {
+			t.Fatalf("attempt %d decode response: %v", attempt+1, err)
+		}
+		if !responseCountsEqual(got, want) {
+			t.Fatalf("attempt %d response = %#v, want %#v", attempt+1, got, want)
+		}
 	}
 
 	report, err := service.Store.Usage(ctx, storepkg.UsageQuery{GroupBy: []string{"project", "agent", "provider", "model", "capture_quality"}})
@@ -82,10 +257,10 @@ func TestReceiverKeepsUnverifiedCopilotOTLPLifecycleOnly(t *testing.T) {
 		t.Fatalf("rows = %#v", report.Rows)
 	}
 	row := report.Rows[0]
-	if row.ProjectSlug != project.Slug || row.AgentName != "GitHub Copilot Chat" || row.Provider != "github" || row.Model != "gpt-5-resolved" || row.CaptureQuality != "lifecycle_only" {
+	if row.ProjectSlug != project.Slug || row.AgentName != "GitHub Copilot Chat" || row.Provider != "github" || row.Model != "gpt-5-resolved" || row.CaptureQuality != "otel_reported" {
 		t.Fatalf("row identity = %#v", row)
 	}
-	if row.InputTokens != 0 || row.OutputTokens != 0 || row.CachedInputTokens != 0 || row.CacheWriteTokens != 0 || row.ReasoningTokens != 0 || row.TotalTokens != 0 {
+	if row.InputTokens != 11 || row.OutputTokens != 13 || row.CachedInputTokens != 17 || row.CacheWriteTokens != 19 || row.ReasoningTokens != 23 || row.TotalTokens != 83 {
 		t.Fatalf("row tokens = %#v", row)
 	}
 }
@@ -110,11 +285,13 @@ func TestReceiverAcceptsOTLPProtobuf(t *testing.T) {
 		}},
 		ScopeSpans: []*tracepb.ScopeSpans{{Spans: []*tracepb.Span{{
 			TraceId:           []byte{1, 2, 3},
+			SpanId:            []byte{4, 5},
 			StartTimeUnixNano: uint64(time.Date(2026, 7, 21, 1, 0, 0, 0, time.UTC).UnixNano()),
 			Attributes: []*commonpb.KeyValue{
 				{Key: "qlog.project", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: project.Slug}}},
 				{Key: "gen_ai.operation.name", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "chat"}}},
 				{Key: "gen_ai.provider.name", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "github"}}},
+				{Key: "gen_ai.agent.name", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "GitHub Copilot Chat"}}},
 				{Key: "gen_ai.request.model", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "gpt-5"}}},
 				{Key: "gen_ai.response.model", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "gpt-5-resolved"}}},
 				{Key: "gen_ai.usage.input_tokens", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: 11}}},
@@ -139,8 +316,28 @@ func TestReceiverAcceptsOTLPProtobuf(t *testing.T) {
 	if err != nil {
 		t.Fatalf("usage: %v", err)
 	}
-	if len(report.Rows) != 1 || report.Rows[0].AgentName != "copilot-chat" || report.Rows[0].TotalTokens != 0 || report.Rows[0].CaptureQuality != "lifecycle_only" {
+	if len(report.Rows) != 1 || report.Rows[0].AgentName != "GitHub Copilot Chat" || report.Rows[0].TotalTokens != 24 || report.Rows[0].CaptureQuality != "otel_reported" {
 		t.Fatalf("usage rows = %#v", report.Rows)
+	}
+}
+
+func TestReceiverRejectsInvalidCopilotOTLPIdentityAndSpoofedService(t *testing.T) {
+	service, err := app.Initialize(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatalf("initialize service: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	for _, payload := range []string{
+		`{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"copilot-chat"}}]},"scopeSpans":[{"spans":[{"traceId":"trace-only","attributes":[{"key":"gen_ai.agent.name","value":{"stringValue":"GitHub Copilot Chat"}},{"key":"gen_ai.request.model","value":{"stringValue":"gpt-5"}},{"key":"gen_ai.usage.input_tokens","value":{"intValue":"1"}}]}]}]}]}`,
+		`{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"other-agent"}}]},"scopeSpans":[{"spans":[{"traceId":"trace","spanId":"span","attributes":[{"key":"gen_ai.agent.name","value":{"stringValue":"GitHub Copilot Chat"}},{"key":"gen_ai.request.model","value":{"stringValue":"gpt-5"}},{"key":"gen_ai.usage.input_tokens","value":{"intValue":"1"}}]}]}]}]}`,
+	} {
+		request := httptest.NewRequest(http.MethodPost, "/v1/traces", bytes.NewBufferString(payload))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		NewHandler(service).ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("response = %d: %s", response.Code, response.Body.String())
+		}
 	}
 }
 
@@ -230,26 +427,20 @@ func TestOTLPUsesTraceIDAsUpstreamIdentity(t *testing.T) {
 	}
 }
 
-func TestCopilotOTLPRemainsLifecycleOnlyWithoutSourceEvidence(t *testing.T) {
+func TestCopilotOTLPRejectsTokenEvidenceWithoutTraceAndSpanIdentity(t *testing.T) {
 	service, err := app.Initialize(context.Background(), t.TempDir())
 	if err != nil {
 		t.Fatalf("initialize service: %v", err)
 	}
 	t.Cleanup(func() { _ = service.Close() })
-	line, err := Receiver{service: service}.event(context.Background(), map[string]string{}, map[string]string{
+	_, err = Receiver{service: service}.event(context.Background(), map[string]string{"service.name": "copilot-chat"}, map[string]string{
 		"service.name":              "copilot-chat",
+		"gen_ai.agent.name":         "GitHub Copilot Chat",
 		"gen_ai.provider.name":      "github",
 		"gen_ai.request.model":      "gpt-5",
 		"gen_ai.usage.input_tokens": "1",
 	}, span{})
-	if err != nil {
-		t.Fatalf("event: %v", err)
-	}
-	payload, err := json.Marshal(line["payload"])
-	if err != nil {
-		t.Fatalf("marshal payload: %v", err)
-	}
-	if !bytes.Contains(payload, []byte(`"capture_quality":"lifecycle_only"`)) || bytes.Contains(payload, []byte("input_tokens")) {
-		t.Fatalf("payload = %s", payload)
+	if err == nil {
+		t.Fatal("Copilot token evidence without trace/span identity was accepted")
 	}
 }
