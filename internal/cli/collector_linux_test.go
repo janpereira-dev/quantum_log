@@ -11,9 +11,7 @@ func TestLinuxCollectorServiceDefinition(t *testing.T) {
 		"[Install]",
 		"WantedBy=default.target",
 		"Restart=on-failure",
-		"/home/alice/bin/qlog",
-		"collector serve --listen 127.0.0.1:4318",
-		"--home /home/alice/.qlog",
+		`ExecStart="/home/alice/bin/qlog" --home "/home/alice/.qlog" collector serve --listen "127.0.0.1:4318"`,
 	} {
 		if !strings.Contains(definition, want) {
 			t.Fatalf("unit definition missing %q: %s", want, definition)

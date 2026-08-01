@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -212,6 +213,16 @@ func TestAdapterVerifyCopilotAcceptsSanctionedOTLPEvidence(t *testing.T) {
 	home := t.TempDir()
 	configHome := t.TempDir()
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	fakeCode := "code"
+	if runtime.GOOS == "windows" {
+		fakeCode += ".exe"
+	}
+	codeDir := t.TempDir()
+	codePath := filepath.Join(codeDir, fakeCode)
+	if err := os.WriteFile(codePath, nil, 0o700); err != nil {
+		t.Fatalf("create fake code executable: %v", err)
+	}
+	t.Setenv("PATH", codeDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	worktree := filepath.Join(t.TempDir(), "project")
 	if _, err := runQLog(t, home, "init"); err != nil {
 		t.Fatalf("init: %v", err)
