@@ -33,7 +33,7 @@ M4 is `IN_PROGRESS`. Its stable auto-capture scope is exactly Claude Code, Codex
 | Adapter | Current quality | M4 release status |
 | --- | --- | --- |
 | Claude Code | `lifecycle_only` | Awaiting clean-device lifecycle evidence. |
-| Codex | `unavailable` | No documented collector-forwarding source evidence recorded. |
+| Codex | `otel_reported` | Documented OTLP `response.completed` logs with source-reported tokens are supported; clean-device accepted `response.completed` evidence and normal verification remain required. |
 | Copilot VS Code | `otel_reported` | Documented VS Code OTel configuration and sanctioned Copilot model/token evidence are supported; clean-device real-agent acceptance remains required. |
 | OpenCode | `lifecycle_only` | Awaiting documented usage schema and clean-device evidence. |
 
