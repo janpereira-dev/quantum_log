@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
 func TestDefaultRegistryDeclaresOnlyVerifiedCapabilities(t *testing.T) {
@@ -241,51 +243,82 @@ func TestVSCodeCopilotUninstallRemovesOnlyManagedSettings(t *testing.T) {
 	}
 }
 
-func TestCodexInstallPreservesConfigAndUninstallRestoresOnlyQlogSettings(t *testing.T) {
-	configHome := t.TempDir()
-	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
-	configPath := filepath.Join(configHome, ".codex", "config.toml")
-	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
-		t.Fatal(err)
+func TestCodexInstallReplacesEquivalentExporterForms(t *testing.T) {
+	const prefix = "model = \"gpt-5\"\n\n"
+	const suffix = "[features]\nexperimental = true\n"
+	desiredExporter := `exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/logs", protocol = "binary" } }`
+	tests := []struct {
+		name          string
+		otel          string
+		wantChanged   bool
+		wantStateFile bool
+	}{
+		{name: "inline exporter", otel: "[otel]\nenvironment = \"production\"\nexporter = \"none\"\n\n", wantChanged: true, wantStateFile: true},
+		{name: "dotted exporter keys", otel: "[otel]\nenvironment = \"production\"\nexporter.otlp-http.endpoint = \"http://old\"\n\n", wantChanged: true, wantStateFile: true},
+		{name: "nested exporter table", otel: "[otel.exporter.otlp-http]\nendpoint = \"http://old\"\n\n", wantChanged: true, wantStateFile: true},
+		{name: "matching user-owned exporter", otel: "[otel]\n" + desiredExporter + "\nlog_user_prompt = false\n\n", wantChanged: false, wantStateFile: false},
 	}
-	before := "model = \"gpt-5\"\n\n[otel]\nenvironment = \"production\"\nexporter = \"none\"\n"
-	if err := os.WriteFile(configPath, []byte(before), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			configHome := t.TempDir()
+			t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+			configPath := filepath.Join(configHome, ".codex", "config.toml")
+			if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			before := prefix + test.otel + suffix
+			if err := os.WriteFile(configPath, []byte(before), 0o600); err != nil {
+				t.Fatal(err)
+			}
 
-	adapter := newCodexAdapter()
-	first, err := adapter.Install(context.Background(), InstallOptions{})
-	if err != nil {
-		t.Fatalf("install: %v", err)
-	}
-	if !first.Changed {
-		t.Fatalf("first install = %#v", first)
-	}
-	installed := string(mustReadFile(t, configPath))
-	for _, want := range []string{
-		"model = \"gpt-5\"",
-		"environment = \"production\"",
-		"exporter = { otlp-http = { endpoint = \"http://127.0.0.1:4318/v1/logs\", protocol = \"binary\" } }",
-		"log_user_prompt = false",
-	} {
-		if !strings.Contains(installed, want) {
-			t.Fatalf("installed config missing %q:\n%s", want, installed)
-		}
-	}
-	second, err := adapter.Install(context.Background(), InstallOptions{})
-	if err != nil {
-		t.Fatalf("second install: %v", err)
-	}
-	if second.Changed {
-		t.Fatalf("second install must be idempotent: %#v", second)
-	}
+			adapter := newCodexAdapter()
+			first, err := adapter.Install(context.Background(), InstallOptions{})
+			if err != nil {
+				t.Fatalf("install: %v", err)
+			}
+			if first.Changed != test.wantChanged {
+				t.Fatalf("first install changed = %t, want %t: %#v", first.Changed, test.wantChanged, first)
+			}
+			installed := string(mustReadFile(t, configPath))
+			if !strings.HasPrefix(installed, prefix) || !strings.HasSuffix(installed, suffix) {
+				t.Fatalf("non-otel text changed:\n%s", installed)
+			}
+			var document map[string]any
+			if err := toml.Unmarshal([]byte(installed), &document); err != nil {
+				t.Fatalf("parse installed TOML: %v\n%s", err, installed)
+			}
+			otel, ok := document["otel"].(map[string]any)
+			if !ok {
+				t.Fatalf("otel = %#v", document["otel"])
+			}
+			exporter, ok := otel["exporter"].(map[string]any)
+			if !ok || len(exporter) != 1 {
+				t.Fatalf("exporter = %#v", otel["exporter"])
+			}
+			otlpHTTP, ok := exporter["otlp-http"].(map[string]any)
+			if !ok || otlpHTTP["endpoint"] != "http://127.0.0.1:4318/v1/logs" || otlpHTTP["protocol"] != "binary" {
+				t.Fatalf("otlp-http = %#v", exporter["otlp-http"])
+			}
 
-	if _, err := adapter.Uninstall(context.Background(), InstallOptions{}); err != nil {
-		t.Fatalf("uninstall: %v", err)
-	}
-	after := string(mustReadFile(t, configPath))
-	if after != before {
-		t.Fatalf("config after uninstall = %q, want %q", after, before)
+			_, stateErr := os.Stat(adapter.statePath())
+			if (stateErr == nil) != test.wantStateFile {
+				t.Fatalf("state exists = %t, want %t: %v", stateErr == nil, test.wantStateFile, stateErr)
+			}
+			second, err := adapter.Install(context.Background(), InstallOptions{})
+			if err != nil || second.Changed {
+				t.Fatalf("second install = %#v, %v", second, err)
+			}
+			uninstall, err := adapter.Uninstall(context.Background(), InstallOptions{})
+			if err != nil {
+				t.Fatalf("uninstall: %v", err)
+			}
+			if uninstall.Changed != test.wantChanged {
+				t.Fatalf("uninstall changed = %t, want %t: %#v", uninstall.Changed, test.wantChanged, uninstall)
+			}
+			if after := string(mustReadFile(t, configPath)); after != before {
+				t.Fatalf("config after uninstall = %q, want %q", after, before)
+			}
+		})
 	}
 }
 

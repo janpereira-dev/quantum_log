@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
 type codexAdapter struct{ commandAdapter }
@@ -18,7 +21,11 @@ type codexManagedValue struct {
 }
 
 type codexManagedState struct {
-	Original map[string]codexManagedValue `json:"original"`
+	OriginalExporter  codexManagedValue `json:"original_exporter"`
+	OriginalLogPrompt codexManagedValue `json:"original_log_user_prompt"`
+	ManagedExporter   bool              `json:"managed_exporter"`
+	ManagedLogPrompt  bool              `json:"managed_log_user_prompt"`
+	CreatedOTel       bool              `json:"created_otel"`
 }
 
 func newCodexAdapter() codexAdapter {
@@ -110,7 +117,10 @@ func applyCodexOTelConfig(configPath, statePath string, dryRun bool) (SetupChang
 	if err != nil && !os.IsNotExist(err) {
 		return SetupChange{}, fmt.Errorf("read Codex config: %w", err)
 	}
-	updated, original, changed := updateCodexOTel(string(contents), codexOTelSettings())
+	updated, state, changed, err := updateCodexOTel(string(contents), codexOTelSettings())
+	if err != nil {
+		return SetupChange{}, err
+	}
 	action := "unchanged"
 	if changed {
 		action = "updated"
@@ -125,15 +135,11 @@ func applyCodexOTelConfig(configPath, statePath string, dryRun bool) (SetupChang
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		return SetupChange{}, fmt.Errorf("create Codex config directory: %w", err)
 	}
-	state, stateErr := readCodexManagedState(statePath)
+	_, stateErr := readCodexManagedState(statePath)
 	if stateErr != nil && !os.IsNotExist(stateErr) {
 		return SetupChange{}, stateErr
 	}
 	if os.IsNotExist(stateErr) {
-		state = codexManagedState{}
-	}
-	if state.Original == nil {
-		state.Original = original
 		encoded, err := json.Marshal(state)
 		if err != nil {
 			return SetupChange{}, fmt.Errorf("encode Codex OTel state: %w", err)
@@ -160,7 +166,10 @@ func removeCodexOTelConfig(configPath, statePath string, dryRun bool) (SetupChan
 	if err != nil {
 		return SetupChange{}, fmt.Errorf("read Codex config: %w", err)
 	}
-	updated, changed := restoreCodexOTel(string(contents), state.Original, codexOTelSettings())
+	updated, changed, err := restoreCodexOTel(string(contents), state, codexOTelSettings())
+	if err != nil {
+		return SetupChange{}, err
+	}
 	change := SetupChange{Path: configPath, Action: "unchanged", Description: "remove qlog-managed Codex OTLP logs"}
 	if changed {
 		change.Action = "removed"
@@ -191,59 +200,283 @@ func readCodexManagedState(path string) (codexManagedState, error) {
 	return state, nil
 }
 
-func updateCodexOTel(contents string, desired map[string]string) (string, map[string]codexManagedValue, bool) {
-	lines := strings.Split(contents, "\n")
-	sectionStart, sectionEnd := tomlSectionRange(lines, "otel")
-	if sectionStart == -1 {
+type codexOTelRegion struct {
+	start int
+	end   int
+	text  string
+}
+
+type codexTextRange struct {
+	start int
+	end   int
+}
+
+type parsedCodexOTel struct {
+	hasOTel        bool
+	exporter       codexManagedValue
+	logUserPrompt  codexManagedValue
+	exporterRanges []codexTextRange
+	logRange       *codexTextRange
+	otelHeaderEnd  int
+}
+
+func updateCodexOTel(contents string, desired map[string]string) (string, codexManagedState, bool, error) {
+	var document map[string]any
+	if err := toml.Unmarshal([]byte(contents), &document); err != nil {
+		return "", codexManagedState{}, false, fmt.Errorf("parse Codex TOML: %w", err)
+	}
+	region := locateOTelRegion(contents)
+	current, err := parseOTelRegion(region.text)
+	if err != nil {
+		return "", codexManagedState{}, false, err
+	}
+	exporterChanged := !exporterMatches(current.exporter, desired["exporter"])
+	logChanged := !exporterMatches(current.logUserPrompt, desired["log_user_prompt"])
+	if !exporterChanged && !logChanged {
+		return contents, codexManagedState{}, false, nil
+	}
+	state := codexManagedState{CreatedOTel: !current.hasOTel}
+	if exporterChanged {
+		state.OriginalExporter = current.exporter
+		state.ManagedExporter = true
+	}
+	if logChanged {
+		state.OriginalLogPrompt = current.logUserPrompt
+		state.ManagedLogPrompt = true
+	}
+	return replaceOTelRegion(contents, region, renderOTelRegion(region.text, current, desired, exporterChanged, logChanged)), state, true, nil
+}
+
+func restoreCodexOTel(contents string, state codexManagedState, desired map[string]string) (string, bool, error) {
+	var document map[string]any
+	if err := toml.Unmarshal([]byte(contents), &document); err != nil {
+		return "", false, fmt.Errorf("parse Codex TOML: %w", err)
+	}
+	region := locateOTelRegion(contents)
+	if region.start == -1 {
+		return contents, false, nil
+	}
+	current, err := parseOTelRegion(region.text)
+	if err != nil {
+		return "", false, err
+	}
+	updated := region.text
+	changed := false
+	if state.ManagedLogPrompt {
+		if exporterMatches(current.logUserPrompt, desired["log_user_prompt"]) && current.logRange != nil {
+			replacement := ""
+			if state.OriginalLogPrompt.Exists {
+				replacement = state.OriginalLogPrompt.Value
+			}
+			updated = replaceTextRange(updated, *current.logRange, replacement)
+			changed = true
+		}
+	}
+	if state.ManagedExporter {
+		current, err = parseOTelRegion(updated)
+		if err != nil {
+			return "", false, err
+		}
+		if exporterMatches(current.exporter, desired["exporter"]) && len(current.exporterRanges) == 1 {
+			replacement := ""
+			if state.OriginalExporter.Exists {
+				replacement = state.OriginalExporter.Value
+			}
+			updated = replaceTextRange(updated, current.exporterRanges[0], replacement)
+			changed = true
+		}
+	}
+	if state.CreatedOTel && strings.HasPrefix(updated, "[otel]\n") {
+		updated = strings.TrimPrefix(updated, "[otel]\n")
+		changed = true
+	}
+	if !changed {
+		return contents, false, nil
+	}
+	return replaceOTelRegion(contents, region, updated), true, nil
+}
+
+func locateOTelRegion(contents string) codexOTelRegion {
+	headers := tomlTableHeaders(contents)
+	for index, header := range headers {
+		if header.name != "otel" && !strings.HasPrefix(header.name, "otel.") {
+			continue
+		}
+		end := len(contents)
+		for _, next := range headers[index+1:] {
+			if next.name != "otel" && !strings.HasPrefix(next.name, "otel.") {
+				end = next.start
+				break
+			}
+		}
+		return codexOTelRegion{start: header.start, end: end, text: contents[header.start:end]}
+	}
+	return codexOTelRegion{start: -1, end: -1}
+}
+
+func parseOTelRegion(contents string) (parsedCodexOTel, error) {
+	if contents == "" {
+		return parsedCodexOTel{}, nil
+	}
+	headers := tomlTableHeaders(contents)
+	parsed := parsedCodexOTel{}
+	for index, header := range headers {
+		if header.name == "otel" {
+			parsed.hasOTel = true
+			parsed.otelHeaderEnd = header.end
+			sectionEnd := len(contents)
+			if index+1 < len(headers) {
+				sectionEnd = headers[index+1].start
+			}
+			for _, line := range textLines(contents[header.end:sectionEnd], header.end) {
+				key, _, found := strings.Cut(strings.TrimSpace(line.text), "=")
+				if !found {
+					continue
+				}
+				key = strings.TrimSpace(key)
+				switch {
+				case key == "exporter" || strings.HasPrefix(key, "exporter."):
+					parsed.exporter.Exists = true
+					parsed.exporter.Value += line.text
+					parsed.exporterRanges = append(parsed.exporterRanges, codexTextRange{start: line.start, end: line.end})
+				case key == "log_user_prompt":
+					value := codexTextRange{start: line.start, end: line.end}
+					parsed.logUserPrompt = codexManagedValue{Exists: true, Value: line.text}
+					parsed.logRange = &value
+				}
+			}
+		}
+		if strings.HasPrefix(header.name, "otel.exporter") {
+			sectionEnd := len(contents)
+			if index+1 < len(headers) {
+				sectionEnd = headers[index+1].start
+			}
+			parsed.exporter.Exists = true
+			parsed.exporter.Value += contents[header.start:sectionEnd]
+			parsed.exporterRanges = append(parsed.exporterRanges, codexTextRange{start: header.start, end: sectionEnd})
+		}
+	}
+	sort.Slice(parsed.exporterRanges, func(left, right int) bool {
+		return parsed.exporterRanges[left].start < parsed.exporterRanges[right].start
+	})
+	return parsed, nil
+}
+
+func exporterMatches(value codexManagedValue, want string) bool {
+	if !value.Exists {
+		return false
+	}
+	line := strings.TrimSpace(value.Value)
+	if strings.Contains(line, "\n") {
+		return false
+	}
+	_, actual, found := strings.Cut(line, "=")
+	return found && strings.TrimSpace(actual) == want
+}
+
+func renderOTelRegion(contents string, current parsedCodexOTel, desired map[string]string, exporterChanged, logChanged bool) string {
+	if !current.hasOTel {
+		contents = "[otel]\n" + contents
+		offset := len("[otel]\n")
+		for index := range current.exporterRanges {
+			current.exporterRanges[index].start += offset
+			current.exporterRanges[index].end += offset
+		}
+		if current.logRange != nil {
+			current.logRange.start += offset
+			current.logRange.end += offset
+		}
+		current.otelHeaderEnd = offset
+	}
+	type replacement struct {
+		codexTextRange
+		text string
+	}
+	replacements := []replacement{}
+	if exporterChanged {
+		if len(current.exporterRanges) == 0 {
+			current.exporterRanges = []codexTextRange{{start: current.otelHeaderEnd, end: current.otelHeaderEnd}}
+		}
+		for index, value := range current.exporterRanges {
+			text := ""
+			if index == 0 {
+				text = "exporter = " + desired["exporter"] + "\n"
+				if !current.logUserPrompt.Exists && logChanged {
+					text += "log_user_prompt = " + desired["log_user_prompt"] + "\n"
+				}
+			}
+			replacements = append(replacements, replacement{codexTextRange: value, text: text})
+		}
+	}
+	if logChanged && current.logRange != nil {
+		replacements = append(replacements, replacement{codexTextRange: *current.logRange, text: "log_user_prompt = " + desired["log_user_prompt"] + "\n"})
+	}
+	if logChanged && current.logRange == nil && !exporterChanged && len(current.exporterRanges) == 1 {
+		exporter := current.exporterRanges[0]
+		replacements = append(replacements, replacement{codexTextRange: codexTextRange{start: exporter.end, end: exporter.end}, text: "log_user_prompt = " + desired["log_user_prompt"] + "\n"})
+	}
+	sort.Slice(replacements, func(left, right int) bool { return replacements[left].start < replacements[right].start })
+	var rendered strings.Builder
+	position := 0
+	for _, replacement := range replacements {
+		rendered.WriteString(contents[position:replacement.start])
+		rendered.WriteString(replacement.text)
+		position = replacement.end
+	}
+	rendered.WriteString(contents[position:])
+	return rendered.String()
+}
+
+func replaceOTelRegion(contents string, region codexOTelRegion, replacement string) string {
+	if region.start == -1 {
 		if contents != "" && !strings.HasSuffix(contents, "\n") {
 			contents += "\n"
 		}
-		contents += "\n[otel]\n"
-		for _, key := range []string{"exporter", "log_user_prompt"} {
-			contents += key + " = " + desired[key] + "\n"
-		}
-		return contents, map[string]codexManagedValue{"exporter": {}, "log_user_prompt": {}}, true
+		return contents + "\n" + replacement
 	}
-	original := map[string]codexManagedValue{}
-	changed := false
-	for _, key := range []string{"exporter", "log_user_prompt"} {
-		index, value := tomlKey(lines, sectionStart+1, sectionEnd, key)
-		original[key] = codexManagedValue{Exists: index >= 0, Value: value}
-		if value == desired[key] {
-			continue
-		}
-		changed = true
-		if index >= 0 {
-			lines[index] = key + " = " + desired[key]
-		} else {
-			lines = append(lines[:sectionEnd], append([]string{key + " = " + desired[key]}, lines[sectionEnd:]...)...)
-			sectionEnd++
-		}
-	}
-	return strings.Join(lines, "\n"), original, changed
+	return contents[:region.start] + replacement + contents[region.end:]
 }
 
-func restoreCodexOTel(contents string, original map[string]codexManagedValue, desired map[string]string) (string, bool) {
-	lines := strings.Split(contents, "\n")
-	sectionStart, sectionEnd := tomlSectionRange(lines, "otel")
-	if sectionStart == -1 {
-		return contents, false
-	}
-	changed := false
-	for _, key := range []string{"exporter", "log_user_prompt"} {
-		index, value := tomlKey(lines, sectionStart+1, sectionEnd, key)
-		if index < 0 || value != desired[key] {
+func replaceTextRange(contents string, value codexTextRange, replacement string) string {
+	return contents[:value.start] + replacement + contents[value.end:]
+}
+
+type tomlHeader struct {
+	name       string
+	start, end int
+}
+
+func tomlTableHeaders(contents string) []tomlHeader {
+	headers := []tomlHeader{}
+	for _, line := range textLines(contents, 0) {
+		trimmed := strings.TrimSpace(line.text)
+		if !strings.HasPrefix(trimmed, "[") || !strings.HasSuffix(trimmed, "]") || strings.HasPrefix(trimmed, "[[") {
 			continue
 		}
-		changed = true
-		if original[key].Exists {
-			lines[index] = key + " = " + original[key].Value
-		} else {
-			lines = append(lines[:index], lines[index+1:]...)
-			sectionEnd--
-		}
+		name := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, "["), "]"))
+		headers = append(headers, tomlHeader{name: name, start: line.start, end: line.end})
 	}
-	return strings.Join(lines, "\n"), changed
+	return headers
+}
+
+type textLine struct {
+	text       string
+	start, end int
+}
+
+func textLines(contents string, offset int) []textLine {
+	lines := []textLine{}
+	for start := 0; start < len(contents); {
+		end := strings.IndexByte(contents[start:], '\n')
+		if end < 0 {
+			end = len(contents)
+		} else {
+			end += start + 1
+		}
+		lines = append(lines, textLine{text: contents[start:end], start: offset + start, end: offset + end})
+		start = end
+	}
+	return lines
 }
 
 func codexOTelConfigured(path string) bool {
@@ -251,32 +484,6 @@ func codexOTelConfigured(path string) bool {
 	if err != nil {
 		return false
 	}
-	updated, _, changed := updateCodexOTel(string(contents), codexOTelSettings())
-	return !changed && updated != ""
-}
-
-func tomlSectionRange(lines []string, name string) (int, int) {
-	start := -1
-	for index, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "["+name+"]" {
-			start = index
-			continue
-		}
-		if start >= 0 && strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
-			return start, index
-		}
-	}
-	return start, len(lines)
-}
-
-func tomlKey(lines []string, start, end int, want string) (int, string) {
-	for index := start; index < end; index++ {
-		line := strings.TrimSpace(lines[index])
-		key, value, found := strings.Cut(line, "=")
-		if found && strings.TrimSpace(key) == want {
-			return index, strings.TrimSpace(value)
-		}
-	}
-	return -1, ""
+	updated, _, changed, err := updateCodexOTel(string(contents), codexOTelSettings())
+	return err == nil && !changed && updated != ""
 }
