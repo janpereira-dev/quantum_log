@@ -375,6 +375,27 @@ func TestClaudeCodeInstallPreservesExistingHooksAndAddsHome(t *testing.T) {
 	}
 }
 
+func TestClaudeCodeInstallUsesShellSafeExecutablePath(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	settingsPath := filepath.Join(configHome, ".claude", "settings.json")
+	home := filepath.Join(t.TempDir(), "qlog home")
+	executable := filepath.Join(t.TempDir(), "qlog $stable")
+
+	if _, err := newClaudeCodeAdapter().Install(context.Background(), InstallOptions{Home: home, ExecutablePath: executable}); err != nil {
+		t.Fatalf("install claude-code: %v", err)
+	}
+
+	commands := collectHookCommands(readSettingsMap(t, settingsPath))
+	want := "'" + executable + "' --home '" + home + "' hook claude-code"
+	if !containsAdapterString(commands, want) {
+		t.Fatalf("hook commands missing %q: %#v", want, commands)
+	}
+	if containsAdapterString(commands, "qlog hook claude-code") {
+		t.Fatalf("hook command must not require qlog on PATH: %#v", commands)
+	}
+}
+
 func TestClaudeCodeUninstallRemovesOnlyQlogHooks(t *testing.T) {
 	configHome := t.TempDir()
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)

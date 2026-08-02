@@ -48,6 +48,19 @@ func TestOfficialQlogInstallersExposeConsentedBootstrapAndOptOut(t *testing.T) {
 	}
 }
 
+func TestShellInstallerBootstrapPassesVerifiedExecutablePath(t *testing.T) {
+	contents, err := os.ReadFile(filepath.Join("..", "..", "installers", "install.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(contents), `"$INSTALL_DIR/qlog" setup --yes --executable "$INSTALL_DIR/qlog"`) {
+		t.Fatal("install.sh bootstrap must pass the verified installed qlog path to setup")
+	}
+	if !strings.Contains(string(contents), `*) INSTALL_DIR="$(pwd -P)/$INSTALL_DIR" ;;`) {
+		t.Fatal("install.sh must normalize relative install directories before passing hook executable paths")
+	}
+}
+
 func TestPowerShellInstallerSkipsBootstrapPromptWhenNoninteractive(t *testing.T) {
 	contents, err := os.ReadFile(filepath.Join("..", "..", "installers", "install.ps1"))
 	if err != nil {

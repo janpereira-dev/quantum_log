@@ -56,6 +56,7 @@ done
 case "$CHANNEL" in stable|latest) ;; *) fail "--channel must be stable or latest" ;; esac
 case "$RELEASE_BASE" in https://*) ;; *) fail "QLOG_RELEASE_BASE must use HTTPS" ;; esac
 case "$INSTALL_DIR" in *'"'*) fail "--install-dir cannot contain a double quote" ;; esac
+case "$INSTALL_DIR" in /*) ;; *) INSTALL_DIR="$(pwd -P)/$INSTALL_DIR" ;; esac
 
 if [ -z "$BOOTSTRAP" ] && [ "$DRY_RUN" -eq 0 ] && [ -t 0 ]; then
   printf '%s' 'Consent to bootstrap qlog collector and detected supported adapters for this user? [y/N] '
@@ -168,7 +169,7 @@ mv -f "$staged" "$INSTALL_DIR/qlog"
 if [ "$BOOTSTRAP" -eq 1 ]; then
   printf '%s\n' 'bootstrap consent accepted; starting qlog setup'
   # Run qlog setup --yes only after installed binary verification.
-  "$INSTALL_DIR/qlog" setup --yes
+  "$INSTALL_DIR/qlog" setup --yes --executable "$INSTALL_DIR/qlog"
 else
   printf '%s\n' 'bootstrap skipped; run qlog setup later to configure capture manually'
 fi

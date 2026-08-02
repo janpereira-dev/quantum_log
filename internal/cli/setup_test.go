@@ -16,7 +16,7 @@ func TestSetupYesBootstrapsCollectorBeforeAdapterFiles(t *testing.T) {
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
 	manager := &fakeCollectorManager{}
 
-	result, err := bootstrapSupportedAdapters(context.Background(), t.TempDir(), true, false, adapters.Default(), manager)
+	result, err := bootstrapSupportedAdapters(context.Background(), t.TempDir(), "", true, false, adapters.Default(), manager)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +32,7 @@ func TestSetupWithoutConsentOnlyPrintsPlan(t *testing.T) {
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
 	manager := &fakeCollectorManager{}
 
-	result, err := bootstrapSupportedAdapters(context.Background(), t.TempDir(), false, false, adapters.Default(), manager)
+	result, err := bootstrapSupportedAdapters(context.Background(), t.TempDir(), "", false, false, adapters.Default(), manager)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,11 +59,24 @@ func TestSetupYesInitializesLedgerBeforeCollectorInstall(t *testing.T) {
 	home := t.TempDir()
 	manager := &ledgerCheckingCollectorManager{}
 
-	if _, err := bootstrapSupportedAdapters(context.Background(), home, true, false, adapters.Default(), manager); err != nil {
+	if _, err := bootstrapSupportedAdapters(context.Background(), home, "", true, false, adapters.Default(), manager); err != nil {
 		t.Fatal(err)
 	}
 	if !manager.ledgerExistedAtInstall {
 		t.Fatal("collector install ran before ledger initialization")
+	}
+}
+
+func TestSetupInstallOptionsDeriveDurableExecutableForManualSetup(t *testing.T) {
+	options, err := setupInstallOptions(t.TempDir(), "")
+	if err != nil {
+		t.Fatalf("setup install options: %v", err)
+	}
+	if !filepath.IsAbs(options.ExecutablePath) {
+		t.Fatalf("manual setup executable path is not absolute: %q", options.ExecutablePath)
+	}
+	if _, err := os.Stat(options.ExecutablePath); err != nil {
+		t.Fatalf("manual setup executable path is unusable: %v", err)
 	}
 }
 

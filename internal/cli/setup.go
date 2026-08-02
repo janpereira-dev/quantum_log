@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"github.com/janpereira-dev/quantum_log/internal/adapters"
 	"github.com/janpereira-dev/quantum_log/internal/app"
@@ -31,13 +33,14 @@ type CollectorBootstrapStatus struct {
 func newSetupCommand(home *string) *cobra.Command {
 	registry := adapters.Default()
 	var all, yes, dryRun, jsonOutput bool
+	var executable string
 	command := &cobra.Command{Use: "setup [adapter]", Short: "Set up agent auto-capture integrations", Args: cobra.MaximumNArgs(1), RunE: func(command *cobra.Command, args []string) error {
 		if len(args) == 0 && !all {
 			paths, err := config.Resolve(*home)
 			if err != nil {
 				return err
 			}
-			result, err := bootstrapSupportedAdapters(command.Context(), paths.Home, yes, dryRun, registry, newSetupCollectorManager())
+			result, err := bootstrapSupportedAdapters(command.Context(), paths.Home, executable, yes, dryRun, registry, newSetupCollectorManager())
 			if err != nil {
 				return err
 			}
@@ -71,6 +74,10 @@ func newSetupCommand(home *string) *cobra.Command {
 		}
 		resolvedHome := paths.Home
 
+		installOptions, err := setupInstallOptions(resolvedHome, executable)
+		if err != nil {
+			return err
+		}
 		plans := make([]adapters.SetupPlan, 0, len(items))
 		for _, adapter := range items {
 			if adapter.Descriptor().ID == "generic-jsonl" {
@@ -81,7 +88,7 @@ func newSetupCommand(home *string) *cobra.Command {
 			if dryRun || !yes {
 				plan, err = adapter.PlanInstall(command.Context(), adapters.SetupOptions{DryRun: true, Yes: yes, Home: resolvedHome})
 			} else {
-				result, installErr := adapter.Install(command.Context(), adapters.InstallOptions{Home: resolvedHome})
+				result, installErr := adapter.Install(command.Context(), installOptions)
 				if installErr != nil {
 					return installErr
 				}
@@ -112,10 +119,12 @@ func newSetupCommand(home *string) *cobra.Command {
 	command.Flags().BoolVar(&yes, "yes", false, "apply setup changes without prompting")
 	command.Flags().BoolVar(&dryRun, "dry-run", false, "show changes without writing files")
 	command.Flags().BoolVar(&jsonOutput, "json", false, "output JSON")
+	command.Flags().StringVar(&executable, "executable", "", "absolute qlog executable used by installed hooks")
+	_ = command.Flags().MarkHidden("executable")
 	return command
 }
 
-func bootstrapSupportedAdapters(ctx context.Context, home string, yes, dryRun bool, registry *adapters.Registry, manager collectorManager) (BootstrapResult, error) {
+func bootstrapSupportedAdapters(ctx context.Context, home, executable string, yes, dryRun bool, registry *adapters.Registry, manager collectorManager) (BootstrapResult, error) {
 	paths, err := config.Resolve(home)
 	if err != nil {
 		return BootstrapResult{}, err
@@ -131,6 +140,10 @@ func bootstrapSupportedAdapters(ctx context.Context, home string, yes, dryRun bo
 			result.Collector.Actions = []string{"dry run: collector install and start skipped"}
 		}
 		return result, nil
+	}
+	installOptions, err := setupInstallOptions(paths.Home, executable)
+	if err != nil {
+		return BootstrapResult{}, err
 	}
 	service, err := app.Initialize(ctx, paths.Home)
 	if err != nil {
@@ -162,13 +175,39 @@ func bootstrapSupportedAdapters(ctx context.Context, home string, yes, dryRun bo
 			result.Adapters[index].Changes = skippedSetupChanges(result.Adapters[index].Changes, detection.Evidence)
 			continue
 		}
-		installResult, err := adapter.Install(ctx, adapters.InstallOptions{Home: paths.Home})
+		installResult, err := adapter.Install(ctx, installOptions)
 		if err != nil {
 			return BootstrapResult{}, err
 		}
 		result.Adapters[index].Changes = installResultChanges(adapter.Descriptor().ID, installResult)
 	}
 	return result, nil
+}
+
+func setupInstallOptions(home, executable string) (adapters.InstallOptions, error) {
+	executablePath, err := durableExecutablePath(executable)
+	if err != nil {
+		return adapters.InstallOptions{}, err
+	}
+	return adapters.InstallOptions{Home: home, ExecutablePath: executablePath}, nil
+}
+
+func durableExecutablePath(executable string) (string, error) {
+	if executable == "" {
+		path, err := os.Executable()
+		if err != nil {
+			return "", fmt.Errorf("resolve qlog executable: %w", err)
+		}
+		executable = path
+	}
+	if !filepath.IsAbs(executable) {
+		return "", fmt.Errorf("qlog executable path must be absolute: %q", executable)
+	}
+	resolved, err := filepath.EvalSymlinks(executable)
+	if err != nil {
+		return "", fmt.Errorf("resolve qlog executable path %q: %w", executable, err)
+	}
+	return filepath.Clean(resolved), nil
 }
 
 func planSetupAdapters(ctx context.Context, home string, items []adapters.Adapter, yes, dryRun bool) ([]adapters.SetupPlan, error) {
