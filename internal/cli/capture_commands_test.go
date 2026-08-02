@@ -12,8 +12,12 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/janpereira-dev/quantum_log/internal/adapters"
+	"github.com/janpereira-dev/quantum_log/internal/app"
+	"github.com/janpereira-dev/quantum_log/internal/domain"
+	"github.com/janpereira-dev/quantum_log/internal/storage/sqlite"
 )
 
 func TestUnsupportedAdaptersAreNotSelectedByDefaultSetup(t *testing.T) {
@@ -266,6 +270,100 @@ func TestAdapterVerifyCopilotAcceptsSanctionedOTLPEvidence(t *testing.T) {
 	}
 }
 
+func TestAdapterVerifyCodexRejectsGenericOTLPEvidence(t *testing.T) {
+	home, project := setupCodexVerification(t)
+	service, err := app.Open(context.Background(), home)
+	if err != nil {
+		t.Fatalf("open service: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	now := time.Now().UTC()
+	if err := service.Store.EnsureSession(context.Background(), "generic-codex", "codex", now); err != nil {
+		t.Fatalf("ensure session: %v", err)
+	}
+	raw, err := service.Store.AppendRawEvent(context.Background(), sqlite.RawEventInput{
+		Source: "otlp-http", SessionID: "generic-codex", EventType: "model.call", OccurredAt: now,
+		Payload: []byte(`{"agent_name":"codex","capture_quality":"otel_reported"}`),
+	})
+	if err != nil || !raw.Accepted {
+		t.Fatalf("append raw event = %#v, %v", raw, err)
+	}
+	if _, err := service.Store.RecordModelCall(context.Background(), sqlite.ModelCallInput{
+		RawEventID: raw.ID, ProjectID: project.ID, SessionID: "generic-codex", AgentName: "codex", Provider: "openai", ModelID: "gpt-5", InputTokens: 1, CaptureQuality: "otel_reported", OccurredAt: now,
+	}); err != nil {
+		t.Fatalf("record model call: %v", err)
+	}
+	if err := service.Close(); err != nil {
+		t.Fatalf("close service: %v", err)
+	}
+
+	output, err := runQLog(t, home, "adapter", "verify", "codex", "--project", "project", "--json")
+	if err == nil || !strings.Contains(output, `"ready":false`) {
+		t.Fatalf("generic Codex OTLP evidence verified: output=%s err=%v", output, err)
+	}
+}
+
+func TestAdapterVerifyCodexAcceptsNormalizedResponseCompletedEvidence(t *testing.T) {
+	home, _ := setupCodexVerification(t)
+	server := httptest.NewServer(newCollectorMux(home))
+	t.Cleanup(server.Close)
+	t.Setenv("QLOG_COLLECTOR_URL", server.URL+"/v1/logs")
+
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/v1/logs", strings.NewReader(`{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"codex"}}]},"scopeLogs":[{"logRecords":[{"traceId":"codex-trace","spanId":"codex-span","attributes":[{"key":"event.name","value":{"stringValue":"codex.sse_event"}},{"key":"event.kind","value":{"stringValue":"response.completed"}},{"key":"qlog.project","value":{"stringValue":"project"}},{"key":"model","value":{"stringValue":"gpt-5"}},{"key":"input_tokens","value":{"intValue":"1"}},{"key":"output_tokens","value":{"intValue":"2"}}]}]}]}]}`))
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("collector request: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("collector response = %d", response.StatusCode)
+	}
+
+	output, err := runQLog(t, home, "adapter", "verify", "codex", "--project", "project", "--json")
+	if err != nil || !strings.Contains(output, `"ready":true`) {
+		t.Fatalf("normalized Codex response.completed evidence did not verify: output=%s err=%v", output, err)
+	}
+}
+
+func setupCodexVerification(t *testing.T) (string, domain.Project) {
+	t.Helper()
+	home := t.TempDir()
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	codeDir := t.TempDir()
+	codex := "codex"
+	if runtime.GOOS == "windows" {
+		codex += ".exe"
+	}
+	if err := os.WriteFile(filepath.Join(codeDir, codex), nil, 0o700); err != nil {
+		t.Fatalf("create fake codex executable: %v", err)
+	}
+	t.Setenv("PATH", codeDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, err := runQLog(t, home, "adapter", "install", "codex"); err != nil {
+		t.Fatalf("install Codex: %v", err)
+	}
+	service, err := app.Open(context.Background(), home)
+	if err != nil {
+		t.Fatalf("open service: %v", err)
+	}
+	project, _, err := service.Store.RegisterProject(context.Background(), "Project", "project", t.TempDir())
+	if err != nil {
+		_ = service.Close()
+		t.Fatalf("register project: %v", err)
+	}
+	if err := service.Close(); err != nil {
+		t.Fatalf("close service: %v", err)
+	}
+	return home, project
+}
+
 func TestCollectorRejectsPublicBindingWithoutExplicitOptIn(t *testing.T) {
 	if err := validateListenAddress("0.0.0.0:4318", false); err == nil {
 		t.Fatal("public binding was accepted")
@@ -371,7 +469,7 @@ func TestCollectorStatusShowsLocalEndpoints(t *testing.T) {
 
 func TestCodexEvidenceContractUsesDocumentedOTLPLogs(t *testing.T) {
 	contract := evidenceContract("codex")
-	if contract.Source != "otlp-http" || contract.Quality != adapters.CaptureOTELReported || !contract.SourceEvidence {
+	if contract.Source != "otlp-http" || contract.Quality != adapters.CaptureOTELReported || !contract.RequireCodexResponseCompleted || !contract.SourceEvidence {
 		t.Fatalf("Codex evidence contract = %#v", contract)
 	}
 }

@@ -259,6 +259,27 @@ func TestCodexLogEventAllowlistsOnlyModelAndUsageFields(t *testing.T) {
 	}
 }
 
+func TestCodexLogEventMarksOnlyAcceptedResponseCompletedEvidence(t *testing.T) {
+	service, err := app.Initialize(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatalf("initialize service: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+
+	line, accepted, err := (Receiver{service: service}).codexLogEvent(context.Background(),
+		map[string]string{"service.name": "codex"},
+		map[string]string{"event.name": "codex.sse_event", "event.kind": "response.completed", "model": "gpt-5", "input_tokens": "1", "output_tokens": "2"},
+		logRecord{TraceID: "trace", SpanID: "span"},
+	)
+	if err != nil || !accepted {
+		t.Fatalf("accepted=%t err=%v", accepted, err)
+	}
+	payload := line["payload"].(map[string]any)
+	if payload["codex_response_completed"] != true {
+		t.Fatalf("payload = %#v", payload)
+	}
+}
+
 func TestReceiverImportsDistinctSpansInSameTraceAndDeduplicatesRetry(t *testing.T) {
 	ctx := context.Background()
 	service, err := app.Initialize(ctx, t.TempDir())

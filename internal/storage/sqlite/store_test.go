@@ -608,6 +608,74 @@ func TestAdapterEvidenceUsesModelCallAllocationForReportedTokens(t *testing.T) {
 	}
 }
 
+func TestAdapterEvidenceRequiresCodexResponseCompleted(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	project, _, err := store.RegisterProject(ctx, "Project", "project", t.TempDir())
+	if err != nil {
+		t.Fatalf("RegisterProject() error = %v", err)
+	}
+	now := time.Now().UTC()
+	for _, test := range []struct {
+		name    string
+		payload string
+		want    bool
+	}{
+		{name: "missing completion discriminator", payload: `{"agent_name":"codex","capture_quality":"otel_reported"}`, want: false},
+		{name: "persisted completion discriminator", payload: `{"agent_name":"codex","capture_quality":"otel_reported","codex_response_completed":true}`, want: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := store.EnsureSession(ctx, test.name, "codex", now); err != nil {
+				t.Fatalf("EnsureSession() error = %v", err)
+			}
+			raw, err := store.AppendRawEvent(ctx, RawEventInput{
+				Source:     "otlp-http",
+				SessionID:  test.name,
+				EventType:  "model.call",
+				OccurredAt: now,
+				Payload:    []byte(test.payload),
+			})
+			if err != nil || !raw.Accepted {
+				t.Fatalf("AppendRawEvent() = %#v, %v", raw, err)
+			}
+			if _, err := store.RecordModelCall(ctx, ModelCallInput{
+				RawEventID:     raw.ID,
+				ProjectID:      project.ID,
+				SessionID:      test.name,
+				AgentName:      "codex",
+				Provider:       "openai",
+				ModelID:        "gpt-5",
+				InputTokens:    1,
+				CaptureQuality: "otel_reported",
+				OccurredAt:     now,
+			}); err != nil {
+				t.Fatalf("RecordModelCall() error = %v", err)
+			}
+
+			found, err := store.HasRecentAdapterEvidence(ctx, AdapterEvidenceQuery{
+				AdapterID:                     "codex",
+				Source:                        "otlp-http",
+				From:                          now.Add(-time.Minute),
+				To:                            now.Add(time.Minute),
+				ProjectSlug:                   project.Slug,
+				RequiredQuality:               "otel_reported",
+				RequireCodexResponseCompleted: true,
+			})
+			if err != nil {
+				t.Fatalf("HasRecentAdapterEvidence() error = %v", err)
+			}
+			if found != test.want {
+				t.Fatalf("HasRecentAdapterEvidence() = %t, want %t", found, test.want)
+			}
+		})
+	}
+}
+
 func TestAdapterEvidenceAcceptsClaudeLifecycleRawEventWithoutModelCall(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))

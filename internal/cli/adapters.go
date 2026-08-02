@@ -251,12 +251,13 @@ func (localAdapterStatusAccess) HasRecentEvidence(ctx context.Context, home stri
 	defer func() { _ = service.Close() }()
 	now := time.Now().UTC()
 	return service.Store.HasRecentAdapterEvidence(ctx, sqlite.AdapterEvidenceQuery{
-		AdapterID:         status.AdapterID,
-		AllowedAgentNames: contract.AllowedAgentNames,
-		Source:            contract.Source,
-		From:              now.Add(-time.Hour),
-		To:                now,
-		RequiredQuality:   string(contract.Quality),
+		AdapterID:                     status.AdapterID,
+		AllowedAgentNames:             contract.AllowedAgentNames,
+		Source:                        contract.Source,
+		From:                          now.Add(-time.Hour),
+		To:                            now,
+		RequiredQuality:               string(contract.Quality),
+		RequireCodexResponseCompleted: contract.RequireCodexResponseCompleted,
 	})
 }
 
@@ -273,11 +274,12 @@ func (e adapterVerificationError) Error() string {
 }
 
 type adapterEvidenceContract struct {
-	Source                string
-	Quality               adapters.CaptureQuality
-	AllowedAgentNames     []string
-	SourceEvidence        bool
-	SourceEvidenceMessage string
+	Source                        string
+	Quality                       adapters.CaptureQuality
+	AllowedAgentNames             []string
+	RequireCodexResponseCompleted bool
+	SourceEvidence                bool
+	SourceEvidenceMessage         string
 }
 
 func evidenceContract(adapterID string) adapterEvidenceContract {
@@ -287,7 +289,7 @@ func evidenceContract(adapterID string) adapterEvidenceContract {
 	case "opencode":
 		return adapterEvidenceContract{Source: "opencode-plugin", Quality: adapters.CaptureLifecycleOnly, SourceEvidenceMessage: "documented source-backed OpenCode usage evidence is required before verification"}
 	case "codex":
-		return adapterEvidenceContract{Source: "otlp-http", Quality: adapters.CaptureOTELReported, SourceEvidence: true, SourceEvidenceMessage: "Codex 0.145.0 documents OTLP response.completed logs with source-reported tokens"}
+		return adapterEvidenceContract{Source: "otlp-http", Quality: adapters.CaptureOTELReported, RequireCodexResponseCompleted: true, SourceEvidence: true, SourceEvidenceMessage: "Codex 0.145.0 documents OTLP response.completed logs with source-reported tokens"}
 	case "copilot-vscode":
 		return adapterEvidenceContract{Source: "otlp-http", Quality: adapters.CaptureOTELReported, AllowedAgentNames: []string{"GitHub Copilot Chat"}, SourceEvidence: true, SourceEvidenceMessage: "VS Code documents Copilot OTel trace/span identity and gen_ai usage fields"}
 	default:
@@ -330,7 +332,7 @@ func verifyAdapter(ctx context.Context, home string, adapter adapters.Adapter, p
 	}
 	defer func() { _ = service.Close() }()
 	now := time.Now().UTC()
-	foundEvidence, err := service.Store.HasRecentAdapterEvidence(ctx, sqlite.AdapterEvidenceQuery{AdapterID: adapter.Descriptor().ID, AllowedAgentNames: contract.AllowedAgentNames, Source: contract.Source, From: now.Add(-duration), To: now, ProjectSlug: projectSlug, RequiredQuality: string(contract.Quality)})
+	foundEvidence, err := service.Store.HasRecentAdapterEvidence(ctx, sqlite.AdapterEvidenceQuery{AdapterID: adapter.Descriptor().ID, AllowedAgentNames: contract.AllowedAgentNames, Source: contract.Source, From: now.Add(-duration), To: now, ProjectSlug: projectSlug, RequiredQuality: string(contract.Quality), RequireCodexResponseCompleted: contract.RequireCodexResponseCompleted})
 	if err != nil {
 		stages = append(stages, adapterVerifyStage{Name: "raw_evidence", Passed: false, Required: true, Message: err.Error()})
 		return adapterVerifyResult{AdapterID: adapter.Descriptor().ID, Stages: stages, Message: "evidence query failed"}

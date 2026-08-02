@@ -380,12 +380,13 @@ func (r Receiver) codexLogEvent(ctx context.Context, resource, record map[string
 		return nil, false, err
 	}
 	payload := map[string]any{
-		"provider":        "openai",
-		"model":           model,
-		"agent_name":      "codex",
-		"capture_quality": "otel_reported",
-		"input_tokens":    inputTokens,
-		"output_tokens":   outputTokens,
+		"provider":                 "openai",
+		"model":                    model,
+		"agent_name":               "codex",
+		"capture_quality":          "otel_reported",
+		"codex_response_completed": true,
+		"input_tokens":             inputTokens,
+		"output_tokens":            outputTokens,
 	}
 	if value, found := requiredNumber(record, "cached_input_tokens"); found {
 		payload["cached_input_tokens"] = value

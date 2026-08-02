@@ -109,13 +109,14 @@ type UsageQuery struct {
 }
 
 type AdapterEvidenceQuery struct {
-	AdapterID         string
-	AllowedAgentNames []string
-	Source            string
-	From              time.Time
-	To                time.Time
-	ProjectSlug       string
-	RequiredQuality   string
+	AdapterID                     string
+	AllowedAgentNames             []string
+	Source                        string
+	From                          time.Time
+	To                            time.Time
+	ProjectSlug                   string
+	RequiredQuality               string
+	RequireCodexResponseCompleted bool
 }
 
 type UsageRow struct {
@@ -1740,6 +1741,9 @@ func (s *Store) HasRecentAdapterEvidence(ctx context.Context, query AdapterEvide
 	if !query.To.IsZero() {
 		where += " AND r.occurred_at < ?"
 		args = append(args, timestamp(query.To))
+	}
+	if query.RequireCodexResponseCompleted {
+		where += ` AND json_extract(r.payload_json_sanitized, '$.codex_response_completed') = 1`
 	}
 	if query.RequiredQuality == "lifecycle_only" {
 		if query.ProjectSlug != "" {
