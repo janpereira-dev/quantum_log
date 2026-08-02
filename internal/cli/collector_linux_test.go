@@ -3,8 +3,10 @@
 package cli
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -64,4 +66,103 @@ func TestLinuxCollectorStatePersistsListenerAndMigratesLegacyHome(t *testing.T) 
 	if state := readLinuxCollectorState(statePath); state != (linuxCollectorState{}) {
 		t.Fatalf("relative state = %#v, want empty", state)
 	}
+}
+
+func TestLinuxCollectorUninstallRemovesUnitBeforeDaemonReload(t *testing.T) {
+	var calls []string
+	home := t.TempDir()
+	resetLinuxCollectorUninstallSeams(t)
+	stopLinuxCollector = func() (CollectorStatus, error) {
+		calls = append(calls, "stop")
+		return CollectorStatus{}, nil
+	}
+	runLinuxSystemctl = func(args ...string) error {
+		switch args[1] {
+		case "disable":
+			calls = append(calls, "disable")
+		case "daemon-reload":
+			calls = append(calls, "daemon-reload")
+		}
+		return nil
+	}
+	removeLinuxCollectorUnit = func(string) error {
+		calls = append(calls, "remove-unit")
+		return nil
+	}
+	readManagedLinuxCollectorState = func(string) linuxCollectorState { return linuxCollectorState{Home: home} }
+	removeLinuxCollectorTree = func(string) error {
+		calls = append(calls, "remove-logs")
+		return nil
+	}
+	removeLinuxCollectorState = func(string) error {
+		calls = append(calls, "remove-state")
+		return nil
+	}
+
+	if _, err := (linuxCollectorManager{}).Uninstall(); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"stop", "disable", "remove-unit", "daemon-reload", "remove-logs", "remove-state"}
+	if !slices.Equal(calls, want) {
+		t.Fatalf("uninstall calls = %q, want %q", calls, want)
+	}
+}
+
+func TestLinuxCollectorUninstallKeepsStateWhenReloadFails(t *testing.T) {
+	var calls []string
+	resetLinuxCollectorUninstallSeams(t)
+	stopLinuxCollector = func() (CollectorStatus, error) {
+		calls = append(calls, "stop")
+		return CollectorStatus{}, nil
+	}
+	runLinuxSystemctl = func(args ...string) error {
+		switch args[1] {
+		case "disable":
+			calls = append(calls, "disable")
+			return nil
+		case "daemon-reload":
+			calls = append(calls, "daemon-reload")
+			return errors.New("reload failed")
+		default:
+			return nil
+		}
+	}
+	removeLinuxCollectorUnit = func(string) error {
+		calls = append(calls, "remove-unit")
+		return nil
+	}
+	removeLinuxCollectorTree = func(string) error {
+		calls = append(calls, "remove-logs")
+		return nil
+	}
+	removeLinuxCollectorState = func(string) error {
+		calls = append(calls, "remove-state")
+		return nil
+	}
+
+	if _, err := (linuxCollectorManager{}).Uninstall(); err == nil {
+		t.Fatal("Uninstall() error = nil")
+	}
+	want := []string{"stop", "disable", "remove-unit", "daemon-reload"}
+	if !slices.Equal(calls, want) {
+		t.Fatalf("uninstall calls = %q, want %q", calls, want)
+	}
+}
+
+func resetLinuxCollectorUninstallSeams(t *testing.T) {
+	t.Helper()
+	previousSystemctl := runLinuxSystemctl
+	previousUnitRemove := removeLinuxCollectorUnit
+	previousTreeRemove := removeLinuxCollectorTree
+	previousStateRemove := removeLinuxCollectorState
+	previousStop := stopLinuxCollector
+	previousStateRead := readManagedLinuxCollectorState
+	t.Cleanup(func() {
+		runLinuxSystemctl = previousSystemctl
+		removeLinuxCollectorUnit = previousUnitRemove
+		removeLinuxCollectorTree = previousTreeRemove
+		removeLinuxCollectorState = previousStateRemove
+		stopLinuxCollector = previousStop
+		readManagedLinuxCollectorState = previousStateRead
+	})
 }
