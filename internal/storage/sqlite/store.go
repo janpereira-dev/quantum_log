@@ -1114,6 +1114,72 @@ func (s *Store) RecordModelCall(ctx context.Context, input ModelCallInput) (stri
 	return id, nil
 }
 
+func (s *Store) LinkMatchingLegacyModelCall(ctx context.Context, input ModelCallInput) (bool, error) {
+	if strings.TrimSpace(input.RawEventID) == "" || strings.TrimSpace(input.Provider) == "" || strings.TrimSpace(input.ModelID) == "" {
+		return false, nil
+	}
+	if input.OccurredAt.IsZero() {
+		return false, nil
+	}
+	if input.CaptureQuality == "" {
+		input.CaptureQuality = "unknown"
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin legacy model call linkage: %w", err)
+	}
+	defer rollback(tx)
+	var linkedID string
+	err = tx.QueryRowContext(ctx, `SELECT id FROM model_calls WHERE raw_event_id = ?`, input.RawEventID).Scan(&linkedID)
+	if err == nil {
+		return false, tx.Commit()
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("read raw event model call: %w", err)
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM model_calls
+		WHERE raw_event_id IS NULL
+			AND COALESCE(primary_project_id, '') = ? AND COALESCE(project_location_id, '') = ? AND COALESCE(work_context_id, '') = ?
+			AND COALESCE(task_id, '') = ? AND COALESCE(session_id, '') = ? AND COALESCE(turn_id, '') = ?
+			AND started_at = ? AND agent_name = ? AND provider = ? AND model_id = ?
+			AND input_tokens = ? AND output_tokens = ? AND reasoning_tokens = ? AND cached_input_tokens = ? AND cache_write_tokens = ?
+			AND estimated_cost_usd_micros = ? AND estimated_cost_eur_micros = ? AND capture_quality = ?
+		LIMIT 2`, input.ProjectID, input.ProjectLocationID, input.WorkContextID, input.TaskID, input.SessionID, input.TurnID,
+		timestamp(input.OccurredAt), input.AgentName, input.Provider, input.ModelID,
+		input.InputTokens, input.OutputTokens, input.ReasoningTokens, input.CachedInputTokens, input.CacheWriteTokens,
+		input.EstimatedCostUSDMicros, input.EstimatedCostEURMicros, input.CaptureQuality)
+	if err != nil {
+		return false, fmt.Errorf("find matching legacy model call: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	candidates := make([]string, 0, 2)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return false, fmt.Errorf("scan matching legacy model call: %w", err)
+		}
+		candidates = append(candidates, id)
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("read matching legacy model call: %w", err)
+	}
+	if len(candidates) != 1 {
+		return false, tx.Commit()
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE model_calls SET raw_event_id = ? WHERE id = ? AND raw_event_id IS NULL`, input.RawEventID, candidates[0])
+	if err != nil {
+		return false, fmt.Errorf("link legacy model call: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("confirm legacy model call linkage: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit legacy model call linkage: %w", err)
+	}
+	return affected == 1, nil
+}
+
 func (s *Store) EnsureSession(ctx context.Context, id, agentName string, startedAt time.Time) error {
 	if strings.TrimSpace(id) == "" {
 		return nil
@@ -1398,15 +1464,16 @@ func (s *Store) Usage(ctx context.Context, query UsageQuery) (UsageReport, error
 	if err := validateGroupBy(query.GroupBy); err != nil {
 		return UsageReport{}, err
 	}
-	where, args := usageWindow(query)
 	var totalTokens int64
-	totalQuery := `SELECT COALESCE(SUM(total_tokens), 0) FROM model_calls c` + where
-	if query.ProjectSlug != "" {
-		totalQuery = `SELECT COALESCE(SUM(c.total_tokens * a.allocation_basis_points / 10000), 0) FROM model_calls c JOIN usage_allocations a ON a.subject_type = 'model_call' AND a.subject_id = c.id LEFT JOIN projects p ON p.id = a.project_id` + where
+	if query.ProjectSlug == "" {
+		where, args := usageWindow(query)
+		if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(total_tokens), 0) FROM model_calls c`+where, args...).Scan(&totalTokens); err != nil {
+			return UsageReport{}, err
+		}
 	}
-	if err := s.db.QueryRowContext(ctx, totalQuery, args...).Scan(&totalTokens); err != nil {
-		return UsageReport{}, err
-	}
+	allocationQuery := query
+	allocationQuery.ProjectSlug = ""
+	where, args := usageWindow(allocationQuery)
 	rows, err := s.db.QueryContext(ctx, `SELECT c.id, a.id, COALESCE(p.slug, 'unattributed'), c.agent_name, c.provider, c.model_id, c.capture_quality, c.input_tokens, c.output_tokens, c.reasoning_tokens, c.cached_input_tokens, c.cache_write_tokens, c.total_tokens, c.estimated_cost_usd_micros, a.allocation_basis_points FROM model_calls c JOIN usage_allocations a ON a.subject_type = 'model_call' AND a.subject_id = c.id LEFT JOIN projects p ON p.id = a.project_id`+where+` ORDER BY c.id, a.id`, args...)
 	if err != nil {
 		return UsageReport{}, err
@@ -1431,6 +1498,9 @@ func (s *Store) Usage(ctx context.Context, query UsageQuery) (UsageReport, error
 		row.TotalTokens = apportionShare(row.TotalTokens, offset, basisPoints)
 		row.AllocatedCostUSDMicros = apportionShare(cost, offset, basisPoints)
 		allocatedBasis[callID] += basisPoints
+		if query.ProjectSlug != "" && row.ProjectSlug != normalizeSlug(query.ProjectSlug) {
+			continue
+		}
 		totalAllocated += row.AllocatedCostUSDMicros
 		key := row.ProjectSlug + "\x00" + row.AgentName + "\x00" + row.Provider + "\x00" + row.Model + "\x00" + row.CaptureQuality
 		if existing, found := grouped[key]; found {
@@ -1448,6 +1518,12 @@ func (s *Store) Usage(ctx context.Context, query UsageQuery) (UsageReport, error
 	}
 	if err := rows.Err(); err != nil {
 		return UsageReport{}, err
+	}
+	if query.ProjectSlug != "" {
+		totalTokens = 0
+		for _, row := range grouped {
+			totalTokens += row.TotalTokens
+		}
 	}
 	report := UsageReport{GroupBy: append([]string(nil), query.GroupBy...), Rows: make([]UsageRow, 0), Measurements: make([]MeasurementSummary, 0), TotalTokens: totalTokens, AllocatedCostUSDMicros: totalAllocated}
 	for _, row := range grouped {
@@ -1510,11 +1586,10 @@ func addLifecycleMeasurement(measurements []MeasurementSummary, rawEventCount in
 }
 
 func (s *Store) usageMeasurements(ctx context.Context, query UsageQuery) ([]MeasurementSummary, error) {
-	where, args := usageWindow(query)
-	measurementQuery := `SELECT c.id, c.capture_quality, c.input_tokens, c.output_tokens, c.reasoning_tokens, c.cached_input_tokens, c.cache_write_tokens, c.total_tokens, c.estimated_cost_usd_micros, 10000 FROM model_calls c` + where + ` ORDER BY c.id`
-	if query.ProjectSlug != "" {
-		measurementQuery = `SELECT c.id, c.capture_quality, c.input_tokens, c.output_tokens, c.reasoning_tokens, c.cached_input_tokens, c.cache_write_tokens, c.total_tokens, c.estimated_cost_usd_micros, a.allocation_basis_points FROM model_calls c JOIN usage_allocations a ON a.subject_type = 'model_call' AND a.subject_id = c.id LEFT JOIN projects p ON p.id = a.project_id` + where + ` ORDER BY c.id, a.id`
-	}
+	allocationQuery := query
+	allocationQuery.ProjectSlug = ""
+	where, args := usageWindow(allocationQuery)
+	measurementQuery := `SELECT c.id, COALESCE(p.slug, 'unattributed'), c.capture_quality, c.input_tokens, c.output_tokens, c.reasoning_tokens, c.cached_input_tokens, c.cache_write_tokens, c.total_tokens, c.estimated_cost_usd_micros, COALESCE(a.allocation_basis_points, 10000) FROM model_calls c LEFT JOIN usage_allocations a ON a.subject_type = 'model_call' AND a.subject_id = c.id LEFT JOIN projects p ON p.id = a.project_id` + where + ` ORDER BY c.id, a.id`
 	rows, err := s.db.QueryContext(ctx, measurementQuery, args...)
 	if err != nil {
 		return nil, fmt.Errorf("read usage measurements: %w", err)
@@ -1524,10 +1599,22 @@ func (s *Store) usageMeasurements(ctx context.Context, query UsageQuery) ([]Meas
 	allocatedBasis := make(map[string]int64)
 	seenCalls := make(map[string]bool)
 	for rows.Next() {
-		var callID, quality string
+		var callID, projectSlug, quality string
 		var inputTokens, outputTokens, reasoningTokens, cachedInputTokens, cacheWriteTokens, totalTokens, cost, basisPoints int64
-		if err := rows.Scan(&callID, &quality, &inputTokens, &outputTokens, &reasoningTokens, &cachedInputTokens, &cacheWriteTokens, &totalTokens, &cost, &basisPoints); err != nil {
+		if err := rows.Scan(&callID, &projectSlug, &quality, &inputTokens, &outputTokens, &reasoningTokens, &cachedInputTokens, &cacheWriteTokens, &totalTokens, &cost, &basisPoints); err != nil {
 			return nil, fmt.Errorf("scan usage measurements: %w", err)
+		}
+		offset := allocatedBasis[callID]
+		inputTokens = apportionShare(inputTokens, offset, basisPoints)
+		outputTokens = apportionShare(outputTokens, offset, basisPoints)
+		reasoningTokens = apportionShare(reasoningTokens, offset, basisPoints)
+		cachedInputTokens = apportionShare(cachedInputTokens, offset, basisPoints)
+		cacheWriteTokens = apportionShare(cacheWriteTokens, offset, basisPoints)
+		totalTokens = apportionShare(totalTokens, offset, basisPoints)
+		cost = apportionShare(cost, offset, basisPoints)
+		allocatedBasis[callID] += basisPoints
+		if query.ProjectSlug != "" && projectSlug != normalizeSlug(query.ProjectSlug) {
+			continue
 		}
 		summary := byQuality[quality]
 		summary.Quality = quality
@@ -1535,15 +1622,13 @@ func (s *Store) usageMeasurements(ctx context.Context, query UsageQuery) ([]Meas
 			summary.ModelCallCount++
 			seenCalls[callID] = true
 		}
-		offset := allocatedBasis[callID]
-		summary.InputTokens += apportionShare(inputTokens, offset, basisPoints)
-		summary.OutputTokens += apportionShare(outputTokens, offset, basisPoints)
-		summary.ReasoningTokens += apportionShare(reasoningTokens, offset, basisPoints)
-		summary.CachedInputTokens += apportionShare(cachedInputTokens, offset, basisPoints)
-		summary.CacheWriteTokens += apportionShare(cacheWriteTokens, offset, basisPoints)
-		summary.TotalTokens += apportionShare(totalTokens, offset, basisPoints)
-		summary.EstimatedCostUSDMicros += apportionShare(cost, offset, basisPoints)
-		allocatedBasis[callID] += basisPoints
+		summary.InputTokens += inputTokens
+		summary.OutputTokens += outputTokens
+		summary.ReasoningTokens += reasoningTokens
+		summary.CachedInputTokens += cachedInputTokens
+		summary.CacheWriteTokens += cacheWriteTokens
+		summary.TotalTokens += totalTokens
+		summary.EstimatedCostUSDMicros += cost
 		byQuality[quality] = summary
 	}
 	if err := rows.Err(); err != nil {
@@ -1656,12 +1741,11 @@ func (s *Store) HasRecentAdapterEvidence(ctx context.Context, query AdapterEvide
 		where += " AND r.occurred_at < ?"
 		args = append(args, timestamp(query.To))
 	}
-	if query.ProjectSlug != "" {
-		where += " AND p.slug = ?"
-		args = append(args, normalizeSlug(query.ProjectSlug))
-	}
-
 	if query.RequiredQuality == "lifecycle_only" {
+		if query.ProjectSlug != "" {
+			where += " AND p.slug = ?"
+			args = append(args, normalizeSlug(query.ProjectSlug))
+		}
 		var found bool
 		err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM raw_events r LEFT JOIN projects p ON p.id = r.project_id`+where+`)`, args...).Scan(&found)
 		return found, err
@@ -1669,13 +1753,19 @@ func (s *Store) HasRecentAdapterEvidence(ctx context.Context, query AdapterEvide
 
 	where += " AND c.capture_quality = ? AND c.total_tokens > 0"
 	args = append(args, query.RequiredQuality)
+	joins := ""
+	if query.ProjectSlug != "" {
+		joins = " JOIN usage_allocations a ON a.subject_type = 'model_call' AND a.subject_id = c.id JOIN projects p ON p.id = a.project_id"
+		where += " AND p.slug = ?"
+		args = append(args, normalizeSlug(query.ProjectSlug))
+	}
 	var found bool
 	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(
 		SELECT 1 FROM raw_events r
 		JOIN model_calls c ON c.raw_event_id = r.id
-		LEFT JOIN projects p ON p.id = r.project_id`+where+`
+		`+joins+where+`
 		GROUP BY r.id
-		HAVING COUNT(c.id) = 1
+		HAVING COUNT(DISTINCT c.id) = 1
 	)`, args...).Scan(&found)
 	return found, err
 }

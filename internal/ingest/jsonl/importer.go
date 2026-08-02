@@ -122,7 +122,7 @@ func normalizeModelCall(ctx context.Context, store *storepkg.Store, parsed event
 	if err := store.EnsureSession(ctx, parsed.SessionID, payload.AgentName, parsed.OccurredAt); err != nil {
 		return false, err
 	}
-	_, err = store.RecordModelCall(ctx, storepkg.ModelCallInput{
+	input := storepkg.ModelCallInput{
 		RawEventID:             rawEventID,
 		ProjectID:              parsed.ProjectID,
 		ProjectLocationID:      parsed.ProjectLocationID,
@@ -142,6 +142,11 @@ func normalizeModelCall(ctx context.Context, store *storepkg.Store, parsed event
 		EstimatedCostEURMicros: payload.EstimatedCostEURMicros,
 		OccurredAt:             parsed.OccurredAt,
 		CaptureQuality:         payload.CaptureQuality,
-	})
+	}
+	linked, err = store.LinkMatchingLegacyModelCall(ctx, input)
+	if err != nil || linked {
+		return linked, err
+	}
+	_, err = store.RecordModelCall(ctx, input)
 	return err == nil, err
 }

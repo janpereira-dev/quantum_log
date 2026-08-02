@@ -89,16 +89,40 @@ func TestUsageSplitApportionsRemaindersWithoutDroppingTokens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterProject(B) error = %v", err)
 	}
-	callID, err := store.RecordModelCall(ctx, ModelCallInput{ProjectID: projectA.ID, Provider: "example", ModelID: "model", InputTokens: 1, OccurredAt: time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)})
+	callID, err := store.RecordModelCall(ctx, ModelCallInput{ProjectID: projectA.ID, Provider: "example", ModelID: "model", InputTokens: 1, EstimatedCostUSDMicros: 1, OccurredAt: time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)})
 	if err != nil {
 		t.Fatalf("RecordModelCall() error = %v", err)
 	}
 	if err := store.ReplaceAllocations(ctx, "model_call", callID, []AllocationInput{{ProjectID: projectA.ID, BasisPoints: 6000}, {ProjectID: projectB.ID, BasisPoints: 4000}}); err != nil {
 		t.Fatalf("ReplaceAllocations() error = %v", err)
 	}
-	report, err := store.Usage(ctx, UsageQuery{GroupBy: []string{"project"}})
-	if err != nil || report.TotalTokens != 1 || report.Rows[0].TotalTokens+report.Rows[1].TotalTokens != 1 {
-		t.Fatalf("remainder usage = %#v, %v", report, err)
+	for repeat := 0; repeat < 10; repeat++ {
+		report, err := store.Usage(ctx, UsageQuery{GroupBy: []string{"project"}})
+		if err != nil {
+			t.Fatalf("Usage() error = %v", err)
+		}
+		if len(report.Rows) != 2 || report.TotalTokens != 1 || report.AllocatedCostUSDMicros != 1 {
+			t.Fatalf("remainder usage = %#v", report)
+		}
+		if report.Rows[0].TotalTokens+report.Rows[1].TotalTokens != report.TotalTokens || report.Rows[0].AllocatedCostUSDMicros+report.Rows[1].AllocatedCostUSDMicros != report.AllocatedCostUSDMicros {
+			t.Fatalf("remainder allocation does not conserve totals = %#v", report.Rows)
+		}
+		for _, projectSlug := range []string{projectA.Slug, projectB.Slug} {
+			filtered, err := store.Usage(ctx, UsageQuery{ProjectSlug: projectSlug, GroupBy: []string{"project"}})
+			if err != nil {
+				t.Fatalf("Usage(%s) error = %v", projectSlug, err)
+			}
+			var expected UsageRow
+			for _, row := range report.Rows {
+				if row.ProjectSlug == projectSlug {
+					expected = row
+					break
+				}
+			}
+			if len(filtered.Rows) != 1 || filtered.Rows[0] != expected || filtered.TotalTokens != expected.TotalTokens || filtered.AllocatedCostUSDMicros != expected.AllocatedCostUSDMicros {
+				t.Fatalf("filtered %s usage = %#v, want global row %#v", projectSlug, filtered, expected)
+			}
+		}
 	}
 }
 

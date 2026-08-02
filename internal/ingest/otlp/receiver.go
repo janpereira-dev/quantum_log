@@ -83,8 +83,8 @@ func (r Receiver) ingestRequest(ctx context.Context, request *http.Request, writ
 		if err != nil {
 			return 0, 0, err
 		}
-		count, err := r.ingest(ctx, payload)
-		return count, spanCount(payload), err
+		accepted, total, err := r.ingest(ctx, payload)
+		return accepted, total, err
 	}
 	payload, err := decodeLogRequest(request, writer)
 	if err != nil {
@@ -92,16 +92,6 @@ func (r Receiver) ingestRequest(ctx context.Context, request *http.Request, writ
 	}
 	count, err := r.ingestLogs(ctx, payload)
 	return count, logCount(payload), err
-}
-
-func spanCount(request exportTraceServiceRequest) int {
-	count := 0
-	for _, resourceSpan := range request.ResourceSpans {
-		for _, scopeSpan := range resourceSpan.ScopeSpans {
-			count += len(scopeSpan.Spans)
-		}
-	}
-	return count
 }
 
 func decodeTraceRequest(request *http.Request, writer http.ResponseWriter) (exportTraceServiceRequest, error) {
@@ -163,32 +153,40 @@ func decodeLogRequest(request *http.Request, writer http.ResponseWriter) (export
 	}
 }
 
-func (r Receiver) ingest(ctx context.Context, request exportTraceServiceRequest) (int, error) {
+func (r Receiver) ingest(ctx context.Context, request exportTraceServiceRequest) (int, int, error) {
 	var lines bytes.Buffer
 	count := 0
+	unsupportedCopilotSpan := false
 	for _, resourceSpan := range request.ResourceSpans {
 		resource := attributes(resourceSpan.Resource.Attributes)
 		for _, scopeSpan := range resourceSpan.ScopeSpans {
 			for _, span := range scopeSpan.Spans {
 				line, err := r.event(ctx, resource, attributes(span.Attributes), span)
+				if errors.Is(err, errUnsupportedCopilotSpan) {
+					unsupportedCopilotSpan = true
+					continue
+				}
 				if err != nil {
-					return count, err
+					return count, count, err
 				}
 				if err := json.NewEncoder(&lines).Encode(line); err != nil {
-					return count, err
+					return count, count, err
 				}
 				count++
 			}
 		}
 	}
 	if count == 0 {
-		return 0, nil
+		if unsupportedCopilotSpan {
+			return 0, 0, errUnsupportedCopilotSpan
+		}
+		return 0, 0, nil
 	}
 	imported, err := jsonl.ImportTrusted(ctx, r.service.Store, &lines)
 	if err != nil {
-		return 0, fmt.Errorf("import OTLP spans: %w", err)
+		return 0, count, fmt.Errorf("import OTLP spans: %w", err)
 	}
-	return imported, nil
+	return imported, count, nil
 }
 
 func (r Receiver) ingestLogs(ctx context.Context, request exportLogsServiceRequest) (int, error) {

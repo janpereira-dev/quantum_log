@@ -551,6 +551,63 @@ func TestAdapterEvidenceRequiresLinkedNormalizedModelCall(t *testing.T) {
 	}
 }
 
+func TestAdapterEvidenceUsesModelCallAllocationForReportedTokens(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	project, _, err := store.RegisterProject(ctx, "Project", "project", t.TempDir())
+	if err != nil {
+		t.Fatalf("RegisterProject() error = %v", err)
+	}
+	now := time.Now().UTC()
+	raw, err := store.AppendRawEvent(ctx, RawEventInput{
+		Source:     "otlp-http",
+		SessionID:  "session-1",
+		EventType:  "model.call",
+		OccurredAt: now,
+		Payload:    []byte(`{"agent_name":"GitHub Copilot Chat","capture_quality":"otel_reported"}`),
+	})
+	if err != nil || !raw.Accepted {
+		t.Fatalf("AppendRawEvent() = %#v, %v", raw, err)
+	}
+	if err := store.EnsureSession(ctx, "session-1", "GitHub Copilot Chat", now); err != nil {
+		t.Fatalf("EnsureSession() error = %v", err)
+	}
+	if _, err := store.RecordModelCall(ctx, ModelCallInput{
+		RawEventID:     raw.ID,
+		ProjectID:      project.ID,
+		SessionID:      "session-1",
+		AgentName:      "GitHub Copilot Chat",
+		Provider:       "github",
+		ModelID:        "gpt-5",
+		InputTokens:    1,
+		CaptureQuality: "otel_reported",
+		OccurredAt:     now,
+	}); err != nil {
+		t.Fatalf("RecordModelCall() error = %v", err)
+	}
+
+	found, err := store.HasRecentAdapterEvidence(ctx, AdapterEvidenceQuery{
+		AdapterID:         "copilot-vscode",
+		AllowedAgentNames: []string{"GitHub Copilot Chat"},
+		Source:            "otlp-http",
+		From:              now.Add(-time.Minute),
+		To:                now.Add(time.Minute),
+		ProjectSlug:       project.Slug,
+		RequiredQuality:   "otel_reported",
+	})
+	if err != nil {
+		t.Fatalf("HasRecentAdapterEvidence() error = %v", err)
+	}
+	if !found {
+		t.Fatal("reported-token evidence allocated to project was not found")
+	}
+}
+
 func TestAdapterEvidenceAcceptsClaudeLifecycleRawEventWithoutModelCall(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))

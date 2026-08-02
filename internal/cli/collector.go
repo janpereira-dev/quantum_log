@@ -33,11 +33,13 @@ func newCollectorCommand(home *string) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		output, err := newCollectorManager().Status(command.Context(), listen)
+		manager := newCollectorManager()
+		resolvedHome, resolvedListen := resolveManagedCollectorSettings(manager, paths.Home, listen, command.Flags().Changed("home"), command.Flags().Changed("listen"))
+		output, err := manager.Status(command.Context(), resolvedListen)
 		if err != nil {
 			return err
 		}
-		output.Home = paths.Home
+		output.Home = resolvedHome
 		output.Database = paths.Database
 		output.Endpoints = []string{"/v1/traces", "/v1/logs", "/v1/events", "/healthz"}
 		output.Scope = "loopback-only by default"
@@ -155,11 +157,10 @@ func probeCollectorHealth(ctx context.Context, listen string) collectorHealth {
 		return collectorHealth{Health: err.Error()}
 	}
 	defer func() { _ = response.Body.Close() }()
-	health := collectorHealth{Reachable: true, Running: true, Health: response.Status}
-	if response.StatusCode >= 200 && response.StatusCode <= 299 {
-		health.Health = "ok"
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return collectorHealth{Health: response.Status}
 	}
-	return health
+	return collectorHealth{Reachable: true, Running: true, Health: "ok"}
 }
 
 type requestScopedHandler struct {
@@ -196,7 +197,9 @@ func collectorLifecycleCommand(name, short string, run func(collectorManager, st
 		if err != nil {
 			return err
 		}
-		status, err := run(newCollectorManager(), resolvedHome, *listen)
+		manager := newCollectorManager()
+		resolvedHome, resolvedListen := resolveManagedCollectorSettings(manager, resolvedHome, *listen, command.Flags().Changed("home"), command.Flags().Changed("listen"))
+		status, err := run(manager, resolvedHome, resolvedListen)
 		if err != nil {
 			return err
 		}
@@ -209,6 +212,18 @@ func collectorLifecycleCommand(name, short string, run func(collectorManager, st
 	command.Flags().StringVar(listen, "listen", defaultCollectorListen, "OTLP/HTTP listen address")
 	command.Flags().BoolVar(&jsonOutput, "json", false, "output JSON")
 	return command
+}
+
+type managedCollectorSettingsResolver interface {
+	ResolveManagedCollectorSettings(home, listen string, homeExplicit, listenExplicit bool) (string, string)
+}
+
+func resolveManagedCollectorSettings(manager collectorManager, home, listen string, homeExplicit, listenExplicit bool) (string, string) {
+	resolver, ok := manager.(managedCollectorSettingsResolver)
+	if !ok {
+		return home, listen
+	}
+	return resolver.ResolveManagedCollectorSettings(home, listen, homeExplicit, listenExplicit)
 }
 
 func resolveCollectorLifecycleHome(home string) (string, error) {

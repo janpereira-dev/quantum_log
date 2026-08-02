@@ -4,6 +4,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,6 +16,11 @@ const linuxCollectorUnitName = "quantum-log-collector.service"
 
 type linuxCollectorManager struct{}
 
+type linuxCollectorState struct {
+	Home   string `json:"home"`
+	Listen string `json:"listen,omitempty"`
+}
+
 func newCollectorManager() collectorManager { return linuxCollectorManager{} }
 
 func linuxCollectorUnitPath() string {
@@ -24,9 +30,20 @@ func linuxCollectorUnitPath() string {
 
 func linuxCollectorStatePath() string { return linuxCollectorUnitPath() + ".state" }
 
+func (linuxCollectorManager) ResolveManagedCollectorSettings(home, listen string, homeExplicit, listenExplicit bool) (string, string) {
+	state := readLinuxCollectorState(linuxCollectorStatePath())
+	if !homeExplicit && state.Home != "" {
+		home = state.Home
+	}
+	return home, linuxCollectorListen(state, listen, listenExplicit)
+}
+
 func (linuxCollectorManager) Install(home, listen string) (CollectorStatus, error) {
 	if err := validateCollectorListen(listen); err != nil {
 		return CollectorStatus{}, err
+	}
+	if !filepath.IsAbs(home) {
+		return CollectorStatus{}, fmt.Errorf("collector home must be an absolute path")
 	}
 	executable, err := os.Executable()
 	if err != nil {
@@ -44,7 +61,7 @@ func (linuxCollectorManager) Install(home, listen string) (CollectorStatus, erro
 	if err := os.WriteFile(linuxCollectorUnitPath(), []byte(linuxCollectorUnitDefinition(executable, home, listen)), 0o600); err != nil {
 		return CollectorStatus{}, err
 	}
-	if err := os.WriteFile(linuxCollectorStatePath(), []byte(home), 0o600); err != nil {
+	if err := writeLinuxCollectorState(linuxCollectorStatePath(), linuxCollectorState{Home: home, Listen: listen}); err != nil {
 		return CollectorStatus{}, err
 	}
 	return CollectorStatus{Installed: true, Listen: listen, ServiceID: linuxCollectorUnitName, StatePath: filepath.Join(home, "collector"), LogPath: filepath.Join(home, "collector", "collector.log"), Message: "collector user service installed"}, nil
@@ -71,7 +88,8 @@ func (linuxCollectorManager) Stop() (CollectorStatus, error) {
 	if err := exec.Command("systemctl", "--user", "stop", linuxCollectorUnitName).Run(); err != nil && fileExists(linuxCollectorUnitPath()) {
 		return CollectorStatus{}, err
 	}
-	return CollectorStatus{Installed: fileExists(linuxCollectorUnitPath()), ServiceID: linuxCollectorUnitName, StatePath: filepath.Dir(linuxCollectorUnitPath()), Message: "collector user service stopped"}, nil
+	state := readLinuxCollectorState(linuxCollectorStatePath())
+	return CollectorStatus{Installed: fileExists(linuxCollectorUnitPath()), ServiceID: linuxCollectorUnitName, StatePath: filepath.Join(state.Home, "collector"), LogPath: filepath.Join(state.Home, "collector", "collector.log"), Message: "collector user service stopped"}, nil
 }
 
 func (manager linuxCollectorManager) Restart(home, listen string) (CollectorStatus, error) {
@@ -85,7 +103,7 @@ func (linuxCollectorManager) Status(ctx context.Context, listen string) (Collect
 	if err := validateCollectorListen(listen); err != nil {
 		return CollectorStatus{}, err
 	}
-	home := readCollectorHome(linuxCollectorStatePath())
+	home := readLinuxCollectorState(linuxCollectorStatePath()).Home
 	status := CollectorStatus{Installed: fileExists(linuxCollectorUnitPath()), Listen: listen, ServiceID: linuxCollectorUnitName, StatePath: filepath.Join(home, "collector"), LogPath: filepath.Join(home, "collector", "collector.log")}
 	if status.Installed && exec.CommandContext(ctx, "systemctl", "--user", "is-active", "--quiet", linuxCollectorUnitName).Run() == nil {
 		status.Running = true
@@ -100,7 +118,7 @@ func (linuxCollectorManager) Status(ctx context.Context, listen string) (Collect
 }
 
 func (linuxCollectorManager) Logs() (string, error) {
-	home := readCollectorHome(linuxCollectorStatePath())
+	home := readLinuxCollectorState(linuxCollectorStatePath()).Home
 	contents, err := os.ReadFile(filepath.Join(home, "collector", "collector.log"))
 	if os.IsNotExist(err) {
 		return "collector log is empty\n", nil
@@ -120,7 +138,7 @@ func (manager linuxCollectorManager) Uninstall() (CollectorStatus, error) {
 	if err := os.Remove(linuxCollectorUnitPath()); err != nil && !os.IsNotExist(err) {
 		return CollectorStatus{}, err
 	}
-	home := readCollectorHome(linuxCollectorStatePath())
+	home := readLinuxCollectorState(linuxCollectorStatePath()).Home
 	if home != "" {
 		if err := os.RemoveAll(filepath.Join(home, "collector")); err != nil {
 			return CollectorStatus{}, err
@@ -149,10 +167,44 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
-func readCollectorHome(path string) string {
+func linuxCollectorListen(state linuxCollectorState, listen string, explicit bool) string {
+	if !explicit && state.Listen != "" {
+		return state.Listen
+	}
+	return listen
+}
+
+func writeLinuxCollectorState(path string, state linuxCollectorState) error {
+	if !filepath.IsAbs(state.Home) {
+		return fmt.Errorf("collector home must be an absolute path")
+	}
+	if state.Listen != "" {
+		if err := validateCollectorListen(state.Listen); err != nil {
+			return err
+		}
+	}
+	contents, err := json.Marshal(state)
+	if err != nil {
+		return fmt.Errorf("encode collector state: %w", err)
+	}
+	return os.WriteFile(path, contents, 0o600)
+}
+
+func readLinuxCollectorState(path string) linuxCollectorState {
 	contents, err := os.ReadFile(path)
 	if err != nil {
-		return ""
+		return linuxCollectorState{}
 	}
-	return strings.TrimSpace(string(contents))
+	value := strings.TrimSpace(string(contents))
+	state := linuxCollectorState{}
+	if err := json.Unmarshal([]byte(value), &state); err != nil {
+		state.Home = value
+	}
+	if !filepath.IsAbs(state.Home) {
+		return linuxCollectorState{}
+	}
+	if state.Listen != "" && validateCollectorListen(state.Listen) != nil {
+		return linuxCollectorState{}
+	}
+	return state
 }

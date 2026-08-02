@@ -426,6 +426,31 @@ func TestReceiverRejectsInvalidCopilotOTLPIdentityAndSpoofedService(t *testing.T
 	}
 }
 
+func TestReceiverSkipsInvalidCopilotSpanInMixedBatch(t *testing.T) {
+	ctx := context.Background()
+	service, err := app.Initialize(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("initialize service: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+
+	payload := `{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"copilot-chat"}}]},"scopeSpans":[{"spans":[{"traceId":"valid-trace","spanId":"valid-span","attributes":[{"key":"gen_ai.agent.name","value":{"stringValue":"GitHub Copilot Chat"}},{"key":"gen_ai.provider.name","value":{"stringValue":"github"}},{"key":"gen_ai.request.model","value":{"stringValue":"gpt-5"}},{"key":"gen_ai.usage.input_tokens","value":{"intValue":"1"}}]},{"traceId":"invalid-trace","attributes":[{"key":"gen_ai.agent.name","value":{"stringValue":"GitHub Copilot Chat"}},{"key":"gen_ai.request.model","value":{"stringValue":"gpt-5"}},{"key":"gen_ai.usage.input_tokens","value":{"intValue":"1"}}]}]}]}]}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/traces", bytes.NewBufferString(payload))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	NewHandler(service).ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var got map[string]int
+	if err := json.NewDecoder(response.Body).Decode(&got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !responseCountsEqual(got, map[string]int{"accepted": 1, "duplicates": 0}) {
+		t.Fatalf("response = %#v", got)
+	}
+}
+
 func TestReceiverRejectsNonJSON(t *testing.T) {
 	service, err := app.Initialize(context.Background(), t.TempDir())
 	if err != nil {

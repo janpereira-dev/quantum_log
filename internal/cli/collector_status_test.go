@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -37,4 +40,16 @@ func TestCollectorInstallIsIdempotent(t *testing.T) {
 
 func (*fakeCollectorManager) Status(_ context.Context, listen string) (CollectorStatus, error) {
 	return CollectorStatus{Listen: listen}, nil
+}
+
+func TestProbeCollectorHealthRejectsUnhealthyHTTPStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(server.Close)
+
+	health := probeCollectorHealth(context.Background(), strings.TrimPrefix(server.URL, "http://"))
+	if health.Reachable || health.Running {
+		t.Fatalf("health = %#v, want unreachable and not running", health)
+	}
 }
