@@ -16,6 +16,18 @@ const darwinCollectorLabel = "dev.quantum-log.collector"
 
 type darwinCollectorManager struct{}
 
+var runDarwinLaunchctl = func(args ...string) error {
+	return exec.Command("launchctl", args...).Run()
+}
+
+var installDarwinCollector = func(home, listen string) (CollectorStatus, error) {
+	return darwinCollectorManager{}.Install(home, listen)
+}
+
+var statusDarwinCollector = func(ctx context.Context, listen string) (CollectorStatus, error) {
+	return darwinCollectorManager{}.Status(ctx, listen)
+}
+
 func newCollectorManager() collectorManager { return darwinCollectorManager{} }
 
 func darwinCollectorPlistPath() string {
@@ -54,19 +66,22 @@ func (darwinCollectorManager) Install(home, listen string) (CollectorStatus, err
 }
 
 func (manager darwinCollectorManager) Start(home, listen string) (CollectorStatus, error) {
-	if _, err := manager.Install(home, listen); err != nil {
+	if _, err := installDarwinCollector(home, listen); err != nil {
 		return CollectorStatus{}, err
 	}
 	service := darwinCollectorDomain() + "/" + darwinCollectorLabel
-	if err := exec.Command("launchctl", "print", service).Run(); err != nil {
-		if err := exec.Command("launchctl", "bootstrap", darwinCollectorDomain(), darwinCollectorPlistPath()).Run(); err != nil {
+	if err := runDarwinLaunchctl("print", service); err == nil {
+		if err := runDarwinLaunchctl("bootout", service); err != nil {
 			return CollectorStatus{}, err
 		}
 	}
-	if err := exec.Command("launchctl", "kickstart", "-k", service).Run(); err != nil {
+	if err := runDarwinLaunchctl("bootstrap", darwinCollectorDomain(), darwinCollectorPlistPath()); err != nil {
 		return CollectorStatus{}, err
 	}
-	status, err := manager.Status(context.Background(), listen)
+	if err := runDarwinLaunchctl("kickstart", "-k", service); err != nil {
+		return CollectorStatus{}, err
+	}
+	status, err := statusDarwinCollector(context.Background(), listen)
 	if err != nil {
 		return CollectorStatus{}, err
 	}

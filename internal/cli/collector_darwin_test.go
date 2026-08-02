@@ -3,6 +3,9 @@
 package cli
 
 import (
+	"context"
+	"errors"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -32,4 +35,90 @@ func TestDarwinCollectorRejectsTransientExecutable(t *testing.T) {
 			t.Fatalf("validateCollectorExecutable(%q) error = nil", executable)
 		}
 	}
+}
+
+func TestDarwinCollectorStartReplacesLoadedLaunchAgent(t *testing.T) {
+	var calls [][]string
+	resetDarwinCollectorStartSeams(t)
+	runDarwinLaunchctl = func(args ...string) error {
+		calls = append(calls, append([]string(nil), args...))
+		return nil
+	}
+
+	if _, err := (darwinCollectorManager{}).Start(t.TempDir(), "127.0.0.1:4318"); err != nil {
+		t.Fatal(err)
+	}
+	service := darwinCollectorDomain() + "/" + darwinCollectorLabel
+	want := [][]string{
+		{"print", service},
+		{"bootout", service},
+		{"bootstrap", darwinCollectorDomain(), darwinCollectorPlistPath()},
+		{"kickstart", "-k", service},
+	}
+	if !slices.EqualFunc(calls, want, func(left, right []string) bool { return slices.Equal(left, right) }) {
+		t.Fatalf("launchctl calls = %q, want %q", calls, want)
+	}
+}
+
+func TestDarwinCollectorStartBootstrapsWhenJobIsNotLoaded(t *testing.T) {
+	var calls [][]string
+	resetDarwinCollectorStartSeams(t)
+	runDarwinLaunchctl = func(args ...string) error {
+		calls = append(calls, append([]string(nil), args...))
+		if args[0] == "print" {
+			return errors.New("not loaded")
+		}
+		return nil
+	}
+
+	if _, err := (darwinCollectorManager{}).Start(t.TempDir(), "127.0.0.1:4318"); err != nil {
+		t.Fatal(err)
+	}
+	service := darwinCollectorDomain() + "/" + darwinCollectorLabel
+	want := [][]string{
+		{"print", service},
+		{"bootstrap", darwinCollectorDomain(), darwinCollectorPlistPath()},
+		{"kickstart", "-k", service},
+	}
+	if !slices.EqualFunc(calls, want, func(left, right []string) bool { return slices.Equal(left, right) }) {
+		t.Fatalf("launchctl calls = %q, want %q", calls, want)
+	}
+}
+
+func TestDarwinCollectorStartReturnsUnexpectedBootoutFailure(t *testing.T) {
+	var calls [][]string
+	resetDarwinCollectorStartSeams(t)
+	bootoutErr := errors.New("bootout failed")
+	runDarwinLaunchctl = func(args ...string) error {
+		calls = append(calls, append([]string(nil), args...))
+		if args[0] == "bootout" {
+			return bootoutErr
+		}
+		return nil
+	}
+
+	if _, err := (darwinCollectorManager{}).Start(t.TempDir(), "127.0.0.1:4318"); !errors.Is(err, bootoutErr) {
+		t.Fatalf("Start() error = %v, want %v", err, bootoutErr)
+	}
+	service := darwinCollectorDomain() + "/" + darwinCollectorLabel
+	want := [][]string{{"print", service}, {"bootout", service}}
+	if !slices.EqualFunc(calls, want, func(left, right []string) bool { return slices.Equal(left, right) }) {
+		t.Fatalf("launchctl calls = %q, want %q", calls, want)
+	}
+}
+
+func resetDarwinCollectorStartSeams(t *testing.T) {
+	t.Helper()
+	previousLaunchctl := runDarwinLaunchctl
+	previousInstall := installDarwinCollector
+	previousStatus := statusDarwinCollector
+	installDarwinCollector = func(string, string) (CollectorStatus, error) { return CollectorStatus{}, nil }
+	statusDarwinCollector = func(context.Context, string) (CollectorStatus, error) {
+		return CollectorStatus{Message: "healthy"}, nil
+	}
+	t.Cleanup(func() {
+		runDarwinLaunchctl = previousLaunchctl
+		installDarwinCollector = previousInstall
+		statusDarwinCollector = previousStatus
+	})
 }
