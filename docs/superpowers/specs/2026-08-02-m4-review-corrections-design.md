@@ -2,7 +2,7 @@
 
 ## Decision
 
-Apply seven validated PR #20 corrections as a single, minimal follow-up. The change preserves M4's privacy, ownership, and local-first contracts while making Codex verification evidence strict, configuration mutation TOML-safe, collector status internally consistent, and platform lifecycle behavior durable.
+Apply seven validated PR #20 corrections as a single, minimal follow-up. The change preserves M4's privacy, ownership, and local-first contracts while making Codex verification evidence strict through a persisted, queryable response-completed discriminator, configuration mutation TOML-safe, collector status internally consistent, and platform lifecycle behavior durable.
 
 ## Quick Review Path
 
@@ -14,7 +14,7 @@ Apply seven validated PR #20 corrections as a single, minimal follow-up. The cha
 
 | Correction | Intended change | Primary boundary |
 | --- | --- | --- |
-| Strict Codex log evidence | Require evidence attributed to Codex's accepted OTLP log shape before `adapter verify codex` can pass. | `internal/cli/adapters.go`, SQLite evidence query tests |
+| Strict Codex log evidence | Require persisted `codex_response_completed` evidence emitted only by accepted Codex OTLP log normalization before `adapter verify codex` can pass. | `internal/cli/adapters.go`, OTLP normalization, SQLite evidence query tests |
 | TOML exporter mutation | Safely replace existing inline, dotted-key, or nested-table Codex exporter forms without duplicate declarations. | `internal/adapters/codex.go` |
 | Custom-home collector status | Resolve both reported home and database from persisted managed home when no explicit `--home` overrides it. | `internal/cli/collector.go` |
 | systemd uninstall order | Remove unit before `systemctl --user daemon-reload`. | `internal/cli/collector_linux.go` |
@@ -34,19 +34,20 @@ Apply seven validated PR #20 corrections as a single, minimal follow-up. The cha
 
 ### 1. Strict Codex Log Evidence
 
-`adapter verify codex` must distinguish Codex evidence from arbitrary `otlp-http` records. Its evidence contract will require the normalized Codex agent identity (`codex`) in addition to existing source, quality, project, freshness, and linked model-call requirements.
+`adapter verify codex` must distinguish accepted Codex `response.completed` evidence from arbitrary `otlp-http` records and from records that merely claim `agent_name=codex`. Accepted Codex OTLP log normalization must persist a queryable `codex_response_completed` discriminator only after validating the Codex log shape. The verification query must require this discriminator in addition to normalized Codex agent identity (`codex`), existing source, quality, project, freshness, and linked model-call requirements.
 
 The accepted evidence path remains narrow:
 
 ```text
 Codex OTLP /v1/logs record
   -> service.name=codex, codex.sse_event, response.completed
-  -> sanitized normalized event with agent_name=codex
+  -> accepted Codex log normalization
+  -> sanitized normalized event with agent_name=codex and codex_response_completed=true
   -> linked model call with otel_reported tokens
-  -> Codex-only verification query
+  -> Codex-only verification query requiring codex_response_completed=true
 ```
 
-Malformed, unsupported, Copilot, generic OTLP, stale, wrong-project, or tokenless evidence must not satisfy Codex verification. This is an evidence-query tightening only; receiver acceptance rules and token values remain unchanged.
+Malformed, unsupported, Copilot, generic OTLP, stale, wrong-project, tokenless, or agent-name-only evidence must not satisfy Codex verification. The discriminator is emitted only by accepted `service.name=codex`, `codex.sse_event`, `response.completed` log normalization; receiver acceptance rules and token values otherwise remain unchanged.
 
 ### 2. TOML-Safe Codex Exporter Mutation
 
@@ -100,7 +101,7 @@ If no job is loaded, bootstrap proceeds directly. If `bootout` reports that the 
 
 | Area | Required invariant |
 | --- | --- |
-| Codex evidence | Only normalized Codex OTLP log events with `agent_name=codex` can prove Codex verification. |
+| Codex evidence | Only normalized, accepted Codex `response.completed` OTLP log events that persist `codex_response_completed=true` can prove Codex verification. `agent_name=codex` alone is insufficient. |
 | Settings ownership | Qlog writes state only for values it changes. Matching user-owned values are never adopted. |
 | Uninstall | Restore qlog-owned values from recorded originals; never delete or rewrite unclaimed matching configuration. |
 | Collector status | Resolve final managed settings before deriving dependent paths, especially database. |
@@ -122,7 +123,8 @@ All platforms retain durable executable validation, loopback default, qlog-owned
 | Layer | Required evidence |
 | --- | --- |
 | Codex adapter unit tests | Dotted exporter keys and nested exporter tables produce parseable, non-duplicated TOML; install is idempotent; qlog-owned values restore; matching preexisting values remain unclaimed and survive uninstall. |
-| Verification/storage tests | Codex verification accepts fresh `agent_name=codex` evidence with linked `otel_reported` model call and rejects another OTLP agent under otherwise matching conditions. |
+| OTLP normalization tests | Accepted Codex `service.name=codex`, `codex.sse_event`, `response.completed` logs persist `codex_response_completed=true`; malformed, unsupported, Copilot, generic OTLP, and agent-name-only paths cannot emit it. |
+| Verification/storage tests | Codex verification accepts fresh evidence with `agent_name=codex`, `codex_response_completed=true`, and a linked `otel_reported` model call. It rejects otherwise matching records missing the discriminator, including generic OTLP records that set `agent_name=codex`. |
 | Collector command tests | Persisted custom home causes JSON `home` and `database` to resolve from same home; explicit home still wins. |
 | Linux tests | Assert uninstall command/file ordering: disable, remove unit, daemon-reload. |
 | Windows tests | Assert task XML includes bounded restart interval and count while retaining current-user and least-privilege settings. |
@@ -137,7 +139,7 @@ Synthetic tests establish regression behavior only. They do not satisfy M4 clean
 | Risk | Control | Rollback |
 | --- | --- | --- |
 | TOML parser/writer rewrites unrelated formatting | Limit mutation to `[otel]`; cover inline, dotted, and nested forms with fixtures. | Revert adapter mutation change; manually restore backed-up qlog-owned values through state. |
-| Stricter Codex identity blocks ambiguous prior evidence | This is intentional fail-closed verification. | Revert evidence filter only if documented Codex logs normalize to a different stable identity; add evidence first. |
+| Stricter Codex discriminator blocks ambiguous prior evidence | This is intentional fail-closed verification. | Revert discriminator filter only if accepted Codex `response.completed` logs cannot persist a stable discriminator; add normalization evidence first. |
 | systemd reload fails after file removal | Return error and retain remaining qlog state for diagnosis. | Re-run uninstall or `systemctl --user daemon-reload`; no unit recreation. |
 | Windows retry settings cause unexpected recovery cadence | Use documented finite values and XML assertions. | Replace task with prior definition via normal collector install after reverting change. |
 | Darwin replacement interrupts active collector briefly | Replacement is required to apply changed arguments. | Re-run start with prior managed settings after reverting plist change. |
@@ -145,6 +147,7 @@ Synthetic tests establish regression behavior only. They do not satisfy M4 clean
 ## Acceptance Checklist
 
 - [x] Scope contains exactly seven validated corrections.
+- [x] Codex verification requires `codex_response_completed=true`; `agent_name=codex` alone cannot pass.
 - [x] Codex matching user-owned configuration remains unclaimed.
 - [x] Platform lifecycle ordering and failure semantics are explicit.
 - [x] Tests distinguish regression coverage from real-agent acceptance.
