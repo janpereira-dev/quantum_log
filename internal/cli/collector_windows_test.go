@@ -1,3 +1,5 @@
+//go:build windows
+
 package cli
 
 import (
@@ -131,7 +133,7 @@ func TestCreateWindowsCollectorTaskReportsSchedulerDiagnostic(t *testing.T) {
 		t.Fatal("createWindowsCollectorTask() error = nil")
 	}
 	for _, want := range []string{
-		"Task Scheduler operation /Create",
+		"task scheduler operation /Create",
 		windowsCollectorTaskName,
 		"exit status 1",
 		"ERROR: The task XML contains a value which is incorrectly formatted or out of range.",

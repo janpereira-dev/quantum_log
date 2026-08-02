@@ -4,6 +4,7 @@ package cli
 
 import (
 	"context"
+	"encoding/xml"
 	"fmt"
 	"os"
 	"os/exec"
@@ -87,12 +88,7 @@ func (windowsCollectorManager) Install(home, listen string) (CollectorStatus, er
 }
 
 func currentWindowsTokenIdentity() (string, error) {
-	token, err := windows.OpenCurrentProcessToken()
-	if err != nil {
-		return "", fmt.Errorf("open current process token: %w", err)
-	}
-	defer func() { _ = token.Close() }()
-
+	token := windows.GetCurrentProcessToken()
 	tokenUser, err := token.GetTokenUser()
 	if err != nil {
 		return "", fmt.Errorf("get current process token user: %w", err)
@@ -125,9 +121,20 @@ func createWindowsCollectorTask(definitionPath string) error {
 	}
 	diagnostic := strings.TrimSpace(string(output))
 	if diagnostic == "" {
-		return fmt.Errorf("Task Scheduler operation /Create for task %q failed: %w", windowsCollectorTaskName, err)
+		return fmt.Errorf("task scheduler operation /Create for task %q failed: %w", windowsCollectorTaskName, err)
 	}
-	return fmt.Errorf("Task Scheduler operation /Create for task %q failed: %w: %s", windowsCollectorTaskName, err, diagnostic)
+	return fmt.Errorf("task scheduler operation /Create for task %q failed: %w: %s", windowsCollectorTaskName, err, diagnostic)
+}
+
+func windowsCollectorTaskDefinition(executable, home, listen, userID string) string {
+	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><Triggers><LogonTrigger><Enabled>true</Enabled></LogonTrigger></Triggers><Principals><Principal id="Author"><UserId>%s</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><StartWhenAvailable>true</StartWhenAvailable></Settings><Actions Context="Author"><Exec><Command>%s</Command><Arguments>--home &quot;%s&quot; collector serve --listen %s</Arguments></Exec></Actions></Task>`, xmlEscape(userID), xmlEscape(executable), xmlEscape(home), xmlEscape(listen))
+}
+
+func xmlEscape(value string) string {
+	var escaped strings.Builder
+	_ = xml.EscapeText(&escaped, []byte(value))
+	return escaped.String()
 }
 
 func validateWindowsCollectorExecutable(executable string) error {

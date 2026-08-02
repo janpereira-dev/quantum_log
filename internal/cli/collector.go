@@ -2,12 +2,9 @@ package cli
 
 import (
 	"context"
-	"encoding/xml"
 	"fmt"
 	"net"
 	"net/http"
-	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -221,47 +218,4 @@ func validateListenAddress(address string, allowNonLoopback bool) error {
 
 func validateCollectorListen(listen string) error {
 	return validateListenAddress(listen, false)
-}
-
-func windowsCollectorTaskDefinition(executable, home, listen, userID string) string {
-	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
-<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><Triggers><LogonTrigger><Enabled>true</Enabled></LogonTrigger></Triggers><Principals><Principal id="Author"><UserId>%s</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><StartWhenAvailable>true</StartWhenAvailable></Settings><Actions Context="Author"><Exec><Command>%s</Command><Arguments>--home &quot;%s&quot; collector serve --listen %s</Arguments></Exec></Actions></Task>`, xmlEscape(userID), xmlEscape(executable), xmlEscape(home), xmlEscape(listen))
-}
-
-func darwinCollectorLaunchAgentDefinition(executable, home, listen string) string {
-	logPath := collectorLogPathForHome(home)
-	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict><key>Label</key><string>dev.quantum-log.collector</string><key>ProgramArguments</key><array><string>%s</string><string>--home</string><string>%s</string><string>collector</string><string>serve</string><string>--listen</string><string>%s</string></array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardOutPath</key><string>%s</string><key>StandardErrorPath</key><string>%s</string></dict></plist>`, xmlEscape(executable), xmlEscape(home), xmlEscape(listen), xmlEscape(logPath), xmlEscape(logPath))
-}
-
-func linuxCollectorUnitDefinition(executable, home, listen string) string {
-	return fmt.Sprintf("[Unit]\nDescription=QUANTUM_LOG Collector\n\n[Service]\nExecStart=%s --home %s collector serve --listen %s\nRestart=on-failure\nStandardOutput=append:%s\nStandardError=append:%s\n\n[Install]\nWantedBy=default.target\n", systemdQuote(executable), systemdQuote(home), systemdQuote(listen), systemdQuote(collectorLogPathForHome(home)), systemdQuote(collectorLogPathForHome(home)))
-}
-
-func collectorLogPathForHome(home string) string {
-	return strings.TrimRight(home, "/\\") + "/collector/collector.log"
-}
-
-func xmlEscape(value string) string {
-	var escaped strings.Builder
-	_ = xml.EscapeText(&escaped, []byte(value))
-	return escaped.String()
-}
-
-func systemdQuote(value string) string {
-	return `"` + strings.ReplaceAll(value, `"`, `\"`) + `"`
-}
-
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
-}
-
-func readCollectorHome(path string) string {
-	contents, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(contents))
 }

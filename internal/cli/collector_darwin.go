@@ -4,10 +4,12 @@ package cli
 
 import (
 	"context"
+	"encoding/xml"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 const darwinCollectorLabel = "dev.quantum-log.collector"
@@ -127,4 +129,34 @@ func (manager darwinCollectorManager) Uninstall() (CollectorStatus, error) {
 		return CollectorStatus{}, err
 	}
 	return CollectorStatus{ServiceID: darwinCollectorLabel, StatePath: filepath.Join(home, "collector"), LogPath: filepath.Join(home, "collector", "collector.log"), Message: "collector LaunchAgent uninstalled"}, nil
+}
+
+func darwinCollectorLaunchAgentDefinition(executable, home, listen string) string {
+	logPath := collectorLogPathForHome(home)
+	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>Label</key><string>dev.quantum-log.collector</string><key>ProgramArguments</key><array><string>%s</string><string>--home</string><string>%s</string><string>collector</string><string>serve</string><string>--listen</string><string>%s</string></array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardOutPath</key><string>%s</string><key>StandardErrorPath</key><string>%s</string></dict></plist>`, xmlEscape(executable), xmlEscape(home), xmlEscape(listen), xmlEscape(logPath), xmlEscape(logPath))
+}
+
+func collectorLogPathForHome(home string) string {
+	return strings.TrimRight(home, "/\\") + "/collector/collector.log"
+}
+
+func xmlEscape(value string) string {
+	var escaped strings.Builder
+	_ = xml.EscapeText(&escaped, []byte(value))
+	return escaped.String()
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func readCollectorHome(path string) string {
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(contents))
 }

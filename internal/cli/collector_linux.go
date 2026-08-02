@@ -4,9 +4,11 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 const linuxCollectorUnitName = "quantum-log-collector.service"
@@ -125,4 +127,29 @@ func (manager linuxCollectorManager) Uninstall() (CollectorStatus, error) {
 		return CollectorStatus{}, err
 	}
 	return CollectorStatus{ServiceID: linuxCollectorUnitName, StatePath: filepath.Join(home, "collector"), LogPath: filepath.Join(home, "collector", "collector.log"), Message: "collector user service uninstalled"}, nil
+}
+
+func linuxCollectorUnitDefinition(executable, home, listen string) string {
+	return fmt.Sprintf("[Unit]\nDescription=QUANTUM_LOG Collector\n\n[Service]\nExecStart=%s --home %s collector serve --listen %s\nRestart=on-failure\nStandardOutput=append:%s\nStandardError=append:%s\n\n[Install]\nWantedBy=default.target\n", systemdQuote(executable), systemdQuote(home), systemdQuote(listen), systemdQuote(collectorLogPathForHome(home)), systemdQuote(collectorLogPathForHome(home)))
+}
+
+func collectorLogPathForHome(home string) string {
+	return strings.TrimRight(home, "/\\") + "/collector/collector.log"
+}
+
+func systemdQuote(value string) string {
+	return `"` + strings.ReplaceAll(value, `"`, `\"`) + `"`
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func readCollectorHome(path string) string {
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(contents))
 }
