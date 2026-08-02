@@ -53,18 +53,19 @@ type WorkContextInput struct {
 }
 
 type RawEventInput struct {
-	IngestionIdentity    string
-	Source               string
-	SessionID            string
-	EventType            string
-	Payload              []byte
-	OccurredAt           time.Time
-	ProjectID            string
-	ProjectLocationID    string
-	WorkContextID        string
-	ResolutionMethod     string
-	ResolutionConfidence string
-	EvidenceJSON         string
+	IngestionIdentity          string
+	Source                     string
+	SessionID                  string
+	EventType                  string
+	Payload                    []byte
+	OccurredAt                 time.Time
+	OmitOccurredAtFromIdentity bool
+	ProjectID                  string
+	ProjectLocationID          string
+	WorkContextID              string
+	ResolutionMethod           string
+	ResolutionConfidence       string
+	EvidenceJSON               string
 }
 
 type RawEventAppendResult struct {
@@ -437,6 +438,49 @@ func Checkpoint(ctx context.Context, path string) (result error) {
 	return nil
 }
 
+func (s *Store) backfillReconstructableIngestionIdentities(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT r.id, r.source, COALESCE(r.session_id, ''), r.event_type, r.occurred_at, COALESCE(r.project_id, ''), COALESCE(r.project_location_id, ''), COALESCE(r.work_context_id, ''), r.project_resolution_method, r.project_resolution_confidence, r.project_resolution_evidence_json, r.payload_json_sanitized, r.created_at FROM raw_events r LEFT JOIN raw_event_dedup d ON d.raw_event_id = r.id WHERE d.raw_event_id IS NULL`)
+	if err != nil {
+		return fmt.Errorf("find raw events needing ingestion backfill: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	type candidate struct {
+		identity string
+		id       string
+		source   string
+		created  string
+	}
+	candidates := make([]candidate, 0)
+	for rows.Next() {
+		var id, source, sessionID, eventType, occurredAt, projectID, locationID, workContextID, method, confidence, evidence, payload, created string
+		if err := rows.Scan(&id, &source, &sessionID, &eventType, &occurredAt, &projectID, &locationID, &workContextID, &method, &confidence, &evidence, &payload, &created); err != nil {
+			return fmt.Errorf("scan raw event ingestion backfill: %w", err)
+		}
+		identity, err := CanonicalIngestionIdentity(RawEventInput{Source: source, SessionID: sessionID, EventType: eventType, OccurredAt: parseTimestamp(occurredAt), ProjectID: projectID, ProjectLocationID: locationID, WorkContextID: workContextID, ResolutionMethod: method, ResolutionConfidence: confidence, EvidenceJSON: evidence}, []byte(payload))
+		if err != nil {
+			return fmt.Errorf("canonical raw event ingestion backfill: %w", err)
+		}
+		candidates = append(candidates, candidate{identity: identity, id: id, source: source, created: created})
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read raw event ingestion backfill: %w", err)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin raw event ingestion backfill: %w", err)
+	}
+	defer rollback(tx)
+	for _, candidate := range candidates {
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO raw_event_dedup (ingestion_identity, raw_event_id, source, first_received_at, last_received_at) VALUES (?, ?, ?, ?, ?)`, candidate.identity, candidate.id, candidate.source, candidate.created, candidate.created); err != nil {
+			return fmt.Errorf("backfill ingestion identity: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit raw event ingestion backfill: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) checkpointWAL(ctx context.Context) error {
 	var busy, logFrames, checkpointedFrames int
 	if err := s.db.QueryRowContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &logFrames, &checkpointedFrames); err != nil {
@@ -525,6 +569,7 @@ func (s *Store) AppendRawEvent(ctx context.Context, input RawEventInput) (RawEve
 		return RawEventAppendResult{}, errors.New("raw event source and type are required")
 	}
 	if input.OccurredAt.IsZero() {
+		input.OmitOccurredAtFromIdentity = true
 		input.OccurredAt = time.Now().UTC()
 	}
 	payload, err := sanitizePayload(input.Payload)
@@ -587,6 +632,21 @@ func (s *Store) AppendRawEvent(ctx context.Context, input RawEventInput) (RawEve
 		return RawEventAppendResult{}, fmt.Errorf("commit raw event: %w", err)
 	}
 	return RawEventAppendResult{ID: id, Accepted: true}, nil
+}
+
+func (s *Store) HasModelCallForRawEvent(ctx context.Context, rawEventID string) (bool, error) {
+	if rawEventID == "" {
+		return false, nil
+	}
+	var found int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM model_calls WHERE raw_event_id = ?`, rawEventID).Scan(&found)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read raw event model call: %w", err)
+	}
+	return true, nil
 }
 
 func (s *Store) VerifyLedger(ctx context.Context, sessionID string) error {
@@ -1034,6 +1094,12 @@ func (s *Store) RecordModelCall(ctx context.Context, input ModelCallInput) (stri
 	defer rollback(tx)
 	_, err = tx.ExecContext(ctx, `INSERT INTO model_calls (id, raw_event_id, primary_project_id, project_location_id, work_context_id, task_id, session_id, turn_id, started_at, agent_name, provider, model_id, input_tokens, output_tokens, reasoning_tokens, cached_input_tokens, cache_write_tokens, total_tokens, estimated_cost_usd_micros, estimated_cost_eur_micros, capture_quality, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, nullable(input.RawEventID), nullable(input.ProjectID), nullable(input.ProjectLocationID), nullable(input.WorkContextID), nullable(input.TaskID), nullable(input.SessionID), nullable(input.TurnID), timestamp(input.OccurredAt), input.AgentName, input.Provider, input.ModelID, input.InputTokens, input.OutputTokens, input.ReasoningTokens, input.CachedInputTokens, input.CacheWriteTokens, total, input.EstimatedCostUSDMicros, input.EstimatedCostEURMicros, input.CaptureQuality, now)
 	if err != nil {
+		if input.RawEventID != "" && isUniqueConstraint(err) {
+			var existingID string
+			if lookupErr := tx.QueryRowContext(ctx, `SELECT id FROM model_calls WHERE raw_event_id = ?`, input.RawEventID).Scan(&existingID); lookupErr == nil {
+				return existingID, tx.Commit()
+			}
+		}
 		return "", fmt.Errorf("insert model call: %w", err)
 	}
 	if input.ProjectID != "" {
@@ -1336,25 +1402,35 @@ func (s *Store) Usage(ctx context.Context, query UsageQuery) (UsageReport, error
 	var totalTokens int64
 	totalQuery := `SELECT COALESCE(SUM(total_tokens), 0) FROM model_calls c` + where
 	if query.ProjectSlug != "" {
-		totalQuery = `SELECT COALESCE(SUM(c.total_tokens), 0) FROM model_calls c JOIN usage_allocations a ON a.subject_type = 'model_call' AND a.subject_id = c.id LEFT JOIN projects p ON p.id = a.project_id` + where
+		totalQuery = `SELECT COALESCE(SUM(c.total_tokens * a.allocation_basis_points / 10000), 0) FROM model_calls c JOIN usage_allocations a ON a.subject_type = 'model_call' AND a.subject_id = c.id LEFT JOIN projects p ON p.id = a.project_id` + where
 	}
 	if err := s.db.QueryRowContext(ctx, totalQuery, args...).Scan(&totalTokens); err != nil {
 		return UsageReport{}, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT COALESCE(p.slug, 'unattributed'), c.agent_name, c.provider, c.model_id, c.capture_quality, c.input_tokens, c.output_tokens, c.reasoning_tokens, c.cached_input_tokens, c.cache_write_tokens, c.total_tokens, c.estimated_cost_usd_micros, a.allocation_basis_points FROM model_calls c JOIN usage_allocations a ON a.subject_type = 'model_call' AND a.subject_id = c.id LEFT JOIN projects p ON p.id = a.project_id`+where+` ORDER BY p.slug, c.agent_name, c.provider, c.model_id, c.capture_quality`, args...)
+	rows, err := s.db.QueryContext(ctx, `SELECT c.id, a.id, COALESCE(p.slug, 'unattributed'), c.agent_name, c.provider, c.model_id, c.capture_quality, c.input_tokens, c.output_tokens, c.reasoning_tokens, c.cached_input_tokens, c.cache_write_tokens, c.total_tokens, c.estimated_cost_usd_micros, a.allocation_basis_points FROM model_calls c JOIN usage_allocations a ON a.subject_type = 'model_call' AND a.subject_id = c.id LEFT JOIN projects p ON p.id = a.project_id`+where+` ORDER BY c.id, a.id`, args...)
 	if err != nil {
 		return UsageReport{}, err
 	}
 	defer func() { _ = rows.Close() }()
 	grouped := make(map[string]UsageRow)
+	allocatedBasis := make(map[string]int64)
 	var totalAllocated int64
 	for rows.Next() {
 		var row UsageRow
+		var callID, allocationID string
 		var cost, basisPoints int64
-		if err := rows.Scan(&row.ProjectSlug, &row.AgentName, &row.Provider, &row.Model, &row.CaptureQuality, &row.InputTokens, &row.OutputTokens, &row.ReasoningTokens, &row.CachedInputTokens, &row.CacheWriteTokens, &row.TotalTokens, &cost, &basisPoints); err != nil {
+		if err := rows.Scan(&callID, &allocationID, &row.ProjectSlug, &row.AgentName, &row.Provider, &row.Model, &row.CaptureQuality, &row.InputTokens, &row.OutputTokens, &row.ReasoningTokens, &row.CachedInputTokens, &row.CacheWriteTokens, &row.TotalTokens, &cost, &basisPoints); err != nil {
 			return UsageReport{}, err
 		}
-		row.AllocatedCostUSDMicros = cost * basisPoints / 10000
+		offset := allocatedBasis[callID]
+		row.InputTokens = apportionShare(row.InputTokens, offset, basisPoints)
+		row.OutputTokens = apportionShare(row.OutputTokens, offset, basisPoints)
+		row.ReasoningTokens = apportionShare(row.ReasoningTokens, offset, basisPoints)
+		row.CachedInputTokens = apportionShare(row.CachedInputTokens, offset, basisPoints)
+		row.CacheWriteTokens = apportionShare(row.CacheWriteTokens, offset, basisPoints)
+		row.TotalTokens = apportionShare(row.TotalTokens, offset, basisPoints)
+		row.AllocatedCostUSDMicros = apportionShare(cost, offset, basisPoints)
+		allocatedBasis[callID] += basisPoints
 		totalAllocated += row.AllocatedCostUSDMicros
 		key := row.ProjectSlug + "\x00" + row.AgentName + "\x00" + row.Provider + "\x00" + row.Model + "\x00" + row.CaptureQuality
 		if existing, found := grouped[key]; found {
@@ -1435,22 +1511,49 @@ func addLifecycleMeasurement(measurements []MeasurementSummary, rawEventCount in
 
 func (s *Store) usageMeasurements(ctx context.Context, query UsageQuery) ([]MeasurementSummary, error) {
 	where, args := usageWindow(query)
-	rows, err := s.db.QueryContext(ctx, `SELECT c.capture_quality, COUNT(DISTINCT c.id), COALESCE(SUM(c.input_tokens), 0), COALESCE(SUM(c.output_tokens), 0), COALESCE(SUM(c.reasoning_tokens), 0), COALESCE(SUM(c.cached_input_tokens), 0), COALESCE(SUM(c.cache_write_tokens), 0), COALESCE(SUM(c.total_tokens), 0), COALESCE(SUM(c.estimated_cost_usd_micros * a.allocation_basis_points / 10000), 0) FROM model_calls c JOIN usage_allocations a ON a.subject_type = 'model_call' AND a.subject_id = c.id LEFT JOIN projects p ON p.id = a.project_id`+where+` GROUP BY c.capture_quality ORDER BY c.capture_quality`, args...)
+	measurementQuery := `SELECT c.id, c.capture_quality, c.input_tokens, c.output_tokens, c.reasoning_tokens, c.cached_input_tokens, c.cache_write_tokens, c.total_tokens, c.estimated_cost_usd_micros, 10000 FROM model_calls c` + where + ` ORDER BY c.id`
+	if query.ProjectSlug != "" {
+		measurementQuery = `SELECT c.id, c.capture_quality, c.input_tokens, c.output_tokens, c.reasoning_tokens, c.cached_input_tokens, c.cache_write_tokens, c.total_tokens, c.estimated_cost_usd_micros, a.allocation_basis_points FROM model_calls c JOIN usage_allocations a ON a.subject_type = 'model_call' AND a.subject_id = c.id LEFT JOIN projects p ON p.id = a.project_id` + where + ` ORDER BY c.id, a.id`
+	}
+	rows, err := s.db.QueryContext(ctx, measurementQuery, args...)
 	if err != nil {
 		return nil, fmt.Errorf("read usage measurements: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	measurements := make([]MeasurementSummary, 0)
+	byQuality := make(map[string]MeasurementSummary)
+	allocatedBasis := make(map[string]int64)
+	seenCalls := make(map[string]bool)
 	for rows.Next() {
-		var summary MeasurementSummary
-		if err := rows.Scan(&summary.Quality, &summary.ModelCallCount, &summary.InputTokens, &summary.OutputTokens, &summary.ReasoningTokens, &summary.CachedInputTokens, &summary.CacheWriteTokens, &summary.TotalTokens, &summary.EstimatedCostUSDMicros); err != nil {
+		var callID, quality string
+		var inputTokens, outputTokens, reasoningTokens, cachedInputTokens, cacheWriteTokens, totalTokens, cost, basisPoints int64
+		if err := rows.Scan(&callID, &quality, &inputTokens, &outputTokens, &reasoningTokens, &cachedInputTokens, &cacheWriteTokens, &totalTokens, &cost, &basisPoints); err != nil {
 			return nil, fmt.Errorf("scan usage measurements: %w", err)
 		}
-		measurements = append(measurements, summary)
+		summary := byQuality[quality]
+		summary.Quality = quality
+		if !seenCalls[callID] {
+			summary.ModelCallCount++
+			seenCalls[callID] = true
+		}
+		offset := allocatedBasis[callID]
+		summary.InputTokens += apportionShare(inputTokens, offset, basisPoints)
+		summary.OutputTokens += apportionShare(outputTokens, offset, basisPoints)
+		summary.ReasoningTokens += apportionShare(reasoningTokens, offset, basisPoints)
+		summary.CachedInputTokens += apportionShare(cachedInputTokens, offset, basisPoints)
+		summary.CacheWriteTokens += apportionShare(cacheWriteTokens, offset, basisPoints)
+		summary.TotalTokens += apportionShare(totalTokens, offset, basisPoints)
+		summary.EstimatedCostUSDMicros += apportionShare(cost, offset, basisPoints)
+		allocatedBasis[callID] += basisPoints
+		byQuality[quality] = summary
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	measurements := make([]MeasurementSummary, 0, len(byQuality))
+	for _, summary := range byQuality {
+		measurements = append(measurements, summary)
+	}
+	sort.Slice(measurements, func(i, j int) bool { return measurements[i].Quality < measurements[j].Quality })
 	where = " WHERE lower(COALESCE(json_extract(r.payload_json_sanitized, '$.capture_quality'), '')) = 'lifecycle_only'"
 	args = nil
 	if !query.From.IsZero() {
@@ -1470,6 +1573,10 @@ func (s *Store) usageMeasurements(ctx context.Context, query UsageQuery) ([]Meas
 		return nil, fmt.Errorf("read usage lifecycle evidence: %w", err)
 	}
 	return addLifecycleMeasurement(measurements, lifecycleCount), nil
+}
+
+func apportionShare(value, offset, basisPoints int64) int64 {
+	return value*(offset+basisPoints)/10000 - value*offset/10000
 }
 
 func (s *Store) SessionSnapshot(ctx context.Context, sessionID string) (SessionSnapshot, error) {
@@ -1728,7 +1835,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			return err
 		}
 	}
-	return nil
+	return s.backfillReconstructableIngestionIdentities(ctx)
 }
 
 func projectByLocation(ctx context.Context, tx *sql.Tx, path string) (domain.Project, domain.ProjectLocation, bool, error) {
@@ -1786,13 +1893,20 @@ func CanonicalIngestionIdentity(input RawEventInput, sanitizedPayload []byte) (s
 	}
 	value := struct {
 		Source, SessionID, EventType, OccurredAt, ProjectID, ProjectLocationID, WorkContextID, ResolutionMethod, ResolutionConfidence, EvidenceJSON, Payload string
-	}{input.Source, input.SessionID, input.EventType, timestamp(input.OccurredAt.UTC()), input.ProjectID, input.ProjectLocationID, input.WorkContextID, input.ResolutionMethod, input.ResolutionConfidence, input.EvidenceJSON, string(sanitizedPayload)}
+	}{input.Source, input.SessionID, input.EventType, identityOccurredAt(input), input.ProjectID, input.ProjectLocationID, input.WorkContextID, input.ResolutionMethod, input.ResolutionConfidence, input.EvidenceJSON, string(sanitizedPayload)}
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return "", err
 	}
 	hash := sha256.Sum256(encoded)
 	return "sha256:" + hex.EncodeToString(hash[:]), nil
+}
+
+func identityOccurredAt(input RawEventInput) string {
+	if input.OmitOccurredAtFromIdentity {
+		return ""
+	}
+	return timestamp(input.OccurredAt.UTC())
 }
 
 func isUniqueConstraint(err error) bool {

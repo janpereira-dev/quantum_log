@@ -62,6 +62,44 @@ func TestUsageGroupingPreservesTotalsAndAllocation(t *testing.T) {
 	if len(first.Rows) != 2 || len(second.Rows) != 2 {
 		t.Fatalf("usage rows = %d and %d, want 2", len(first.Rows), len(second.Rows))
 	}
+	if first.Rows[0].TotalTokens != 90 || first.Rows[1].TotalTokens != 60 || first.Rows[0].AllocatedCostUSDMicros != 600_000 || first.Rows[1].AllocatedCostUSDMicros != 400_000 {
+		t.Fatalf("split usage rows = %#v", first.Rows)
+	}
+	filtered, err := store.Usage(ctx, UsageQuery{ProjectSlug: projectA.Slug, GroupBy: []string{"project"}})
+	if err != nil || filtered.TotalTokens != 90 || len(filtered.Rows) != 1 || filtered.Rows[0].TotalTokens != 90 || filtered.AllocatedCostUSDMicros != 600_000 {
+		t.Fatalf("project filtered usage = %#v, %v", filtered, err)
+	}
+	if got := measurement(first.Measurements, "unknown").TotalTokens; got != 150 {
+		t.Fatalf("split measurement tokens = %d, want 150", got)
+	}
+}
+
+func TestUsageSplitApportionsRemaindersWithoutDroppingTokens(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	projectA, _, err := store.RegisterProject(ctx, "Project A", "project-a", filepath.Join(t.TempDir(), "a"))
+	if err != nil {
+		t.Fatalf("RegisterProject(A) error = %v", err)
+	}
+	projectB, _, err := store.RegisterProject(ctx, "Project B", "project-b", filepath.Join(t.TempDir(), "b"))
+	if err != nil {
+		t.Fatalf("RegisterProject(B) error = %v", err)
+	}
+	callID, err := store.RecordModelCall(ctx, ModelCallInput{ProjectID: projectA.ID, Provider: "example", ModelID: "model", InputTokens: 1, OccurredAt: time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatalf("RecordModelCall() error = %v", err)
+	}
+	if err := store.ReplaceAllocations(ctx, "model_call", callID, []AllocationInput{{ProjectID: projectA.ID, BasisPoints: 6000}, {ProjectID: projectB.ID, BasisPoints: 4000}}); err != nil {
+		t.Fatalf("ReplaceAllocations() error = %v", err)
+	}
+	report, err := store.Usage(ctx, UsageQuery{GroupBy: []string{"project"}})
+	if err != nil || report.TotalTokens != 1 || report.Rows[0].TotalTokens+report.Rows[1].TotalTokens != 1 {
+		t.Fatalf("remainder usage = %#v, %v", report, err)
+	}
 }
 
 func TestUsageGroupsByProjectAgentProviderModelAndCaptureQuality(t *testing.T) {

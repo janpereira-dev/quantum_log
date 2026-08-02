@@ -48,6 +48,16 @@ func TestOfficialQlogInstallersExposeConsentedBootstrapAndOptOut(t *testing.T) {
 	}
 }
 
+func TestPowerShellInstallerSkipsBootstrapPromptWhenNoninteractive(t *testing.T) {
+	contents, err := os.ReadFile(filepath.Join("..", "..", "installers", "install.ps1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(contents), "$bootstrap -eq $null -and -not $dryRun -and -not [Console]::IsInputRedirected") {
+		t.Fatal("install.ps1 must prompt only when an interactive PowerShell host is available")
+	}
+}
+
 func TestM4EvidenceDocumentsStableScopeAndCleanDeviceGate(t *testing.T) {
 	contents, err := os.ReadFile(filepath.Join("..", "..", "docs-int", "verification", "m4-evidence.md"))
 	if err != nil {

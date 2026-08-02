@@ -415,6 +415,35 @@ func TestAppendRawEventSuppressesReplayWithoutChangingLedger(t *testing.T) {
 	assertTableCount(t, store, "raw_event_dedup", 1)
 }
 
+func TestOpenBackfillsReconstructableIngestionIdentitiesForReplay(t *testing.T) {
+	ctx := context.Background()
+	database := filepath.Join(t.TempDir(), "qlog.db")
+	store, err := Open(ctx, database)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	input := RawEventInput{Source: "fixture", SessionID: "session-1", EventType: "model.call", OccurredAt: time.Date(2026, time.July, 30, 12, 0, 0, 0, time.UTC), Payload: []byte(`{"provider":"example","model":"model"}`)}
+	if _, err := store.AppendRawEvent(ctx, input); err != nil {
+		t.Fatalf("AppendRawEvent() error = %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `DELETE FROM raw_event_dedup`); err != nil {
+		t.Fatalf("simulate pre-upgrade dedup state: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	store, err = Open(ctx, database)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	result, err := store.AppendRawEvent(ctx, input)
+	if err != nil || result.Accepted || result.SuppressionReason != "duplicate_ingestion_identity" {
+		t.Fatalf("replayed append = %#v, %v", result, err)
+	}
+	assertTableCount(t, store, "raw_events", 1)
+}
+
 func TestDistinctEventsWithSharedSessionAndTimeAreAccepted(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))

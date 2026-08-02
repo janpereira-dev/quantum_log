@@ -66,14 +66,14 @@ func (windowsCollectorManager) Install(home, listen string) (CollectorStatus, er
 	if err != nil {
 		return CollectorStatus{}, err
 	}
-	if err := validateWindowsCollectorExecutable(executable); err != nil {
+	if err := validateCollectorExecutable(executable); err != nil {
 		return CollectorStatus{}, err
 	}
 	userID, err := currentWindowsTokenIdentity()
 	if err != nil {
 		return CollectorStatus{}, err
 	}
-	if err := writeWindowsCollectorTaskDefinition(collectorTaskDefinitionPath(), executable, home, listen, userID); err != nil {
+	if err := writeWindowsCollectorTaskDefinition(collectorTaskDefinitionPath(), executable, home, listen, userID, collectorLogPath()); err != nil {
 		return CollectorStatus{}, err
 	}
 	if err := createWindowsCollectorTask(collectorTaskDefinitionPath()); err != nil {
@@ -103,8 +103,8 @@ func currentWindowsTokenIdentity() (string, error) {
 	return domain + `\` + account, nil
 }
 
-func writeWindowsCollectorTaskDefinition(path, executable, home, listen, userID string) error {
-	definition := strings.Replace(windowsCollectorTaskDefinition(executable, home, listen, userID), `encoding="UTF-8"`, `encoding="UTF-16"`, 1)
+func writeWindowsCollectorTaskDefinition(path, executable, home, listen, userID, logPath string) error {
+	definition := strings.Replace(windowsCollectorTaskDefinition(executable, home, listen, userID, logPath), `encoding="UTF-8"`, `encoding="UTF-16"`, 1)
 	encoded := utf16.Encode([]rune(definition))
 	contents := make([]byte, 2, 2+len(encoded)*2)
 	contents[0], contents[1] = 0xFF, 0xFE
@@ -126,9 +126,10 @@ func createWindowsCollectorTask(definitionPath string) error {
 	return fmt.Errorf("task scheduler operation /Create for task %q failed: %w: %s", windowsCollectorTaskName, err, diagnostic)
 }
 
-func windowsCollectorTaskDefinition(executable, home, listen, userID string) string {
+func windowsCollectorTaskDefinition(executable, home, listen, userID, logPath string) string {
+	arguments := "--home " + windowsCommandLineQuote(home) + " collector serve --listen " + listen + " --log-file " + windowsCommandLineQuote(logPath)
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
-<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><Triggers><LogonTrigger><Enabled>true</Enabled></LogonTrigger></Triggers><Principals><Principal id="Author"><UserId>%s</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><StartWhenAvailable>true</StartWhenAvailable></Settings><Actions Context="Author"><Exec><Command>%s</Command><Arguments>--home &quot;%s&quot; collector serve --listen %s</Arguments></Exec></Actions></Task>`, xmlEscape(userID), xmlEscape(executable), xmlEscape(home), xmlEscape(listen))
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><Triggers><LogonTrigger><Enabled>true</Enabled></LogonTrigger></Triggers><Principals><Principal id="Author"><UserId>%s</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><StartWhenAvailable>true</StartWhenAvailable></Settings><Actions Context="Author"><Exec><Command>%s</Command><Arguments>%s</Arguments></Exec></Actions></Task>`, xmlEscape(userID), xmlEscape(executable), xmlEscape(arguments))
 }
 
 func xmlEscape(value string) string {
@@ -137,12 +138,8 @@ func xmlEscape(value string) string {
 	return escaped.String()
 }
 
-func validateWindowsCollectorExecutable(executable string) error {
-	path := strings.ToLower(filepath.ToSlash(executable))
-	if strings.HasSuffix(path, ".test.exe") || strings.Contains(path, "/go-build") {
-		return fmt.Errorf("cannot install managed collector from transient executable %q; build or install a durable qlog.exe, then run that binary to install the managed collector", executable)
-	}
-	return nil
+func windowsCommandLineQuote(value string) string {
+	return `"` + strings.ReplaceAll(value, `"`, `\"`) + `"`
 }
 
 func (windowsCollectorManager) Start(home, listen string) (CollectorStatus, error) {

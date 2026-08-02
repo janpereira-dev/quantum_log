@@ -2,7 +2,11 @@ package cli
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/janpereira-dev/quantum_log/internal/adapters"
@@ -37,9 +41,48 @@ func TestSetupWithoutConsentOnlyPrintsPlan(t *testing.T) {
 	}
 }
 
+func TestSetupAllIncludesNonStableSetupAdapters(t *testing.T) {
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
+	output, err := runQLog(t, t.TempDir(), "setup", "--all", "--dry-run")
+	if err != nil {
+		t.Fatalf("setup --all --dry-run: %v\n%s", err, output)
+	}
+	for _, adapterID := range []string{"claude-code", "codex", "copilot-vscode", "opencode", "pi", "openclaw", "hermes"} {
+		if !strings.Contains(output, adapterID+" |") {
+			t.Fatalf("setup --all output missing %q:\n%s", adapterID, output)
+		}
+	}
+}
+
+func TestSetupYesInitializesLedgerBeforeCollectorInstall(t *testing.T) {
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
+	home := t.TempDir()
+	manager := &ledgerCheckingCollectorManager{}
+
+	if _, err := bootstrapSupportedAdapters(context.Background(), home, true, false, adapters.Default(), manager); err != nil {
+		t.Fatal(err)
+	}
+	if !manager.ledgerExistedAtInstall {
+		t.Fatal("collector install ran before ledger initialization")
+	}
+}
+
 type fakeCollectorManager struct {
 	installed bool
 	started   bool
+}
+
+type ledgerCheckingCollectorManager struct {
+	fakeCollectorManager
+	ledgerExistedAtInstall bool
+}
+
+func (m *ledgerCheckingCollectorManager) Install(home, listen string) (CollectorStatus, error) {
+	if _, err := os.Stat(filepath.Join(home, "qlog.db")); err != nil {
+		return CollectorStatus{}, fmt.Errorf("ledger unavailable at collector install: %w", err)
+	}
+	m.ledgerExistedAtInstall = true
+	return m.fakeCollectorManager.Install(home, listen)
 }
 
 func (m *fakeCollectorManager) Install(_, listen string) (CollectorStatus, error) {

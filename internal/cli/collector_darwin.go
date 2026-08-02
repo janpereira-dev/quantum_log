@@ -31,14 +31,17 @@ func (darwinCollectorManager) Install(home, listen string) (CollectorStatus, err
 	if err := validateCollectorListen(listen); err != nil {
 		return CollectorStatus{}, err
 	}
+	executable, err := os.Executable()
+	if err != nil {
+		return CollectorStatus{}, err
+	}
+	if err := validateCollectorExecutable(executable); err != nil {
+		return CollectorStatus{}, err
+	}
 	if err := os.MkdirAll(filepath.Join(home, "collector"), 0o700); err != nil {
 		return CollectorStatus{}, err
 	}
 	if err := os.MkdirAll(filepath.Dir(darwinCollectorPlistPath()), 0o700); err != nil {
-		return CollectorStatus{}, err
-	}
-	executable, err := os.Executable()
-	if err != nil {
 		return CollectorStatus{}, err
 	}
 	if err := os.WriteFile(darwinCollectorPlistPath(), []byte(darwinCollectorLaunchAgentDefinition(executable, home, listen)), 0o600); err != nil {

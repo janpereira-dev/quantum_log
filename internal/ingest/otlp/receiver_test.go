@@ -13,8 +13,10 @@ import (
 
 	"github.com/janpereira-dev/quantum_log/internal/app"
 	storepkg "github.com/janpereira-dev/quantum_log/internal/storage/sqlite"
+	collectorlogpb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	collectortracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 	"google.golang.org/protobuf/proto"
@@ -139,6 +141,89 @@ func TestReceiverRejectsGenericOrSpoofedLogs(t *testing.T) {
 	NewHandler(service).ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("response = %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestReceiverSkipsUnsupportedCodexLogsWhenBatchContainsSanctionedRecord(t *testing.T) {
+	ctx := context.Background()
+	service, err := app.Initialize(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("initialize service: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	project, _, err := service.Store.RegisterProject(ctx, "Project", "project", filepath.Join(t.TempDir(), "project"))
+	if err != nil {
+		t.Fatalf("register project: %v", err)
+	}
+	payload := `{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"codex"}}]},"scopeLogs":[{"logRecords":[{"traceId":"trace-invalid","spanId":"span-invalid","attributes":[{"key":"event.name","value":{"stringValue":"other"}}]},{"traceId":"trace-valid","spanId":"span-valid","attributes":[{"key":"event.name","value":{"stringValue":"codex.sse_event"}},{"key":"event.kind","value":{"stringValue":"response.completed"}},{"key":"qlog.project","value":{"stringValue":"project"}},{"key":"model","value":{"stringValue":"gpt-5"}},{"key":"input_tokens","value":{"intValue":"1"}},{"key":"output_tokens","value":{"intValue":"2"}}]}]}]}]}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/logs", bytes.NewBufferString(payload))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	NewHandler(service).ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+	}
+	var result map[string]int
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !responseCountsEqual(result, map[string]int{"accepted": 1, "duplicates": 1}) {
+		t.Fatalf("response = %#v", result)
+	}
+	report, err := service.Store.Usage(ctx, storepkg.UsageQuery{ProjectSlug: project.Slug, GroupBy: []string{"project"}})
+	if err != nil || report.TotalTokens != 3 {
+		t.Fatalf("usage = %#v, %v", report, err)
+	}
+}
+
+func TestReceiverReturnsProtobufExportResponseForProtobufLogs(t *testing.T) {
+	service, err := app.Initialize(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatalf("initialize service: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	payload := &collectorlogpb.ExportLogsServiceRequest{ResourceLogs: []*logspb.ResourceLogs{}}
+	body, err := proto.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/logs", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/x-protobuf")
+	response := httptest.NewRecorder()
+	NewHandler(service).ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "application/x-protobuf" {
+		t.Fatalf("response = %d %q", response.Code, response.Header().Get("Content-Type"))
+	}
+	var result collectorlogpb.ExportLogsServiceResponse
+	if err := proto.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode protobuf response: %v", err)
+	}
+}
+
+func TestReceiverKeepsDistinctCodexRecordsSharingTraceAndSpan(t *testing.T) {
+	ctx := context.Background()
+	service, err := app.Initialize(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("initialize service: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	if _, _, err := service.Store.RegisterProject(ctx, "Project", "project", filepath.Join(t.TempDir(), "project")); err != nil {
+		t.Fatalf("register project: %v", err)
+	}
+	payload := `{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"codex"}}]},"scopeLogs":[{"logRecords":[{"traceId":"shared-trace","spanId":"shared-span","attributes":[{"key":"event.name","value":{"stringValue":"codex.sse_event"}},{"key":"event.kind","value":{"stringValue":"response.completed"}},{"key":"qlog.project","value":{"stringValue":"project"}},{"key":"response.id","value":{"stringValue":"response-1"}},{"key":"model","value":{"stringValue":"gpt-5"}},{"key":"input_tokens","value":{"intValue":"1"}},{"key":"output_tokens","value":{"intValue":"2"}}]},{"traceId":"shared-trace","spanId":"shared-span","attributes":[{"key":"event.name","value":{"stringValue":"codex.sse_event"}},{"key":"event.kind","value":{"stringValue":"response.completed"}},{"key":"qlog.project","value":{"stringValue":"project"}},{"key":"response.id","value":{"stringValue":"response-2"}},{"key":"model","value":{"stringValue":"gpt-5"}},{"key":"input_tokens","value":{"intValue":"3"}},{"key":"output_tokens","value":{"intValue":"4"}}]}]}]}]}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/logs", bytes.NewBufferString(payload))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	NewHandler(service).ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+	}
+	var result map[string]int
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !responseCountsEqual(result, map[string]int{"accepted": 2, "duplicates": 0}) {
+		t.Fatalf("response = %#v", result)
 	}
 }
 

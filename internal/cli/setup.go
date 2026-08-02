@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/janpereira-dev/quantum_log/internal/adapters"
+	"github.com/janpereira-dev/quantum_log/internal/app"
 	"github.com/janpereira-dev/quantum_log/internal/config"
 	"github.com/spf13/cobra"
 )
@@ -47,6 +48,9 @@ func newSetupCommand(home *string) *cobra.Command {
 		}
 
 		items := registry.Stable()
+		if all {
+			items = registry.List()
+		}
 		if len(args) == 1 {
 			adapter, found := registry.Get(args[0])
 			if !found {
@@ -127,6 +131,13 @@ func bootstrapSupportedAdapters(ctx context.Context, home string, yes, dryRun bo
 			result.Collector.Actions = []string{"dry run: collector install and start skipped"}
 		}
 		return result, nil
+	}
+	service, err := app.Initialize(ctx, paths.Home)
+	if err != nil {
+		return BootstrapResult{}, fmt.Errorf("initialize ledger before collector setup: %w", err)
+	}
+	if err := service.Close(); err != nil {
+		return BootstrapResult{}, fmt.Errorf("close initialized ledger: %w", err)
 	}
 
 	installed, err := manager.Install(paths.Home, defaultCollectorListen)

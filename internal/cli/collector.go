@@ -2,9 +2,14 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,6 +27,7 @@ func newCollectorCommand(home *string) *cobra.Command {
 	var listen string
 	var allowNonLoopback bool
 	var jsonOutput bool
+	var logFile string
 	status := &cobra.Command{Use: "status", Short: "Show managed collector status", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
 		paths, err := config.Resolve(*home)
 		if err != nil {
@@ -55,15 +61,26 @@ func newCollectorCommand(home *string) *cobra.Command {
 		if err := service.Close(); err != nil {
 			return err
 		}
-		server := &http.Server{Addr: listen, Handler: newCollectorMux(*home), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: time.Minute}
-		_, err = fmt.Fprintf(command.Root().OutOrStdout(), "qlog collector listening on http://%s (/v1/traces and /v1/logs OTLP JSON/protobuf, /v1/events qlog JSON)\n", listen)
+		output, closeLog, err := collectorServeOutput(command, logFile)
 		if err != nil {
 			return err
 		}
-		return server.ListenAndServe()
+		defer func() { _ = closeLog() }()
+		server := &http.Server{Addr: listen, Handler: newCollectorMux(*home), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: time.Minute}
+		_, err = fmt.Fprintf(output, "qlog collector listening on http://%s (/v1/traces and /v1/logs OTLP JSON/protobuf, /v1/events qlog JSON)\n", listen)
+		if err != nil {
+			return err
+		}
+		err = server.ListenAndServe()
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			_, _ = fmt.Fprintf(output, "collector server stopped: %v\n", err)
+			return err
+		}
+		return nil
 	}}
 	serve.Flags().StringVar(&listen, "listen", "127.0.0.1:4318", "OTLP/HTTP listen address")
 	serve.Flags().BoolVar(&allowNonLoopback, "allow-non-loopback", false, "allow a non-loopback listen address")
+	serve.Flags().StringVar(&logFile, "log-file", "", "append collector startup and error messages to this qlog-owned log file")
 	collector.AddCommand(
 		status,
 		serve,
@@ -175,7 +192,11 @@ type collectorManager interface {
 func collectorLifecycleCommand(name, short string, run func(collectorManager, string, string) (CollectorStatus, error), home *string, listen *string) *cobra.Command {
 	var jsonOutput bool
 	command := &cobra.Command{Use: name, Short: short, Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
-		status, err := run(newCollectorManager(), *home, *listen)
+		resolvedHome, err := resolveCollectorLifecycleHome(*home)
+		if err != nil {
+			return err
+		}
+		status, err := run(newCollectorManager(), resolvedHome, *listen)
 		if err != nil {
 			return err
 		}
@@ -190,6 +211,14 @@ func collectorLifecycleCommand(name, short string, run func(collectorManager, st
 	return command
 }
 
+func resolveCollectorLifecycleHome(home string) (string, error) {
+	paths, err := config.Resolve(home)
+	if err != nil {
+		return "", err
+	}
+	return paths.Home, nil
+}
+
 func collectorLogsCommand() *cobra.Command {
 	return &cobra.Command{Use: "logs", Short: "Show managed collector logs", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
 		logs, err := newCollectorManager().Logs()
@@ -199,6 +228,21 @@ func collectorLogsCommand() *cobra.Command {
 		_, err = fmt.Fprint(command.Root().OutOrStdout(), logs)
 		return err
 	}}
+}
+
+func collectorServeOutput(command *cobra.Command, logFile string) (io.Writer, func() error, error) {
+	output := command.Root().OutOrStdout()
+	if logFile == "" {
+		return output, func() error { return nil }, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(logFile), 0o700); err != nil {
+		return nil, nil, fmt.Errorf("create collector log directory: %w", err)
+	}
+	file, err := os.OpenFile(logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open collector log: %w", err)
+	}
+	return io.MultiWriter(output, file), file.Close, nil
 }
 
 func validateListenAddress(address string, allowNonLoopback bool) error {
@@ -218,4 +262,12 @@ func validateListenAddress(address string, allowNonLoopback bool) error {
 
 func validateCollectorListen(listen string) error {
 	return validateListenAddress(listen, false)
+}
+
+func validateCollectorExecutable(executable string) error {
+	path := strings.ToLower(strings.ReplaceAll(executable, `\`, "/"))
+	if strings.HasSuffix(path, ".test") || strings.HasSuffix(path, ".test.exe") || strings.Contains(path, "/go-build") {
+		return fmt.Errorf("cannot install managed collector from transient executable %q; build or install a durable qlog.exe, then run that binary to install the managed collector", executable)
+	}
+	return nil
 }

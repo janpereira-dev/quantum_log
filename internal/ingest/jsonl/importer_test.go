@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	storepkg "github.com/janpereira-dev/quantum_log/internal/storage/sqlite"
 )
@@ -89,6 +90,62 @@ func TestImportReplayNormalizesOnlyAcceptedRawEvent(t *testing.T) {
 	if report.TotalTokens != 20 {
 		t.Fatalf("replayed usage = %#v", report)
 	}
+}
+
+func TestImportReplayRecoversNormalizationAfterAcceptedRawEvent(t *testing.T) {
+	ctx := context.Background()
+	store, err := storepkg.Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	input := `{"source":"fixture","session_id":"session-a","event_type":"model.call","occurred_at":"2026-07-30T12:00:00Z","payload":{"provider":"example","model":"model","input_tokens":12,"output_tokens":8,"agent_name":"fixture"}}` + "\n"
+	if result, err := store.AppendRawEvent(ctx, storepkg.RawEventInput{Source: "fixture", SessionID: "session-a", EventType: "model.call", OccurredAt: mustParseTime(t, "2026-07-30T12:00:00Z"), Payload: []byte(`{"provider":"example","model":"model","input_tokens":12,"output_tokens":8,"agent_name":"fixture"}`)}); err != nil || !result.Accepted {
+		t.Fatalf("persist raw event before interrupted normalization = %#v, %v", result, err)
+	}
+	if count, err := Import(ctx, store, strings.NewReader(input)); err != nil || count != 0 {
+		t.Fatalf("replay Import() = %d, %v", count, err)
+	}
+	if err := store.VerifyLedger(ctx, "session-a"); err != nil {
+		t.Fatalf("verify recovered ledger: %v", err)
+	}
+	report, err := store.Usage(ctx, storepkg.UsageQuery{GroupBy: []string{"provider", "model"}})
+	if err != nil || report.TotalTokens != 20 {
+		t.Fatalf("recovered usage = %#v, %v", report, err)
+	}
+}
+
+func TestImportWithoutOccurredAtSuppressesReplayButKeepsDistinctPayloads(t *testing.T) {
+	ctx := context.Background()
+	store, err := storepkg.Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	first := `{"source":"fixture","session_id":"session-a","event_type":"agent.event","payload":{"turn_id":"one"}}` + "\n"
+	second := `{"source":"fixture","session_id":"session-a","event_type":"agent.event","payload":{"turn_id":"two"}}` + "\n"
+	if count, err := Import(ctx, store, strings.NewReader(first)); err != nil || count != 1 {
+		t.Fatalf("first Import() = %d, %v", count, err)
+	}
+	if count, err := Import(ctx, store, strings.NewReader(first)); err != nil || count != 0 {
+		t.Fatalf("replay Import() = %d, %v", count, err)
+	}
+	if count, err := Import(ctx, store, strings.NewReader(second)); err != nil || count != 1 {
+		t.Fatalf("distinct Import() = %d, %v", count, err)
+	}
+	if err := store.VerifyLedger(ctx, "session-a"); err != nil {
+		t.Fatalf("verify timestamp-less ledger: %v", err)
+	}
+}
+
+func mustParseTime(t *testing.T, value string) time.Time {
+	t.Helper()
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return parsed
 }
 
 func TestConcurrentReplayCreatesOneRawEventAndOneModelCall(t *testing.T) {

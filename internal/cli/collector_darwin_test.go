@@ -22,3 +22,14 @@ func TestDarwinCollectorServiceDefinition(t *testing.T) {
 		}
 	}
 }
+
+func TestDarwinCollectorRejectsTransientExecutable(t *testing.T) {
+	for _, executable := range []string{
+		"/var/folders/tmp/go-build1234/b001/exe/qlog",
+		"/var/folders/tmp/cli.test",
+	} {
+		if err := validateCollectorExecutable(executable); err == nil {
+			t.Fatalf("validateCollectorExecutable(%q) error = nil", executable)
+		}
+	}
+}

@@ -275,6 +275,73 @@ func TestCollectorRejectsPublicBindingWithoutExplicitOptIn(t *testing.T) {
 	}
 }
 
+func TestVerifyCollectorReachabilityUsesConfiguredURLOrigin(t *testing.T) {
+	for _, configuredPath := range []string{"/v1/events", "/v1/logs"} {
+		t.Run(configuredPath, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if request.Method != http.MethodGet || request.URL.Path != "/healthz" {
+					t.Fatalf("probe = %s %s", request.Method, request.URL.Path)
+				}
+				writer.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(server.Close)
+			t.Setenv("QLOG_COLLECTOR_URL", server.URL+configuredPath)
+
+			reachable, message := verifyCollectorReachability(context.Background())
+			if !reachable {
+				t.Fatalf("reachable = false: %s", message)
+			}
+		})
+	}
+}
+
+func TestCollectorLifecycleCommandResolvesDefaultHome(t *testing.T) {
+	home := ""
+	listen := defaultCollectorListen
+	var receivedHome string
+	command := collectorLifecycleCommand("test", "test", func(_ collectorManager, resolvedHome, _ string) (CollectorStatus, error) {
+		receivedHome = resolvedHome
+		return CollectorStatus{}, nil
+	}, &home, &listen)
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if receivedHome == "" || !filepath.IsAbs(receivedHome) {
+		t.Fatalf("resolved lifecycle home = %q", receivedHome)
+	}
+}
+
+func TestAdapterStatusAddsRuntimeEvidence(t *testing.T) {
+	base := adapters.SetupStatus{AdapterID: "copilot-vscode", CaptureQuality: adapters.CaptureOTELReported}
+	for _, test := range []struct {
+		name      string
+		access    fakeAdapterStatusAccess
+		reachable bool
+		evidence  bool
+	}{
+		{name: "reachable collector with recent evidence", access: fakeAdapterStatusAccess{reachable: true, evidence: true}, reachable: true, evidence: true},
+		{name: "unreachable collector without evidence", access: fakeAdapterStatusAccess{reachable: false, evidence: false}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			status := enrichAdapterStatus(context.Background(), t.TempDir(), base, test.access)
+			if status.CollectorReachable != test.reachable || status.RecentEvidence != test.evidence {
+				t.Fatalf("status = %#v", status)
+			}
+		})
+	}
+}
+
+type fakeAdapterStatusAccess struct {
+	reachable bool
+	evidence  bool
+}
+
+func (f fakeAdapterStatusAccess) CollectorReachable(context.Context) bool { return f.reachable }
+
+func (f fakeAdapterStatusAccess) HasRecentEvidence(context.Context, string, adapters.SetupStatus) (bool, error) {
+	return f.evidence, nil
+}
+
 func TestCollectorStatusShowsLocalEndpoints(t *testing.T) {
 	run := func(args ...string) (string, error) {
 		command := New(Version{})

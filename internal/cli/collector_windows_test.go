@@ -13,12 +13,13 @@ import (
 )
 
 func TestWindowsCollectorServiceDefinition(t *testing.T) {
-	definition := windowsCollectorTaskDefinition(`C:\Program Files\QUANTUM_LOG\qlog.exe`, `C:\Users\alice\AppData\Local\QUANTUM_LOG`, "127.0.0.1:4318", `CONTOSO\alice`)
+	definition := windowsCollectorTaskDefinition(`C:\Program Files\QUANTUM_LOG\qlog.exe`, `C:\Users\alice\AppData\Local\QUANTUM_LOG`, "127.0.0.1:4318", `CONTOSO\alice`, `C:\Users\alice\AppData\Local\QUANTUM_LOG\collector\collector.log`)
 	for _, want := range []string{
 		"<LogonTrigger>",
 		`C:\Program Files\QUANTUM_LOG\qlog.exe`,
 		"collector serve --listen 127.0.0.1:4318",
 		`C:\Users\alice\AppData\Local\QUANTUM_LOG`,
+		`--log-file &#34;C:\Users\alice\AppData\Local\QUANTUM_LOG\collector\collector.log&#34;`,
 	} {
 		if !strings.Contains(definition, want) {
 			t.Fatalf("task definition missing %q: %s", want, definition)
@@ -32,6 +33,7 @@ func TestWindowsCollectorTaskDefinitionUsesInteractiveCurrentUser(t *testing.T) 
 		`C:\Users\alice\AppData\Local\QUANTUM_LOG`,
 		"127.0.0.1:4318",
 		`CONTOSO\alice`,
+		`C:\Users\alice\AppData\Local\QUANTUM_LOG\collector\collector.log`,
 	)
 
 	for _, want := range []string{
@@ -51,7 +53,8 @@ func TestWriteWindowsCollectorTaskDefinitionUsesUTF16LE(t *testing.T) {
 	listen := "127.0.0.1:4318"
 	path := t.TempDir() + `\collector-task.xml`
 
-	if err := writeWindowsCollectorTaskDefinition(path, executable, home, listen, `CONTOSO\alice`); err != nil {
+	logPath := `C:\Users\alice\AppData\Local\QUANTUM_LOG\collector\collector.log`
+	if err := writeWindowsCollectorTaskDefinition(path, executable, home, listen, `CONTOSO\alice`, logPath); err != nil {
 		t.Fatalf("writeWindowsCollectorTaskDefinition() error = %v", err)
 	}
 
@@ -76,6 +79,7 @@ func TestWriteWindowsCollectorTaskDefinitionUsesUTF16LE(t *testing.T) {
 		executable,
 		home,
 		"collector serve --listen " + listen,
+		"--log-file &#34;" + logPath + "&#34;",
 	} {
 		if !strings.Contains(definition, want) {
 			t.Errorf("UTF-16LE task definition missing %q: %s", want, definition)
@@ -107,9 +111,9 @@ func TestValidateWindowsCollectorExecutable(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateWindowsCollectorExecutable(tt.executable)
+			err := validateCollectorExecutable(tt.executable)
 			if (err != nil) != tt.wantErr {
-				t.Fatalf("validateWindowsCollectorExecutable(%q) error = %v, wantErr %t", tt.executable, err, tt.wantErr)
+				t.Fatalf("validateCollectorExecutable(%q) error = %v, wantErr %t", tt.executable, err, tt.wantErr)
 			}
 			if tt.wantErr && !strings.Contains(err.Error(), "build or install a durable qlog.exe") {
 				t.Fatalf("error = %q, want durable qlog.exe guidance", err)

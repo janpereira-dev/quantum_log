@@ -28,14 +28,17 @@ func (linuxCollectorManager) Install(home, listen string) (CollectorStatus, erro
 	if err := validateCollectorListen(listen); err != nil {
 		return CollectorStatus{}, err
 	}
+	executable, err := os.Executable()
+	if err != nil {
+		return CollectorStatus{}, err
+	}
+	if err := validateCollectorExecutable(executable); err != nil {
+		return CollectorStatus{}, err
+	}
 	if err := os.MkdirAll(filepath.Join(home, "collector"), 0o700); err != nil {
 		return CollectorStatus{}, err
 	}
 	if err := os.MkdirAll(filepath.Dir(linuxCollectorUnitPath()), 0o700); err != nil {
-		return CollectorStatus{}, err
-	}
-	executable, err := os.Executable()
-	if err != nil {
 		return CollectorStatus{}, err
 	}
 	if err := os.WriteFile(linuxCollectorUnitPath(), []byte(linuxCollectorUnitDefinition(executable, home, listen)), 0o600); err != nil {

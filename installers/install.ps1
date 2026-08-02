@@ -77,10 +77,12 @@ if ($channel -notin @('stable', 'latest')) { Fail '--channel must be stable or l
 if (-not $releaseBase.StartsWith('https://', [StringComparison]::OrdinalIgnoreCase)) { Fail 'QLOG_RELEASE_BASE must use HTTPS' }
 if ([string]::IsNullOrWhiteSpace($installDir)) { Fail '--install-dir cannot be empty' }
 
-if ($bootstrap -eq $null -and -not $dryRun) {
+if ($bootstrap -eq $null -and -not $dryRun -and -not [Console]::IsInputRedirected) {
     $consent = Read-Host 'Consent to bootstrap qlog collector and detected supported adapters for this user? [y/N]'
     $bootstrap = $consent -match '^(?i:y|yes)$'
 }
+
+if ($bootstrap -eq $null) { $bootstrap = $false }
 
 $os = 'windows'
 switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture) {

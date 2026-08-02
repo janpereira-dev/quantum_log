@@ -83,13 +83,13 @@ func importWithTrust(ctx context.Context, store *storepkg.Store, reader io.Reade
 		if err != nil {
 			return count, fmt.Errorf("import NDJSON line %d: %w", line, err)
 		}
-		if !appendResult.Accepted {
-			continue
-		}
-		if err := normalizeModelCall(ctx, store, parsed, appendResult.ID); err != nil {
+		_, err = normalizeModelCall(ctx, store, parsed, appendResult.ID)
+		if err != nil {
 			return count, fmt.Errorf("normalize NDJSON line %d: %w", line, err)
 		}
-		count++
+		if appendResult.Accepted {
+			count++
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		return count, fmt.Errorf("read NDJSON: %w", err)
@@ -97,25 +97,32 @@ func importWithTrust(ctx context.Context, store *storepkg.Store, reader io.Reade
 	return count, nil
 }
 
-func normalizeModelCall(ctx context.Context, store *storepkg.Store, parsed event, rawEventID string) error {
+func normalizeModelCall(ctx context.Context, store *storepkg.Store, parsed event, rawEventID string) (bool, error) {
 	eventType := strings.ReplaceAll(strings.ToLower(parsed.EventType), "_", ".")
 	if eventType != "model.call" {
-		return nil
+		return false, nil
+	}
+	linked, err := store.HasModelCallForRawEvent(ctx, rawEventID)
+	if err != nil {
+		return false, err
+	}
+	if linked {
+		return false, nil
 	}
 	var payload modelCallPayload
 	if err := json.Unmarshal(parsed.Payload, &payload); err != nil {
-		return fmt.Errorf("decode model call payload: %w", err)
+		return false, fmt.Errorf("decode model call payload: %w", err)
 	}
 	if payload.Model == "" {
 		payload.Model = payload.ModelID
 	}
 	if payload.Provider == "" || payload.Model == "" {
-		return nil
+		return false, nil
 	}
 	if err := store.EnsureSession(ctx, parsed.SessionID, payload.AgentName, parsed.OccurredAt); err != nil {
-		return err
+		return false, err
 	}
-	_, err := store.RecordModelCall(ctx, storepkg.ModelCallInput{
+	_, err = store.RecordModelCall(ctx, storepkg.ModelCallInput{
 		RawEventID:             rawEventID,
 		ProjectID:              parsed.ProjectID,
 		ProjectLocationID:      parsed.ProjectLocationID,
@@ -136,5 +143,5 @@ func normalizeModelCall(ctx context.Context, store *storepkg.Store, parsed event
 		OccurredAt:             parsed.OccurredAt,
 		CaptureQuality:         payload.CaptureQuality,
 	})
-	return err
+	return err == nil, err
 }

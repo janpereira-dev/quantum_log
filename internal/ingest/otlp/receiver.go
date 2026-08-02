@@ -52,8 +52,29 @@ func (r Receiver) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		http.Error(writer, err.Error(), status)
 		return
 	}
+	if isProtobufRequest(request) {
+		writer.Header().Set("Content-Type", "application/x-protobuf")
+		var response proto.Message
+		if request.URL.Path == "/v1/logs" {
+			response = &collectorlogpb.ExportLogsServiceResponse{}
+		} else {
+			response = &collectortracepb.ExportTraceServiceResponse{}
+		}
+		encoded, err := proto.Marshal(response)
+		if err != nil {
+			http.Error(writer, "encode OTLP protobuf response: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		_, _ = writer.Write(encoded)
+		return
+	}
 	writer.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(writer).Encode(map[string]int{"accepted": count, "duplicates": total - count})
+}
+
+func isProtobufRequest(request *http.Request) bool {
+	contentType := strings.ToLower(strings.TrimSpace(strings.Split(request.Header.Get("Content-Type"), ";")[0]))
+	return contentType == "application/x-protobuf" || contentType == "application/protobuf"
 }
 
 func (r Receiver) ingestRequest(ctx context.Context, request *http.Request, writer http.ResponseWriter) (int, int, error) {
@@ -182,7 +203,7 @@ func (r Receiver) ingestLogs(ctx context.Context, request exportLogsServiceReque
 					return count, err
 				}
 				if !ok {
-					return count, errUnsupportedCodexLog
+					continue
 				}
 				if err := json.NewEncoder(&lines).Encode(line); err != nil {
 					return count, err
@@ -192,6 +213,9 @@ func (r Receiver) ingestLogs(ctx context.Context, request exportLogsServiceReque
 		}
 	}
 	if count == 0 {
+		if logCount(request) > 0 {
+			return 0, errUnsupportedCodexLog
+		}
 		return 0, nil
 	}
 	imported, err := jsonl.ImportTrusted(ctx, r.service.Store, &lines)
@@ -325,6 +349,14 @@ func (r Receiver) copilotSpanEvent(ctx context.Context, resource, attributes map
 	}, nil
 }
 
+func codexLogIdentity(record map[string]string, input logRecord) string {
+	identity := input.TraceID + "/" + input.SpanID
+	if responseID := record["response.id"]; responseID != "" {
+		return identity + "/" + responseID
+	}
+	return identity
+}
+
 func otlpUpstreamEventID(input span) string {
 	if input.TraceID == "" {
 		return ""
@@ -381,7 +413,7 @@ func (r Receiver) codexLogEvent(ctx context.Context, resource, record map[string
 		"project_resolution_method":     string(resolved.Resolution.Method),
 		"project_resolution_confidence": string(resolved.Resolution.Confidence),
 		"project_resolution_evidence":   map[string]string{"source": "central-project-resolver"},
-		"upstream_event_id":             input.TraceID + "/" + input.SpanID,
+		"upstream_event_id":             codexLogIdentity(record, input),
 		"payload":                       payload,
 	}, true, nil
 }

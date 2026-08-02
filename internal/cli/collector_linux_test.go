@@ -20,3 +20,14 @@ func TestLinuxCollectorServiceDefinition(t *testing.T) {
 		}
 	}
 }
+
+func TestLinuxCollectorRejectsTransientExecutable(t *testing.T) {
+	for _, executable := range []string{
+		"/tmp/go-build1234/b001/exe/qlog",
+		"/tmp/cli.test",
+	} {
+		if err := validateCollectorExecutable(executable); err == nil {
+			t.Fatalf("validateCollectorExecutable(%q) error = nil", executable)
+		}
+	}
+}

@@ -1,16 +1,16 @@
 package cli
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/janpereira-dev/quantum_log/internal/adapters"
 	"github.com/janpereira-dev/quantum_log/internal/app"
+	"github.com/janpereira-dev/quantum_log/internal/config"
 	"github.com/janpereira-dev/quantum_log/internal/storage/sqlite"
 	"github.com/spf13/cobra"
 )
@@ -106,6 +106,10 @@ func newAdapterCommand(home *string) *cobra.Command {
 
 	var statusJSON bool
 	status := &cobra.Command{Use: "status [adapter]", Short: "Show adapter setup status", Args: cobra.MaximumNArgs(1), RunE: func(command *cobra.Command, args []string) error {
+		paths, err := config.Resolve(*home)
+		if err != nil {
+			return err
+		}
 		items := registry.Stable()
 		if len(args) == 1 {
 			adapter, found := registry.Get(args[0])
@@ -120,6 +124,7 @@ func newAdapterCommand(home *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			status = enrichAdapterStatus(command.Context(), paths.Home, status, localAdapterStatusAccess{})
 			statuses = append(statuses, status)
 		}
 		if statusJSON {
@@ -222,6 +227,45 @@ func newAdapterCommand(home *string) *cobra.Command {
 	return command
 }
 
+type adapterStatusAccess interface {
+	CollectorReachable(context.Context) bool
+	HasRecentEvidence(context.Context, string, adapters.SetupStatus) (bool, error)
+}
+
+type localAdapterStatusAccess struct{}
+
+func (localAdapterStatusAccess) CollectorReachable(ctx context.Context) bool {
+	reachable, _ := verifyCollectorReachability(ctx)
+	return reachable
+}
+
+func (localAdapterStatusAccess) HasRecentEvidence(ctx context.Context, home string, status adapters.SetupStatus) (bool, error) {
+	contract := evidenceContract(status.AdapterID)
+	if contract.Source == "" || contract.Quality == "" {
+		return false, nil
+	}
+	service, err := app.OpenReadOnly(ctx, home)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = service.Close() }()
+	now := time.Now().UTC()
+	return service.Store.HasRecentAdapterEvidence(ctx, sqlite.AdapterEvidenceQuery{
+		AdapterID:         status.AdapterID,
+		AllowedAgentNames: contract.AllowedAgentNames,
+		Source:            contract.Source,
+		From:              now.Add(-time.Hour),
+		To:                now,
+		RequiredQuality:   string(contract.Quality),
+	})
+}
+
+func enrichAdapterStatus(ctx context.Context, home string, status adapters.SetupStatus, access adapterStatusAccess) adapters.SetupStatus {
+	status.CollectorReachable = access.CollectorReachable(ctx)
+	status.RecentEvidence, _ = access.HasRecentEvidence(ctx, home, status)
+	return status
+}
+
 type adapterVerificationError struct{ AdapterID string }
 
 func (e adapterVerificationError) Error() string {
@@ -312,10 +356,13 @@ func verifyCollectorReachability(ctx context.Context) (bool, string) {
 	endpoint := os.Getenv("QLOG_COLLECTOR_URL")
 	if endpoint == "" {
 		endpoint = "http://127.0.0.1:4318/v1/traces"
-	} else if !strings.HasSuffix(endpoint, "/v1/traces") {
-		endpoint = strings.TrimRight(endpoint, "/") + "/v1/traces"
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader([]byte(`{"resourceSpans":[]}`)))
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return false, fmt.Sprintf("invalid collector URL %q", endpoint)
+	}
+	healthEndpoint := parsed.Scheme + "://" + parsed.Host + "/healthz"
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, healthEndpoint, nil)
 	if err != nil {
 		return false, err.Error()
 	}
@@ -327,7 +374,7 @@ func verifyCollectorReachability(ctx context.Context) (bool, string) {
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return false, fmt.Sprintf("collector %s returned HTTP %d", endpoint, response.StatusCode)
+		return false, fmt.Sprintf("collector %s returned HTTP %d", healthEndpoint, response.StatusCode)
 	}
-	return true, "collector reachable at " + endpoint
+	return true, "collector reachable at " + healthEndpoint
 }
