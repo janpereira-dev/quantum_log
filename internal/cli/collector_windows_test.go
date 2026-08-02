@@ -47,6 +47,26 @@ func TestWindowsCollectorTaskDefinitionUsesInteractiveCurrentUser(t *testing.T) 
 	}
 }
 
+func TestWindowsCollectorTaskDefinitionBoundsRestartOnFailure(t *testing.T) {
+	definition := windowsCollectorTaskDefinition(
+		`C:\Program Files\QUANTUM_LOG\qlog.exe`,
+		`C:\Users\alice\AppData\Local\QUANTUM_LOG`,
+		"127.0.0.1:4318",
+		`CONTOSO\alice`,
+		`C:\Users\alice\AppData\Local\QUANTUM_LOG\collector\collector.log`,
+	)
+	for _, want := range []string{
+		"<RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure>",
+		"<LogonType>InteractiveToken</LogonType>",
+		"<RunLevel>LeastPrivilege</RunLevel>",
+		"collector serve --listen 127.0.0.1:4318",
+	} {
+		if !strings.Contains(definition, want) {
+			t.Fatalf("task definition missing %q: %s", want, definition)
+		}
+	}
+}
+
 func TestWriteWindowsCollectorTaskDefinitionUsesUTF16LE(t *testing.T) {
 	executable := `C:\Program Files\QUANTUM_LOG\qlog.exe`
 	home := `C:\Users\alice\AppData\Local\QUANTUM_LOG`
