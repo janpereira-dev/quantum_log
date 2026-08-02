@@ -29,21 +29,10 @@ func newCollectorCommand(home *string) *cobra.Command {
 	var jsonOutput bool
 	var logFile string
 	status := &cobra.Command{Use: "status", Short: "Show managed collector status", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
-		paths, err := config.Resolve(*home)
+		output, err := collectorStatus(command.Context(), *home, listen, command.Flags().Changed("home"), command.Flags().Changed("listen"), newCollectorManager())
 		if err != nil {
 			return err
 		}
-		manager := newCollectorManager()
-		resolvedHome, resolvedListen := resolveManagedCollectorSettings(manager, paths.Home, listen, command.Flags().Changed("home"), command.Flags().Changed("listen"))
-		output, err := manager.Status(command.Context(), resolvedListen)
-		if err != nil {
-			return err
-		}
-		output.Home = resolvedHome
-		output.Database = paths.Database
-		output.Endpoints = []string{"/v1/traces", "/v1/logs", "/v1/events", "/healthz"}
-		output.Scope = "loopback-only by default"
-		output.Health = output.Message
 		if jsonOutput {
 			return writeJSON(command.Root().OutOrStdout(), output)
 		}
@@ -100,6 +89,28 @@ func newCollectorCommand(home *string) *cobra.Command {
 		collectorLifecycleCommand("uninstall", "Uninstall managed collector", func(manager collectorManager, _, _ string) (CollectorStatus, error) { return manager.Uninstall() }, home, &listen),
 	)
 	return collector
+}
+
+func collectorStatus(ctx context.Context, home, listen string, homeExplicit, listenExplicit bool, manager collectorManager) (CollectorStatus, error) {
+	paths, err := config.Resolve(home)
+	if err != nil {
+		return CollectorStatus{}, err
+	}
+	resolvedHome, resolvedListen := resolveManagedCollectorSettings(manager, paths.Home, listen, homeExplicit, listenExplicit)
+	finalPaths, err := config.Resolve(resolvedHome)
+	if err != nil {
+		return CollectorStatus{}, err
+	}
+	output, err := manager.Status(ctx, resolvedListen)
+	if err != nil {
+		return CollectorStatus{}, err
+	}
+	output.Home = finalPaths.Home
+	output.Database = finalPaths.Database
+	output.Endpoints = []string{"/v1/traces", "/v1/logs", "/v1/events", "/healthz"}
+	output.Scope = "loopback-only by default"
+	output.Health = output.Message
+	return output, nil
 }
 
 func newCollectorMux(home string) *http.ServeMux {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -36,6 +37,49 @@ func TestCollectorInstallIsIdempotent(t *testing.T) {
 	if !first.Installed || !second.Installed || first.ServiceID != second.ServiceID {
 		t.Fatalf("first=%#v second=%#v", first, second)
 	}
+}
+
+func TestCollectorStatusResolvesDatabaseFromManagedHome(t *testing.T) {
+	cliHome := t.TempDir()
+	managedHome := t.TempDir()
+	manager := &managedStatusCollectorManager{home: managedHome, listen: "127.0.0.1:4319"}
+
+	status, err := collectorStatus(context.Background(), cliHome, defaultCollectorListen, false, false, manager)
+	if err != nil {
+		t.Fatalf("collectorStatus() error = %v", err)
+	}
+	if status.Home != managedHome || status.Database != filepath.Join(managedHome, "qlog.db") || status.Listen != manager.listen {
+		t.Fatalf("status = %#v", status)
+	}
+}
+
+func TestCollectorStatusExplicitHomeOverridesManagedHome(t *testing.T) {
+	explicitHome := t.TempDir()
+	manager := &managedStatusCollectorManager{home: t.TempDir(), listen: "127.0.0.1:4319"}
+
+	status, err := collectorStatus(context.Background(), explicitHome, defaultCollectorListen, true, false, manager)
+	if err != nil {
+		t.Fatalf("collectorStatus() error = %v", err)
+	}
+	if status.Home != explicitHome || status.Database != filepath.Join(explicitHome, "qlog.db") || status.Listen != manager.listen {
+		t.Fatalf("status = %#v", status)
+	}
+}
+
+type managedStatusCollectorManager struct {
+	fakeCollectorManager
+	home   string
+	listen string
+}
+
+func (m *managedStatusCollectorManager) ResolveManagedCollectorSettings(home, listen string, homeExplicit, listenExplicit bool) (string, string) {
+	if !homeExplicit {
+		home = m.home
+	}
+	if !listenExplicit {
+		listen = m.listen
+	}
+	return home, listen
 }
 
 func (*fakeCollectorManager) Status(_ context.Context, listen string) (CollectorStatus, error) {
