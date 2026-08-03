@@ -214,46 +214,8 @@ func TestAdapterVerifyCopilotRejectsSpoofedOTLPHTTPImport(t *testing.T) {
 }
 
 func TestAdapterVerifyCopilotAcceptsSanctionedOTLPEvidence(t *testing.T) {
-	home := t.TempDir()
-	configHome := t.TempDir()
-	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
-	fakeCode := "code"
-	if runtime.GOOS == "windows" {
-		fakeCode += ".exe"
-	}
-	codeDir := t.TempDir()
-	codePath := filepath.Join(codeDir, fakeCode)
-	if err := os.WriteFile(codePath, nil, 0o700); err != nil {
-		t.Fatalf("create fake code executable: %v", err)
-	}
-	t.Setenv("PATH", codeDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	worktree := filepath.Join(t.TempDir(), "project")
-	if _, err := runQLog(t, home, "init"); err != nil {
-		t.Fatalf("init: %v", err)
-	}
-	if _, err := runQLog(t, home, "adapter", "install", "copilot-vscode"); err != nil {
-		t.Fatalf("install: %v", err)
-	}
-	if _, err := runQLog(t, home, "project", "register", "--path", worktree, "--name", "Project", "--slug", "project"); err != nil {
-		t.Fatalf("register: %v", err)
-	}
-
-	server := httptest.NewServer(newCollectorMux(home))
-	t.Cleanup(server.Close)
-	t.Setenv("QLOG_COLLECTOR_URL", server.URL+"/v1/traces")
-	request, err := http.NewRequest(http.MethodPost, server.URL+"/v1/traces", strings.NewReader(`{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"copilot-chat"}}]},"scopeSpans":[{"spans":[{"traceId":"trace-copilot","spanId":"span-copilot","attributes":[{"key":"qlog.project","value":{"stringValue":"project"}},{"key":"gen_ai.provider.name","value":{"stringValue":"github"}},{"key":"gen_ai.agent.name","value":{"stringValue":"GitHub Copilot Chat"}},{"key":"gen_ai.request.model","value":{"stringValue":"gpt-5"}},{"key":"gen_ai.usage.input_tokens","value":{"intValue":"1"}},{"key":"gen_ai.usage.output_tokens","value":{"intValue":"2"}}]}]}]}]}`))
-	if err != nil {
-		t.Fatalf("create request: %v", err)
-	}
-	request.Header.Set("Content-Type", "application/json")
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		t.Fatalf("collector request: %v", err)
-	}
-	defer func() { _ = response.Body.Close() }()
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("collector response = %d", response.StatusCode)
-	}
+	home, serverURL := setupCopilotVerification(t)
+	postCopilotOTLPTrace(t, serverURL, `,{"key":"gen_ai.provider.name","value":{"stringValue":"github"}}`)
 
 	output, err := runQLog(t, home, "adapter", "verify", "copilot-vscode", "--project", "project", "--json")
 	if err != nil {
@@ -267,6 +229,72 @@ func TestAdapterVerifyCopilotAcceptsSanctionedOTLPEvidence(t *testing.T) {
 	}
 	if !result.Ready {
 		t.Fatalf("sanctioned Copilot OTLP usage did not verify: %s", output)
+	}
+}
+
+func TestAdapterVerifyCopilotRejectsMissingOrNonGitHubProvider(t *testing.T) {
+	for _, test := range []struct {
+		name              string
+		providerAttribute string
+	}{
+		{name: "provider omitted", providerAttribute: ""},
+		{name: "provider openai", providerAttribute: `,{"key":"gen_ai.provider.name","value":{"stringValue":"openai"}}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			home, serverURL := setupCopilotVerification(t)
+			postCopilotOTLPTrace(t, serverURL, test.providerAttribute)
+
+			output, err := runQLog(t, home, "adapter", "verify", "copilot-vscode", "--project", "project", "--json")
+			if err == nil || !strings.Contains(output, `"ready":false`) {
+				t.Fatalf("Copilot evidence incorrectly verified: output=%s err=%v", output, err)
+			}
+		})
+	}
+}
+
+func setupCopilotVerification(t *testing.T) (string, string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
+	fakeCode := "code"
+	if runtime.GOOS == "windows" {
+		fakeCode += ".exe"
+	}
+	codeDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(codeDir, fakeCode), nil, 0o700); err != nil {
+		t.Fatalf("create fake code executable: %v", err)
+	}
+	t.Setenv("PATH", codeDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, err := runQLog(t, home, "adapter", "install", "copilot-vscode"); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if _, err := runQLog(t, home, "project", "register", "--path", filepath.Join(t.TempDir(), "project"), "--name", "Project", "--slug", "project"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	server := httptest.NewServer(newCollectorMux(home))
+	t.Cleanup(server.Close)
+	t.Setenv("QLOG_COLLECTOR_URL", server.URL+"/v1/traces")
+	return home, server.URL
+}
+
+func postCopilotOTLPTrace(t *testing.T, serverURL, providerAttribute string) {
+	t.Helper()
+	payload := `{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"copilot-chat"}}]},"scopeSpans":[{"spans":[{"traceId":"trace-copilot","spanId":"span-copilot","attributes":[{"key":"qlog.project","value":{"stringValue":"project"}}` + providerAttribute + `,{"key":"gen_ai.agent.name","value":{"stringValue":"GitHub Copilot Chat"}},{"key":"gen_ai.request.model","value":{"stringValue":"gpt-5"}},{"key":"gen_ai.usage.input_tokens","value":{"intValue":"1"}},{"key":"gen_ai.usage.output_tokens","value":{"intValue":"2"}}]}]}]}]}`
+	request, err := http.NewRequest(http.MethodPost, serverURL+"/v1/traces", strings.NewReader(payload))
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("collector request: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("collector response = %d", response.StatusCode)
 	}
 }
 

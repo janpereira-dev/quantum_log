@@ -116,6 +116,7 @@ type AdapterEvidenceQuery struct {
 	To                            time.Time
 	ProjectSlug                   string
 	RequiredQuality               string
+	RequiredProvider              string
 	RequireCodexResponseCompleted bool
 }
 
@@ -1733,6 +1734,10 @@ func (s *Store) HasRecentAdapterEvidence(ctx context.Context, query AdapterEvide
 			args = append(args, agentName)
 		}
 		where += ` AND lower(COALESCE(json_extract(r.payload_json_sanitized, '$.agent_name'), '')) IN (` + strings.Join(placeholders, ", ") + `)`
+	}
+	if strings.TrimSpace(query.RequiredProvider) != "" {
+		where += ` AND lower(COALESCE(json_extract(r.payload_json_sanitized, '$.provider'), '')) = lower(?)`
+		args = append(args, query.RequiredProvider)
 	}
 	if !query.From.IsZero() {
 		where += " AND r.occurred_at >= ?"
