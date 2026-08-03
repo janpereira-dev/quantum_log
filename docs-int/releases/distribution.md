@@ -20,6 +20,14 @@ All native installers:
 - update only a user shell profile or user PATH when permitted, with a backup before profile changes; and
 - preserve the local QUANTUM_LOG data directory on uninstall.
 
+## Capture Bootstrap
+
+Official installers expose `--bootstrap` and `--no-bootstrap`. Bootstrap requires clear installer-level consent; after binary verification, it runs `qlog setup --yes`. `--no-bootstrap` suppresses that action. This configures only the four M4 stable adapters and a qlog-owned loopback collector. It does not prove an agent emitted evidence, a token source is available, or release acceptance passed.
+
+If bootstrap is skipped or unavailable, run `qlog setup --dry-run` and then `qlog setup --yes` manually. Check `qlog collector status --json`; use `qlog collector logs` for recovery and `qlog collector uninstall` to remove only qlog-owned lifecycle state. The collector defaults to `127.0.0.1:4318`; non-loopback listening requires explicit `--allow-non-loopback` with its security implications reviewed.
+
+Release documentation must keep source-evidence and clean-device real-agent acceptance separate from installer validation. A passing installer test, collector health check, or synthetic event is not real-agent E2E evidence.
+
 `stable` and `latest` currently both resolve GitHub's latest non-prerelease release. A distinct latest channel needs a published release policy before its behavior can diverge.
 
 ## Verifiable Path

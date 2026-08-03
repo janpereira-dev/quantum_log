@@ -62,6 +62,68 @@ func TestUsageGroupingPreservesTotalsAndAllocation(t *testing.T) {
 	if len(first.Rows) != 2 || len(second.Rows) != 2 {
 		t.Fatalf("usage rows = %d and %d, want 2", len(first.Rows), len(second.Rows))
 	}
+	if first.Rows[0].TotalTokens != 90 || first.Rows[1].TotalTokens != 60 || first.Rows[0].AllocatedCostUSDMicros != 600_000 || first.Rows[1].AllocatedCostUSDMicros != 400_000 {
+		t.Fatalf("split usage rows = %#v", first.Rows)
+	}
+	filtered, err := store.Usage(ctx, UsageQuery{ProjectSlug: projectA.Slug, GroupBy: []string{"project"}})
+	if err != nil || filtered.TotalTokens != 90 || len(filtered.Rows) != 1 || filtered.Rows[0].TotalTokens != 90 || filtered.AllocatedCostUSDMicros != 600_000 {
+		t.Fatalf("project filtered usage = %#v, %v", filtered, err)
+	}
+	if got := measurement(first.Measurements, "unknown").TotalTokens; got != 150 {
+		t.Fatalf("split measurement tokens = %d, want 150", got)
+	}
+}
+
+func TestUsageSplitApportionsRemaindersWithoutDroppingTokens(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	projectA, _, err := store.RegisterProject(ctx, "Project A", "project-a", filepath.Join(t.TempDir(), "a"))
+	if err != nil {
+		t.Fatalf("RegisterProject(A) error = %v", err)
+	}
+	projectB, _, err := store.RegisterProject(ctx, "Project B", "project-b", filepath.Join(t.TempDir(), "b"))
+	if err != nil {
+		t.Fatalf("RegisterProject(B) error = %v", err)
+	}
+	callID, err := store.RecordModelCall(ctx, ModelCallInput{ProjectID: projectA.ID, Provider: "example", ModelID: "model", InputTokens: 1, EstimatedCostUSDMicros: 1, OccurredAt: time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatalf("RecordModelCall() error = %v", err)
+	}
+	if err := store.ReplaceAllocations(ctx, "model_call", callID, []AllocationInput{{ProjectID: projectA.ID, BasisPoints: 6000}, {ProjectID: projectB.ID, BasisPoints: 4000}}); err != nil {
+		t.Fatalf("ReplaceAllocations() error = %v", err)
+	}
+	for repeat := 0; repeat < 10; repeat++ {
+		report, err := store.Usage(ctx, UsageQuery{GroupBy: []string{"project"}})
+		if err != nil {
+			t.Fatalf("Usage() error = %v", err)
+		}
+		if len(report.Rows) != 2 || report.TotalTokens != 1 || report.AllocatedCostUSDMicros != 1 {
+			t.Fatalf("remainder usage = %#v", report)
+		}
+		if report.Rows[0].TotalTokens+report.Rows[1].TotalTokens != report.TotalTokens || report.Rows[0].AllocatedCostUSDMicros+report.Rows[1].AllocatedCostUSDMicros != report.AllocatedCostUSDMicros {
+			t.Fatalf("remainder allocation does not conserve totals = %#v", report.Rows)
+		}
+		for _, projectSlug := range []string{projectA.Slug, projectB.Slug} {
+			filtered, err := store.Usage(ctx, UsageQuery{ProjectSlug: projectSlug, GroupBy: []string{"project"}})
+			if err != nil {
+				t.Fatalf("Usage(%s) error = %v", projectSlug, err)
+			}
+			var expected UsageRow
+			for _, row := range report.Rows {
+				if row.ProjectSlug == projectSlug {
+					expected = row
+					break
+				}
+			}
+			if len(filtered.Rows) != 1 || filtered.Rows[0] != expected || filtered.TotalTokens != expected.TotalTokens || filtered.AllocatedCostUSDMicros != expected.AllocatedCostUSDMicros {
+				t.Fatalf("filtered %s usage = %#v, want global row %#v", projectSlug, filtered, expected)
+			}
+		}
+	}
 }
 
 func TestUsageGroupsByProjectAgentProviderModelAndCaptureQuality(t *testing.T) {
@@ -97,6 +159,85 @@ func TestUsageGroupsByProjectAgentProviderModelAndCaptureQuality(t *testing.T) {
 	if report.Rows[1].AgentName != "opencode" || report.Rows[1].CaptureQuality != "estimated" || report.Rows[1].TotalTokens != 10 {
 		t.Fatalf("second row = %#v", report.Rows[1])
 	}
+}
+
+func TestUsageSeparatesReportedLifecycleAndEstimatedMeasurements(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	project, _, err := store.RegisterProject(ctx, "Project", "project", filepath.Join(t.TempDir(), "project"))
+	if err != nil {
+		t.Fatalf("RegisterProject() error = %v", err)
+	}
+	if _, err := store.RecordModelCall(ctx, ModelCallInput{ProjectID: project.ID, AgentName: "opencode", Provider: "anthropic", ModelID: "claude", InputTokens: 7, OutputTokens: 5, CaptureQuality: "agent_reported"}); err != nil {
+		t.Fatalf("RecordModelCall(agent_reported) error = %v", err)
+	}
+	if _, err := store.RecordModelCall(ctx, ModelCallInput{ProjectID: project.ID, AgentName: "opencode", Provider: "anthropic", ModelID: "claude", InputTokens: 4, OutputTokens: 5, CaptureQuality: "estimated"}); err != nil {
+		t.Fatalf("RecordModelCall(estimated) error = %v", err)
+	}
+	if _, err := store.AppendRawEvent(ctx, RawEventInput{Source: "claude-code-hook", SessionID: "lifecycle-session", EventType: "lifecycle.stop", Payload: []byte(`{"agent_name":"claude-code","capture_quality":"lifecycle_only"}`), OccurredAt: time.Now().UTC(), ProjectID: project.ID, ResolutionMethod: "explicit", ResolutionConfidence: "exact"}); err != nil {
+		t.Fatalf("AppendRawEvent(lifecycle_only) error = %v", err)
+	}
+
+	report, err := store.Usage(ctx, UsageQuery{GroupBy: []string{"project", "agent", "provider", "model", "capture_quality"}})
+	if err != nil {
+		t.Fatalf("Usage() error = %v", err)
+	}
+	if got := measurement(report.Measurements, "agent_reported").TotalTokens; got != 12 {
+		t.Fatalf("agent-reported tokens = %d, want 12", got)
+	}
+	if got := measurement(report.Measurements, "estimated").TotalTokens; got != 9 {
+		t.Fatalf("estimated tokens = %d, want 9", got)
+	}
+	if got := measurement(report.Measurements, "lifecycle_only"); got.ModelCallCount != 0 || got.TotalTokens != 0 {
+		t.Fatalf("lifecycle-only measurement = %#v, want zero model calls and tokens", got)
+	}
+}
+
+func TestSessionSnapshotPreservesResolutionConfidenceAndLifecycleEvidence(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if err := store.EnsureSession(ctx, "session-1", "stored-agent", time.Date(2026, 7, 30, 11, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("EnsureSession() error = %v", err)
+	}
+	if _, err := store.AppendRawEvent(ctx, RawEventInput{Source: "claude-code-hook", SessionID: "session-1", EventType: "lifecycle.stop", Payload: []byte(`{"agent_name":"claude-code","capture_quality":"lifecycle_only"}`), OccurredAt: time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC), ResolutionMethod: "explicit", ResolutionConfidence: "exact"}); err != nil {
+		t.Fatalf("AppendRawEvent() error = %v", err)
+	}
+
+	snapshot, err := store.SessionSnapshot(ctx, "session-1")
+	if err != nil {
+		t.Fatalf("SessionSnapshot() error = %v", err)
+	}
+	if snapshot.ResolutionMethod != "explicit" || snapshot.ResolutionConfidence != "exact" {
+		t.Fatalf("resolution = %q/%q", snapshot.ResolutionMethod, snapshot.ResolutionConfidence)
+	}
+	if snapshot.AgentName != "stored-agent" {
+		t.Fatalf("agent = %q, want stored-agent", snapshot.AgentName)
+	}
+	if snapshot.RawEventCount != 1 || snapshot.LifecycleEventCount != 1 {
+		t.Fatalf("raw lifecycle evidence = %d/%d, want 1/1", snapshot.RawEventCount, snapshot.LifecycleEventCount)
+	}
+	if got := measurement(snapshot.Measurements, "lifecycle_only"); got.ModelCallCount != 0 || got.TotalTokens != 0 {
+		t.Fatalf("lifecycle-only measurement = %#v, want zero model calls and tokens", got)
+	}
+}
+
+func measurement(measurements []MeasurementSummary, quality string) MeasurementSummary {
+	for _, summary := range measurements {
+		if summary.Quality == quality {
+			return summary
+		}
+	}
+	return MeasurementSummary{Quality: quality}
 }
 
 func TestReplaceAllocationsRejectsInvalidSplit(t *testing.T) {

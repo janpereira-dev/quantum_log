@@ -29,7 +29,7 @@ func (GenericJSONL) PlanInstall(context.Context, SetupOptions) (SetupPlan, error
 }
 
 func (GenericJSONL) Status(context.Context) (SetupStatus, error) {
-	return SetupStatus{AdapterID: "generic-jsonl", Available: true, Installed: true, State: SetupInstalled, CaptureQuality: CaptureManualImport, Evidence: "built-in JSONL importer"}, nil
+	return SetupStatus{AdapterID: "generic-jsonl", Available: true, Installed: true, State: SetupInstalled, InstallationState: SetupInstalled, CaptureQuality: CaptureManualImport, Evidence: "built-in JSONL importer"}, nil
 }
 
 func (GenericJSONL) Test(context.Context) (TestResult, error) {

@@ -94,7 +94,8 @@ func appendEvent(ctx context.Context, service *app.Service, resolved app.Resolve
 	if err != nil {
 		return "", err
 	}
-	return service.Store.AppendRawEvent(ctx, storepkg.RawEventInput{Source: "generic-cli-wrapper", SessionID: sessionID, EventType: eventType, Payload: payload, OccurredAt: occurredAt, ProjectID: resolved.ProjectID, ProjectLocationID: resolved.LocationID, ResolutionMethod: string(resolved.Resolution.Method), ResolutionConfidence: string(resolved.Resolution.Confidence), EvidenceJSON: `{"source":"central-project-resolver"}`})
+	result, err := service.Store.AppendRawEvent(ctx, storepkg.RawEventInput{Source: "generic-cli-wrapper", SessionID: sessionID, EventType: eventType, Payload: payload, OccurredAt: occurredAt, ProjectID: resolved.ProjectID, ProjectLocationID: resolved.LocationID, ResolutionMethod: string(resolved.Resolution.Method), ResolutionConfidence: string(resolved.Resolution.Confidence), EvidenceJSON: `{"source":"central-project-resolver"}`})
+	return result.ID, err
 }
 
 func exitCode(err error) int {

@@ -15,7 +15,6 @@ const (
 	CaptureAgentReported    CaptureQuality = "agent_reported"
 	CaptureOTELReported     CaptureQuality = "otel_reported"
 	CaptureLifecycleOnly    CaptureQuality = "lifecycle_only"
-	CaptureExperimental     CaptureQuality = "experimental"
 	CaptureEstimated        CaptureQuality = "estimated"
 	CaptureManualImport     CaptureQuality = "manual_import"
 	CaptureUnavailable      CaptureQuality = "unavailable"
@@ -53,13 +52,16 @@ type SetupPlan struct {
 }
 
 type SetupStatus struct {
-	AdapterID      string         `json:"adapter_id"`
-	Available      bool           `json:"available"`
-	Installed      bool           `json:"installed"`
-	State          SetupState     `json:"state"`
-	CaptureQuality CaptureQuality `json:"capture_quality"`
-	Evidence       string         `json:"evidence"`
-	Notes          []string       `json:"notes,omitempty"`
+	AdapterID          string         `json:"adapter_id"`
+	Available          bool           `json:"available"`
+	Installed          bool           `json:"installed"`
+	State              SetupState     `json:"state"`
+	InstallationState  SetupState     `json:"installation_state"`
+	CollectorReachable bool           `json:"collector_reachable"`
+	RecentEvidence     bool           `json:"recent_evidence"`
+	CaptureQuality     CaptureQuality `json:"capture_quality"`
+	Evidence           string         `json:"evidence"`
+	Notes              []string       `json:"notes,omitempty"`
 }
 
 type TestResult struct {

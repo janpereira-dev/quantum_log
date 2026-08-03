@@ -17,7 +17,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-func TestHandlerImportsPluginModelCallThroughSQLiteReport(t *testing.T) {
+func TestHandlerKeepsOpenCodePluginEventsLifecycleOnly(t *testing.T) {
 	ctx := context.Background()
 	service, err := app.Initialize(ctx, t.TempDir())
 	if err != nil {
@@ -45,7 +45,7 @@ func TestHandlerImportsPluginModelCallThroughSQLiteReport(t *testing.T) {
 		t.Fatalf("rows = %#v", report.Rows)
 	}
 	row := report.Rows[0]
-	if row.ProjectSlug != project.Slug || row.AgentName != "opencode" || row.TotalTokens != 68 || row.CaptureQuality != "agent_reported" {
+	if row.ProjectSlug != project.Slug || row.AgentName != "opencode" || row.TotalTokens != 0 || row.CaptureQuality != "lifecycle_only" {
 		t.Fatalf("row = %#v", row)
 	}
 }
@@ -80,6 +80,37 @@ func TestHandlerMapsCodexRawResponseCompletedUsage(t *testing.T) {
 	row := report.Rows[0]
 	if row.ProjectSlug != project.Slug || row.AgentName != "codex" || row.Provider != "openai" || row.Model != "gpt-5" || row.TotalTokens != 184 || row.CaptureQuality != "agent_reported" || row.CachedInputTokens != 47 || row.ReasoningTokens != 53 {
 		t.Fatalf("row = %#v", row)
+	}
+}
+
+func TestHandlerReportsDuplicateEvent(t *testing.T) {
+	ctx := context.Background()
+	service, err := app.Initialize(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("initialize service: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	repo := filepath.Join(t.TempDir(), "repo")
+	if _, _, err := service.Store.RegisterProject(ctx, "Repo", "repo", repo); err != nil {
+		t.Fatalf("register project: %v", err)
+	}
+	payload := `{"source":"qlog-plugin","session_id":"session-1","event_type":"agent.event","occurred_at":"2026-07-20T10:00:00Z","project_hint":{"cwd":"` + filepath.ToSlash(repo) + `"},"upstream_event_id":"event-1","payload":{}}`
+	handler := NewHandler(service)
+	for attempt, want := range []map[string]int{{"accepted": 1, "duplicates": 0}, {"accepted": 0, "duplicates": 1}} {
+		request := httptest.NewRequest(http.MethodPost, "/v1/events", bytes.NewBufferString(payload))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("attempt %d response = %d: %s", attempt+1, response.Code, response.Body.String())
+		}
+		got := map[string]int{}
+		if err := json.NewDecoder(response.Body).Decode(&got); err != nil {
+			t.Fatalf("attempt %d decode response: %v", attempt+1, err)
+		}
+		if !mapsEqual(got, want) {
+			t.Fatalf("attempt %d response = %#v, want %#v", attempt+1, got, want)
+		}
 	}
 }
 
@@ -131,4 +162,30 @@ func TestIngestExportsReusableSanitizedEventImport(t *testing.T) {
 	if len(report.Rows) != 0 || report.TotalTokens != 0 {
 		t.Fatalf("lifecycle event invented usage for %s: %#v", project.Slug, report)
 	}
+}
+
+func TestPluginPayloadAllowlistDropsRemoteURLAndTranscript(t *testing.T) {
+	got := sanitizePluginPayload(json.RawMessage(`{"provider":"x","model":"y","remote_url":"https://user:password@example.test","transcript_path":"private","input_tokens":1}`))
+	if bytes.Contains(got, []byte("remote_url")) || bytes.Contains(got, []byte("transcript_path")) {
+		t.Fatalf("payload = %s", got)
+	}
+}
+
+func TestPluginPayloadDropsNegativeUsageCounters(t *testing.T) {
+	got := sanitizePluginPayload(json.RawMessage(`{"agent_name":"opencode","input_tokens":-1,"output_tokens":2,"capture_quality":"agent_reported"}`))
+	if bytes.Contains(got, []byte("input_tokens")) {
+		t.Fatalf("payload retained negative usage = %s", got)
+	}
+}
+
+func mapsEqual(got, want map[string]int) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for key, value := range want {
+		if got[key] != value {
+			return false
+		}
+	}
+	return true
 }

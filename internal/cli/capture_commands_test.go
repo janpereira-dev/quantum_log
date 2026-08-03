@@ -2,17 +2,36 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/janpereira-dev/quantum_log/internal/adapters"
+	"github.com/janpereira-dev/quantum_log/internal/app"
+	"github.com/janpereira-dev/quantum_log/internal/domain"
+	"github.com/janpereira-dev/quantum_log/internal/storage/sqlite"
 )
+
+func TestUnsupportedAdaptersAreNotSelectedByDefaultSetup(t *testing.T) {
+	items, err := setupDefaultAdapters(context.Background(), adapters.Default().List())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, adapter := range items {
+		switch adapter.Descriptor().ID {
+		case "pi", "openclaw", "hermes":
+			t.Fatalf("unsupported adapter selected: %s", adapter.Descriptor().ID)
+		}
+	}
+}
 
 func TestAdapterCommandsExposeCapabilitiesAndSafeDryRun(t *testing.T) {
 	run := func(args ...string) (string, error) {
@@ -47,8 +66,8 @@ func TestAdapterVerifyCopilotReportsMissingEvidence(t *testing.T) {
 	output := new(bytes.Buffer)
 	command.SetArgs([]string{"--home", home, "adapter", "verify", "copilot-vscode", "--json"})
 	setOutput(command, output)
-	if err := command.Execute(); err != nil {
-		t.Fatalf("adapter verify: %v", err)
+	if err := command.Execute(); err == nil {
+		t.Fatalf("adapter verify succeeded: %s", output)
 	}
 	var result struct {
 		AdapterID string `json:"adapter_id"`
@@ -63,6 +82,21 @@ func TestAdapterVerifyCopilotReportsMissingEvidence(t *testing.T) {
 	}
 	if result.AdapterID != "copilot-vscode" || result.Ready || len(result.Stages) == 0 {
 		t.Fatalf("verify result = %#v", result)
+	}
+}
+
+func TestAdapterVerifyReturnsNonZeroForMissingRequiredEvidence(t *testing.T) {
+	home := t.TempDir()
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	output, err := runQLog(t, home, "adapter", "verify", "opencode", "--json")
+	if err == nil {
+		t.Fatalf("verify succeeded: %s", output)
+	}
+	if !strings.Contains(output, `"ready":false`) {
+		t.Fatalf("output = %s", output)
 	}
 }
 
@@ -85,8 +119,8 @@ func TestAdapterVerifyCopilotInstalledSettingsAreNotEnough(t *testing.T) {
 		t.Fatalf("install copilot-vscode: %v", err)
 	}
 	output, err := run("adapter", "verify", "copilot-vscode", "--since", "1h", "--json")
-	if err != nil {
-		t.Fatalf("adapter verify: %v", err)
+	if err == nil {
+		t.Fatalf("adapter verify succeeded: %s", output)
 	}
 	var result struct {
 		Ready  bool `json:"ready"`
@@ -103,7 +137,7 @@ func TestAdapterVerifyCopilotInstalledSettingsAreNotEnough(t *testing.T) {
 	}
 	foundEvidenceStage := false
 	for _, stage := range result.Stages {
-		if stage.Name == "copilot_model_call" {
+		if stage.Name == "raw_evidence" {
 			foundEvidenceStage = true
 			if stage.Passed {
 				t.Fatalf("copilot evidence stage passed without local evidence: %#v", result)
@@ -148,8 +182,8 @@ func TestAdapterVerifyCopilotRejectsGenericIngestedUsage(t *testing.T) {
 	}
 
 	output, err := runQLog(t, home, "adapter", "verify", "copilot-vscode", "--project", "project", "--json")
-	if err != nil {
-		t.Fatalf("adapter verify: %v", err)
+	if err == nil {
+		t.Fatalf("adapter verify succeeded: %s", output)
 	}
 	var result struct {
 		Ready bool `json:"ready"`
@@ -179,10 +213,20 @@ func TestAdapterVerifyCopilotRejectsSpoofedOTLPHTTPImport(t *testing.T) {
 	}
 }
 
-func TestAdapterVerifyCopilotAcceptsOTLPHTTPUsage(t *testing.T) {
+func TestAdapterVerifyCopilotAcceptsSanctionedOTLPEvidence(t *testing.T) {
 	home := t.TempDir()
 	configHome := t.TempDir()
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	fakeCode := "code"
+	if runtime.GOOS == "windows" {
+		fakeCode += ".exe"
+	}
+	codeDir := t.TempDir()
+	codePath := filepath.Join(codeDir, fakeCode)
+	if err := os.WriteFile(codePath, nil, 0o700); err != nil {
+		t.Fatalf("create fake code executable: %v", err)
+	}
+	t.Setenv("PATH", codeDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	worktree := filepath.Join(t.TempDir(), "project")
 	if _, err := runQLog(t, home, "init"); err != nil {
 		t.Fatalf("init: %v", err)
@@ -197,7 +241,7 @@ func TestAdapterVerifyCopilotAcceptsOTLPHTTPUsage(t *testing.T) {
 	server := httptest.NewServer(newCollectorMux(home))
 	t.Cleanup(server.Close)
 	t.Setenv("QLOG_COLLECTOR_URL", server.URL+"/v1/traces")
-	request, err := http.NewRequest(http.MethodPost, server.URL+"/v1/traces", strings.NewReader(`{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"copilot-chat"}}]},"scopeSpans":[{"spans":[{"traceId":"trace-copilot","attributes":[{"key":"qlog.project","value":{"stringValue":"project"}},{"key":"gen_ai.provider.name","value":{"stringValue":"github"}},{"key":"gen_ai.agent.name","value":{"stringValue":"GitHub Copilot Chat"}},{"key":"gen_ai.request.model","value":{"stringValue":"gpt-5"}},{"key":"gen_ai.usage.input_tokens","value":{"intValue":"1"}},{"key":"gen_ai.usage.output_tokens","value":{"intValue":"2"}}]}]}]}]}`))
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/v1/traces", strings.NewReader(`{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"copilot-chat"}}]},"scopeSpans":[{"spans":[{"traceId":"trace-copilot","spanId":"span-copilot","attributes":[{"key":"qlog.project","value":{"stringValue":"project"}},{"key":"gen_ai.provider.name","value":{"stringValue":"github"}},{"key":"gen_ai.agent.name","value":{"stringValue":"GitHub Copilot Chat"}},{"key":"gen_ai.request.model","value":{"stringValue":"gpt-5"}},{"key":"gen_ai.usage.input_tokens","value":{"intValue":"1"}},{"key":"gen_ai.usage.output_tokens","value":{"intValue":"2"}}]}]}]}]}`))
 	if err != nil {
 		t.Fatalf("create request: %v", err)
 	}
@@ -213,7 +257,7 @@ func TestAdapterVerifyCopilotAcceptsOTLPHTTPUsage(t *testing.T) {
 
 	output, err := runQLog(t, home, "adapter", "verify", "copilot-vscode", "--project", "project", "--json")
 	if err != nil {
-		t.Fatalf("adapter verify: %v", err)
+		t.Fatalf("adapter verify failed: %s: %v", output, err)
 	}
 	var result struct {
 		Ready bool `json:"ready"`
@@ -222,8 +266,102 @@ func TestAdapterVerifyCopilotAcceptsOTLPHTTPUsage(t *testing.T) {
 		t.Fatalf("decode verify: %v", err)
 	}
 	if !result.Ready {
-		t.Fatalf("OTLP Copilot usage did not verify: %s", output)
+		t.Fatalf("sanctioned Copilot OTLP usage did not verify: %s", output)
 	}
+}
+
+func TestAdapterVerifyCodexRejectsGenericOTLPEvidence(t *testing.T) {
+	home, project := setupCodexVerification(t)
+	service, err := app.Open(context.Background(), home)
+	if err != nil {
+		t.Fatalf("open service: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	now := time.Now().UTC()
+	if err := service.Store.EnsureSession(context.Background(), "generic-codex", "codex", now); err != nil {
+		t.Fatalf("ensure session: %v", err)
+	}
+	raw, err := service.Store.AppendRawEvent(context.Background(), sqlite.RawEventInput{
+		Source: "otlp-http", SessionID: "generic-codex", EventType: "model.call", OccurredAt: now,
+		Payload: []byte(`{"agent_name":"codex","capture_quality":"otel_reported"}`),
+	})
+	if err != nil || !raw.Accepted {
+		t.Fatalf("append raw event = %#v, %v", raw, err)
+	}
+	if _, err := service.Store.RecordModelCall(context.Background(), sqlite.ModelCallInput{
+		RawEventID: raw.ID, ProjectID: project.ID, SessionID: "generic-codex", AgentName: "codex", Provider: "openai", ModelID: "gpt-5", InputTokens: 1, CaptureQuality: "otel_reported", OccurredAt: now,
+	}); err != nil {
+		t.Fatalf("record model call: %v", err)
+	}
+	if err := service.Close(); err != nil {
+		t.Fatalf("close service: %v", err)
+	}
+
+	output, err := runQLog(t, home, "adapter", "verify", "codex", "--project", "project", "--json")
+	if err == nil || !strings.Contains(output, `"ready":false`) {
+		t.Fatalf("generic Codex OTLP evidence verified: output=%s err=%v", output, err)
+	}
+}
+
+func TestAdapterVerifyCodexAcceptsNormalizedResponseCompletedEvidence(t *testing.T) {
+	home, _ := setupCodexVerification(t)
+	server := httptest.NewServer(newCollectorMux(home))
+	t.Cleanup(server.Close)
+	t.Setenv("QLOG_COLLECTOR_URL", server.URL+"/v1/logs")
+
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/v1/logs", strings.NewReader(`{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"codex"}}]},"scopeLogs":[{"logRecords":[{"traceId":"codex-trace","spanId":"codex-span","attributes":[{"key":"event.name","value":{"stringValue":"codex.sse_event"}},{"key":"event.kind","value":{"stringValue":"response.completed"}},{"key":"qlog.project","value":{"stringValue":"project"}},{"key":"model","value":{"stringValue":"gpt-5"}},{"key":"input_tokens","value":{"intValue":"1"}},{"key":"output_tokens","value":{"intValue":"2"}}]}]}]}]}`))
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("collector request: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("collector response = %d", response.StatusCode)
+	}
+
+	output, err := runQLog(t, home, "adapter", "verify", "codex", "--project", "project", "--json")
+	if err != nil || !strings.Contains(output, `"ready":true`) {
+		t.Fatalf("normalized Codex response.completed evidence did not verify: output=%s err=%v", output, err)
+	}
+}
+
+func setupCodexVerification(t *testing.T) (string, domain.Project) {
+	t.Helper()
+	home := t.TempDir()
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	codeDir := t.TempDir()
+	codex := "codex"
+	if runtime.GOOS == "windows" {
+		codex += ".exe"
+	}
+	if err := os.WriteFile(filepath.Join(codeDir, codex), nil, 0o700); err != nil {
+		t.Fatalf("create fake codex executable: %v", err)
+	}
+	t.Setenv("PATH", codeDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, err := runQLog(t, home, "adapter", "install", "codex"); err != nil {
+		t.Fatalf("install Codex: %v", err)
+	}
+	service, err := app.Open(context.Background(), home)
+	if err != nil {
+		t.Fatalf("open service: %v", err)
+	}
+	project, _, err := service.Store.RegisterProject(context.Background(), "Project", "project", t.TempDir())
+	if err != nil {
+		_ = service.Close()
+		t.Fatalf("register project: %v", err)
+	}
+	if err := service.Close(); err != nil {
+		t.Fatalf("close service: %v", err)
+	}
+	return home, project
 }
 
 func TestCollectorRejectsPublicBindingWithoutExplicitOptIn(t *testing.T) {
@@ -233,6 +371,73 @@ func TestCollectorRejectsPublicBindingWithoutExplicitOptIn(t *testing.T) {
 	if err := validateListenAddress("127.0.0.1:4318", false); err != nil {
 		t.Fatalf("loopback binding rejected: %v", err)
 	}
+}
+
+func TestVerifyCollectorReachabilityUsesConfiguredURLOrigin(t *testing.T) {
+	for _, configuredPath := range []string{"/v1/events", "/v1/logs"} {
+		t.Run(configuredPath, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if request.Method != http.MethodGet || request.URL.Path != "/healthz" {
+					t.Fatalf("probe = %s %s", request.Method, request.URL.Path)
+				}
+				writer.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(server.Close)
+			t.Setenv("QLOG_COLLECTOR_URL", server.URL+configuredPath)
+
+			reachable, message := verifyCollectorReachability(context.Background())
+			if !reachable {
+				t.Fatalf("reachable = false: %s", message)
+			}
+		})
+	}
+}
+
+func TestCollectorLifecycleCommandResolvesDefaultHome(t *testing.T) {
+	home := ""
+	listen := defaultCollectorListen
+	var receivedHome string
+	command := collectorLifecycleCommand("test", "test", func(_ collectorManager, resolvedHome, _ string) (CollectorStatus, error) {
+		receivedHome = resolvedHome
+		return CollectorStatus{}, nil
+	}, &home, &listen)
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if receivedHome == "" || !filepath.IsAbs(receivedHome) {
+		t.Fatalf("resolved lifecycle home = %q", receivedHome)
+	}
+}
+
+func TestAdapterStatusAddsRuntimeEvidence(t *testing.T) {
+	base := adapters.SetupStatus{AdapterID: "copilot-vscode", CaptureQuality: adapters.CaptureOTELReported}
+	for _, test := range []struct {
+		name      string
+		access    fakeAdapterStatusAccess
+		reachable bool
+		evidence  bool
+	}{
+		{name: "reachable collector with recent evidence", access: fakeAdapterStatusAccess{reachable: true, evidence: true}, reachable: true, evidence: true},
+		{name: "unreachable collector without evidence", access: fakeAdapterStatusAccess{reachable: false, evidence: false}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			status := enrichAdapterStatus(context.Background(), t.TempDir(), base, test.access)
+			if status.CollectorReachable != test.reachable || status.RecentEvidence != test.evidence {
+				t.Fatalf("status = %#v", status)
+			}
+		})
+	}
+}
+
+type fakeAdapterStatusAccess struct {
+	reachable bool
+	evidence  bool
+}
+
+func (f fakeAdapterStatusAccess) CollectorReachable(context.Context) bool { return f.reachable }
+
+func (f fakeAdapterStatusAccess) HasRecentEvidence(context.Context, string, adapters.SetupStatus) (bool, error) {
+	return f.evidence, nil
 }
 
 func TestCollectorStatusShowsLocalEndpoints(t *testing.T) {
@@ -257,8 +462,15 @@ func TestCollectorStatusShowsLocalEndpoints(t *testing.T) {
 		Running   bool     `json:"running"`
 		Health    string   `json:"health"`
 	}
-	if err := json.Unmarshal([]byte(output), &status); err != nil || status.Listen != "127.0.0.1:1" || len(status.Endpoints) != 3 || !containsString(status.Endpoints, "/healthz") || status.Home == "" || status.Database == "" || status.Reachable || status.Running || status.Health == "" {
+	if err := json.Unmarshal([]byte(output), &status); err != nil || status.Listen != "127.0.0.1:1" || len(status.Endpoints) != 4 || !containsString(status.Endpoints, "/v1/logs") || !containsString(status.Endpoints, "/healthz") || status.Home == "" || status.Database == "" || status.Reachable || status.Running || status.Health == "" {
 		t.Fatalf("collector status output = %q, %#v, %v", output, status, err)
+	}
+}
+
+func TestCodexEvidenceContractUsesDocumentedOTLPLogs(t *testing.T) {
+	contract := evidenceContract("codex")
+	if contract.Source != "otlp-http" || contract.Quality != adapters.CaptureOTELReported || !contract.RequireCodexResponseCompleted || !contract.SourceEvidence {
+		t.Fatalf("Codex evidence contract = %#v", contract)
 	}
 }
 
@@ -446,6 +658,9 @@ func TestSetupDefaultWithoutAllSkipsUnavailableAdapters(t *testing.T) {
 	configHome := t.TempDir()
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
 	t.Setenv("PATH", "")
+	previousManager := newSetupCollectorManager
+	newSetupCollectorManager = func() collectorManager { return &fakeCollectorManager{} }
+	t.Cleanup(func() { newSetupCollectorManager = previousManager })
 	run := func(args ...string) (string, error) {
 		command := New(Version{})
 		output := new(bytes.Buffer)
@@ -458,12 +673,17 @@ func TestSetupDefaultWithoutAllSkipsUnavailableAdapters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("setup default: %v", err)
 	}
-	var plans []adapters.SetupPlan
-	if err := json.Unmarshal([]byte(output), &plans); err != nil {
+	var result BootstrapResult
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
 		t.Fatalf("decode setup output = %q: %v", output, err)
 	}
-	if len(plans) != 0 {
-		t.Fatalf("plans = %#v", plans)
+	if !result.Consent || len(result.Adapters) != 4 {
+		t.Fatalf("bootstrap result = %#v", result)
+	}
+	for _, plan := range result.Adapters {
+		if len(plan.Changes) != 1 || plan.Changes[0].Action != "skipped" {
+			t.Fatalf("adapter plan = %#v", plan)
+		}
 	}
 	if _, err := os.Stat(filepath.Join(configHome, ".config")); !os.IsNotExist(err) {
 		t.Fatalf("default setup created config for unavailable adapters: %v", err)

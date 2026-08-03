@@ -9,6 +9,7 @@ CHANNEL=stable
 INSTALL_DIR=${QLOG_INSTALL_DIR:-$HOME/.local/bin}
 MODIFY_PATH=1
 DRY_RUN=0
+BOOTSTRAP=""
 
 usage() {
   cat <<'EOF'
@@ -20,6 +21,8 @@ Options:
                             non-prerelease release until a separate latest channel exists.
   --install-dir DIRECTORY Install qlog in DIRECTORY (default: ~/.local/bin).
   --no-modify-path        Do not edit ~/.profile or QLOG_PROFILE.
+  --bootstrap             Consent to bootstrap qlog collector and detected supported adapters.
+  --no-bootstrap          Do not bootstrap qlog collector or adapter configuration.
   --dry-run               Print planned changes without downloading or writing files.
   --help                  Show this help.
 
@@ -41,6 +44,8 @@ while [ "$#" -gt 0 ]; do
     --install-dir) shift; [ "$#" -gt 0 ] || fail "--install-dir requires a value"; INSTALL_DIR=$1 ;;
     --install-dir=*) INSTALL_DIR=${1#*=} ;;
     --no-modify-path) MODIFY_PATH=0 ;;
+    --bootstrap) BOOTSTRAP=1 ;;
+    --no-bootstrap) BOOTSTRAP=0 ;;
     --dry-run) DRY_RUN=1 ;;
     --help|-h) usage; exit 0 ;;
     *) fail "unknown option: $1" ;;
@@ -51,6 +56,14 @@ done
 case "$CHANNEL" in stable|latest) ;; *) fail "--channel must be stable or latest" ;; esac
 case "$RELEASE_BASE" in https://*) ;; *) fail "QLOG_RELEASE_BASE must use HTTPS" ;; esac
 case "$INSTALL_DIR" in *'"'*) fail "--install-dir cannot contain a double quote" ;; esac
+case "$INSTALL_DIR" in /*) ;; *) INSTALL_DIR="$(pwd -P)/$INSTALL_DIR" ;; esac
+
+if [ -z "$BOOTSTRAP" ] && [ "$DRY_RUN" -eq 0 ] && [ -t 0 ]; then
+  printf '%s' 'Consent to bootstrap qlog collector and detected supported adapters for this user? [y/N] '
+  read -r consent || consent=""
+  case "$consent" in y|Y|yes|YES|Yes) BOOTSTRAP=1 ;; *) BOOTSTRAP=0 ;; esac
+fi
+BOOTSTRAP=${BOOTSTRAP:-0}
 
 download() {
   url=$1
@@ -152,6 +165,14 @@ cp "$binary" "$staged"
 chmod 755 "$staged"
 mv -f "$staged" "$INSTALL_DIR/qlog"
 "$INSTALL_DIR/qlog" --version
+
+if [ "$BOOTSTRAP" -eq 1 ]; then
+  printf '%s\n' 'bootstrap consent accepted; starting qlog setup'
+  # Run qlog setup --yes only after installed binary verification.
+  "$INSTALL_DIR/qlog" setup --yes --executable "$INSTALL_DIR/qlog"
+else
+  printf '%s\n' 'bootstrap skipped; run qlog setup later to configure capture manually'
+fi
 
 if [ "$MODIFY_PATH" -eq 1 ]; then
   case ":${PATH:-}:" in

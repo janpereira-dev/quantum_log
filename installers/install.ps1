@@ -13,6 +13,7 @@ $channel = 'stable'
 $installDir = if ($env:QLOG_INSTALL_DIR) { $env:QLOG_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\QUANTUM_LOG\bin' }
 $modifyPath = $true
 $dryRun = $false
+$bootstrap = $null
 
 function Show-Usage {
     @'
@@ -23,7 +24,9 @@ Options:
   --channel CHANNEL       stable (default) or latest. Both resolve GitHub's latest
                             non-prerelease release until a separate latest channel exists.
   --install-dir DIRECTORY Install qlog in DIRECTORY.
-  --no-modify-path        Do not add the install directory to the user PATH.
+    --no-modify-path        Do not add the install directory to the user PATH.
+    --bootstrap             Consent to bootstrap qlog collector and detected supported adapters.
+    --no-bootstrap          Do not bootstrap qlog collector or adapter configuration.
   --dry-run               Print planned changes without downloading or writing files.
   --help                  Show this help.
 
@@ -62,6 +65,8 @@ for ($index = 0; $index -lt $Arguments.Count; $index++) {
         }
         '^--install-dir=(.+)$' { $installDir = $Matches[1]; continue }
         '^--no-modify-path$' { $modifyPath = $false; continue }
+        '^--bootstrap$' { $bootstrap = $true; continue }
+        '^--no-bootstrap$' { $bootstrap = $false; continue }
         '^--dry-run$' { $dryRun = $true; continue }
         '^--help$|^-h$' { Show-Usage; exit 0 }
         default { Fail "unknown option: $argument" }
@@ -71,6 +76,13 @@ for ($index = 0; $index -lt $Arguments.Count; $index++) {
 if ($channel -notin @('stable', 'latest')) { Fail '--channel must be stable or latest' }
 if (-not $releaseBase.StartsWith('https://', [StringComparison]::OrdinalIgnoreCase)) { Fail 'QLOG_RELEASE_BASE must use HTTPS' }
 if ([string]::IsNullOrWhiteSpace($installDir)) { Fail '--install-dir cannot be empty' }
+
+if ($bootstrap -eq $null -and -not $dryRun -and -not [Console]::IsInputRedirected) {
+    $consent = Read-Host 'Consent to bootstrap qlog collector and detected supported adapters for this user? [y/N]'
+    $bootstrap = $consent -match '^(?i:y|yes)$'
+}
+
+if ($bootstrap -eq $null) { $bootstrap = $false }
 
 $os = 'windows'
 switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture) {
@@ -143,6 +155,15 @@ try {
     Move-Item -LiteralPath $staged -Destination $target -Force
     & $target '--version'
     if ($LASTEXITCODE -ne 0) { Fail "installed qlog failed its version check (exit $LASTEXITCODE)" }
+
+    if ($bootstrap) {
+        Write-Output 'bootstrap consent accepted; starting qlog setup'
+        # Run qlog setup --yes only after installed binary verification.
+        & $target setup --yes
+        if ($LASTEXITCODE -ne 0) { Fail "qlog setup --yes failed (exit $LASTEXITCODE)" }
+    } else {
+        Write-Output 'bootstrap skipped; run qlog setup later to configure capture manually'
+    }
 
     if ($modifyPath) {
         $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')

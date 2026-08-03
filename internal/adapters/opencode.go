@@ -18,7 +18,7 @@ func newOpenCodeAdapter() openCodeAdapter {
 }
 
 func (a openCodeAdapter) Descriptor() Descriptor {
-	return Descriptor{ID: a.id, Name: a.name, Version: "plugin", Capabilities: Capabilities{ModelIdentity: true, InputTokens: true, OutputTokens: true, ToolCalls: true, SessionLifecycle: true, ProjectIdentity: true, WorkingDirectory: true, VCSContext: true, WorkspaceContext: true, StructuredEvents: true}}
+	return Descriptor{ID: a.id, Name: a.name, Version: "plugin", Stable: true, Capabilities: Capabilities{ToolCalls: true, SessionLifecycle: true, ProjectIdentity: true, WorkingDirectory: true, VCSContext: true, WorkspaceContext: true, StructuredEvents: true}}
 }
 
 func (a openCodeAdapter) Install(_ context.Context, options InstallOptions) (InstallResult, error) {
@@ -37,7 +37,7 @@ func (a openCodeAdapter) PlanInstall(_ context.Context, options SetupOptions) (S
 	if options.DryRun {
 		change.Description = "dry run: " + change.Description
 	}
-	return SetupPlan{AdapterID: a.id, State: SetupAvailable, CaptureQuality: CaptureAgentReported, Changes: []SetupChange{change}, Notes: []string{"installs a global OpenCode TypeScript plugin that posts sanitized session/message/tool events to qlog localhost collector"}}, nil
+	return SetupPlan{AdapterID: a.id, State: SetupAvailable, CaptureQuality: CaptureLifecycleOnly, Changes: []SetupChange{change}, Notes: []string{"installs a global OpenCode TypeScript plugin that posts sanitized session/message/tool lifecycle events to qlog localhost collector"}}, nil
 }
 
 func (a openCodeAdapter) Status(ctx context.Context) (SetupStatus, error) {
@@ -53,7 +53,7 @@ func (a openCodeAdapter) Status(ctx context.Context) (SetupStatus, error) {
 	if installed {
 		state = SetupInstalled
 	}
-	return SetupStatus{AdapterID: a.id, Available: detection.Available, Installed: installed, State: state, CaptureQuality: CaptureAgentReported, Evidence: detection.Evidence, Notes: []string{"OpenCode plugin captures lifecycle/tool events; exact token fields are forwarded only when present in official event payloads"}}, nil
+	return SetupStatus{AdapterID: a.id, Available: detection.Available, Installed: installed, State: state, InstallationState: state, CaptureQuality: CaptureLifecycleOnly, Evidence: detection.Evidence, Notes: []string{"OpenCode plugin captures lifecycle/tool events; token usage is unavailable until a documented event schema is recorded"}}, nil
 }
 
 func (a openCodeAdapter) Test(ctx context.Context) (TestResult, error) {
@@ -61,7 +61,7 @@ func (a openCodeAdapter) Test(ctx context.Context) (TestResult, error) {
 	if err != nil {
 		return TestResult{}, err
 	}
-	return TestResult{AdapterID: a.id, Passed: status.Installed, CaptureQuality: CaptureAgentReported, Message: status.Evidence, TestedAt: time.Now().UTC()}, nil
+	return TestResult{AdapterID: a.id, Passed: status.Installed, CaptureQuality: CaptureLifecycleOnly, Message: status.Evidence, TestedAt: time.Now().UTC()}, nil
 }
 
 func (a openCodeAdapter) pluginPath() string {
@@ -143,14 +143,7 @@ function base(type, ctx, event) {
     },
     payload: {
       agent_name: "opencode",
-      provider: body.provider || body.model?.provider || "",
-      model: body.model?.id || body.model || "",
-      input_tokens: body.usage?.input_tokens || body.usage?.inputTokens || 0,
-      output_tokens: body.usage?.output_tokens || body.usage?.outputTokens || 0,
-      reasoning_tokens: body.usage?.reasoning_tokens || body.usage?.reasoningTokens || 0,
-      cached_input_tokens: body.usage?.cached_input_tokens || body.usage?.cachedInputTokens || 0,
-      cache_write_tokens: body.usage?.cache_write_tokens || body.usage?.cacheWriteTokens || 0,
-      capture_quality: body.usage ? "agent_reported" : "lifecycle_only",
+      capture_quality: "lifecycle_only",
     },
   }
 }

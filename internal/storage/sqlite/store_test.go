@@ -385,6 +385,353 @@ func TestLedgerDetectsStoredEventTampering(t *testing.T) {
 	}
 }
 
+func TestAppendRawEventSuppressesReplayWithoutChangingLedger(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	input := RawEventInput{
+		Source:     "opencode-plugin",
+		SessionID:  "session-1",
+		EventType:  "model.call",
+		OccurredAt: time.Date(2026, time.July, 30, 12, 0, 0, 0, time.UTC),
+		Payload:    []byte(`{"provider":"example","model":"model","input_tokens":2}`),
+	}
+	first, err := store.AppendRawEvent(ctx, input)
+	if err != nil || !first.Accepted {
+		t.Fatalf("first append = %#v, %v", first, err)
+	}
+	second, err := store.AppendRawEvent(ctx, input)
+	if err != nil || second.Accepted || second.ID != first.ID || second.SuppressionReason != "duplicate_ingestion_identity" {
+		t.Fatalf("second append = %#v, %v", second, err)
+	}
+	if err := store.VerifyLedger(ctx, input.SessionID); err != nil {
+		t.Fatalf("VerifyLedger() error = %v", err)
+	}
+	assertTableCount(t, store, "raw_events", 1)
+	assertTableCount(t, store, "raw_event_dedup", 1)
+}
+
+func TestOpenBackfillsReconstructableIngestionIdentitiesForReplay(t *testing.T) {
+	ctx := context.Background()
+	database := filepath.Join(t.TempDir(), "qlog.db")
+	store, err := Open(ctx, database)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	input := RawEventInput{Source: "fixture", SessionID: "session-1", EventType: "model.call", OccurredAt: time.Date(2026, time.July, 30, 12, 0, 0, 0, time.UTC), Payload: []byte(`{"provider":"example","model":"model"}`)}
+	if _, err := store.AppendRawEvent(ctx, input); err != nil {
+		t.Fatalf("AppendRawEvent() error = %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `DELETE FROM raw_event_dedup`); err != nil {
+		t.Fatalf("simulate pre-upgrade dedup state: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	store, err = Open(ctx, database)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	result, err := store.AppendRawEvent(ctx, input)
+	if err != nil || result.Accepted || result.SuppressionReason != "duplicate_ingestion_identity" {
+		t.Fatalf("replayed append = %#v, %v", result, err)
+	}
+	assertTableCount(t, store, "raw_events", 1)
+}
+
+func TestDistinctEventsWithSharedSessionAndTimeAreAccepted(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	input := RawEventInput{
+		Source:     "opencode-plugin",
+		SessionID:  "session-1",
+		EventType:  "model.call",
+		OccurredAt: time.Date(2026, time.July, 30, 12, 0, 0, 0, time.UTC),
+		Payload:    []byte(`{"provider":"example","model":"model","turn_id":"first"}`),
+	}
+	if result, err := store.AppendRawEvent(ctx, input); err != nil || !result.Accepted {
+		t.Fatalf("first append = %#v, %v", result, err)
+	}
+	input.Payload = []byte(`{"provider":"example","model":"model","turn_id":"second"}`)
+	if result, err := store.AppendRawEvent(ctx, input); err != nil || !result.Accepted {
+		t.Fatalf("second append = %#v, %v", result, err)
+	}
+	assertTableCount(t, store, "raw_events", 2)
+}
+
+func TestRecordModelCallLinksToAcceptedRawEvent(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	raw, err := store.AppendRawEvent(ctx, RawEventInput{Source: "fixture", SessionID: "session-1", EventType: "model.call", Payload: []byte(`{"provider":"example","model":"model"}`), OccurredAt: time.Now().UTC()})
+	if err != nil || !raw.Accepted {
+		t.Fatalf("AppendRawEvent() = %#v, %v", raw, err)
+	}
+	if err := store.EnsureSession(ctx, "session-1", "fixture", time.Now().UTC()); err != nil {
+		t.Fatalf("EnsureSession() error = %v", err)
+	}
+	if _, err := store.RecordModelCall(ctx, ModelCallInput{RawEventID: raw.ID, SessionID: "session-1", Provider: "example", ModelID: "model"}); err != nil {
+		t.Fatalf("RecordModelCall() error = %v", err)
+	}
+	var linkedRawEventID string
+	if err := store.db.QueryRowContext(ctx, `SELECT raw_event_id FROM model_calls`).Scan(&linkedRawEventID); err != nil {
+		t.Fatalf("query model call linkage: %v", err)
+	}
+	if linkedRawEventID != raw.ID {
+		t.Fatalf("raw event linkage = %q, want %q", linkedRawEventID, raw.ID)
+	}
+}
+
+func TestAdapterEvidenceRequiresLinkedNormalizedModelCall(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	now := time.Now().UTC()
+	matchingRaw, err := store.AppendRawEvent(ctx, RawEventInput{
+		Source:     "opencode-plugin",
+		SessionID:  "session-1",
+		EventType:  "model.call",
+		OccurredAt: now,
+		Payload:    []byte(`{"agent_name":"opencode","capture_quality":"agent_reported"}`),
+	})
+	if err != nil || !matchingRaw.Accepted {
+		t.Fatalf("AppendRawEvent(matching) = %#v, %v", matchingRaw, err)
+	}
+	otherRaw, err := store.AppendRawEvent(ctx, RawEventInput{
+		Source:     "fixture",
+		SessionID:  "session-1",
+		EventType:  "model.call",
+		OccurredAt: now,
+		Payload:    []byte(`{"agent_name":"fixture","capture_quality":"agent_reported"}`),
+	})
+	if err != nil || !otherRaw.Accepted {
+		t.Fatalf("AppendRawEvent(other) = %#v, %v", otherRaw, err)
+	}
+	if _, err := store.RecordModelCall(ctx, ModelCallInput{
+		RawEventID:     otherRaw.ID,
+		Provider:       "example",
+		ModelID:        "model",
+		InputTokens:    1,
+		CaptureQuality: "agent_reported",
+		OccurredAt:     now,
+	}); err != nil {
+		t.Fatalf("RecordModelCall() error = %v", err)
+	}
+
+	found, err := store.HasRecentAdapterEvidence(ctx, AdapterEvidenceQuery{
+		AdapterID:       "opencode",
+		Source:          "opencode-plugin",
+		From:            now.Add(-time.Minute),
+		To:              now.Add(time.Minute),
+		RequiredQuality: "agent_reported",
+	})
+	if err != nil {
+		t.Fatalf("HasRecentAdapterEvidence() error = %v", err)
+	}
+	if found {
+		t.Fatal("matching raw event without linked model call satisfied adapter evidence")
+	}
+}
+
+func TestAdapterEvidenceUsesModelCallAllocationForReportedTokens(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	project, _, err := store.RegisterProject(ctx, "Project", "project", t.TempDir())
+	if err != nil {
+		t.Fatalf("RegisterProject() error = %v", err)
+	}
+	now := time.Now().UTC()
+	raw, err := store.AppendRawEvent(ctx, RawEventInput{
+		Source:     "otlp-http",
+		SessionID:  "session-1",
+		EventType:  "model.call",
+		OccurredAt: now,
+		Payload:    []byte(`{"agent_name":"GitHub Copilot Chat","capture_quality":"otel_reported"}`),
+	})
+	if err != nil || !raw.Accepted {
+		t.Fatalf("AppendRawEvent() = %#v, %v", raw, err)
+	}
+	if err := store.EnsureSession(ctx, "session-1", "GitHub Copilot Chat", now); err != nil {
+		t.Fatalf("EnsureSession() error = %v", err)
+	}
+	if _, err := store.RecordModelCall(ctx, ModelCallInput{
+		RawEventID:     raw.ID,
+		ProjectID:      project.ID,
+		SessionID:      "session-1",
+		AgentName:      "GitHub Copilot Chat",
+		Provider:       "github",
+		ModelID:        "gpt-5",
+		InputTokens:    1,
+		CaptureQuality: "otel_reported",
+		OccurredAt:     now,
+	}); err != nil {
+		t.Fatalf("RecordModelCall() error = %v", err)
+	}
+
+	found, err := store.HasRecentAdapterEvidence(ctx, AdapterEvidenceQuery{
+		AdapterID:         "copilot-vscode",
+		AllowedAgentNames: []string{"GitHub Copilot Chat"},
+		Source:            "otlp-http",
+		From:              now.Add(-time.Minute),
+		To:                now.Add(time.Minute),
+		ProjectSlug:       project.Slug,
+		RequiredQuality:   "otel_reported",
+	})
+	if err != nil {
+		t.Fatalf("HasRecentAdapterEvidence() error = %v", err)
+	}
+	if !found {
+		t.Fatal("reported-token evidence allocated to project was not found")
+	}
+}
+
+func TestAdapterEvidenceRequiresCodexResponseCompleted(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	project, _, err := store.RegisterProject(ctx, "Project", "project", t.TempDir())
+	if err != nil {
+		t.Fatalf("RegisterProject() error = %v", err)
+	}
+	now := time.Now().UTC()
+	for _, test := range []struct {
+		name    string
+		payload string
+		want    bool
+	}{
+		{name: "missing completion discriminator", payload: `{"agent_name":"codex","capture_quality":"otel_reported"}`, want: false},
+		{name: "persisted completion discriminator", payload: `{"agent_name":"codex","capture_quality":"otel_reported","codex_response_completed":true}`, want: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := store.EnsureSession(ctx, test.name, "codex", now); err != nil {
+				t.Fatalf("EnsureSession() error = %v", err)
+			}
+			raw, err := store.AppendRawEvent(ctx, RawEventInput{
+				Source:     "otlp-http",
+				SessionID:  test.name,
+				EventType:  "model.call",
+				OccurredAt: now,
+				Payload:    []byte(test.payload),
+			})
+			if err != nil || !raw.Accepted {
+				t.Fatalf("AppendRawEvent() = %#v, %v", raw, err)
+			}
+			if _, err := store.RecordModelCall(ctx, ModelCallInput{
+				RawEventID:     raw.ID,
+				ProjectID:      project.ID,
+				SessionID:      test.name,
+				AgentName:      "codex",
+				Provider:       "openai",
+				ModelID:        "gpt-5",
+				InputTokens:    1,
+				CaptureQuality: "otel_reported",
+				OccurredAt:     now,
+			}); err != nil {
+				t.Fatalf("RecordModelCall() error = %v", err)
+			}
+
+			found, err := store.HasRecentAdapterEvidence(ctx, AdapterEvidenceQuery{
+				AdapterID:                     "codex",
+				Source:                        "otlp-http",
+				From:                          now.Add(-time.Minute),
+				To:                            now.Add(time.Minute),
+				ProjectSlug:                   project.Slug,
+				RequiredQuality:               "otel_reported",
+				RequireCodexResponseCompleted: true,
+			})
+			if err != nil {
+				t.Fatalf("HasRecentAdapterEvidence() error = %v", err)
+			}
+			if found != test.want {
+				t.Fatalf("HasRecentAdapterEvidence() = %t, want %t", found, test.want)
+			}
+		})
+	}
+}
+
+func TestAdapterEvidenceAcceptsClaudeLifecycleRawEventWithoutModelCall(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	now := time.Now().UTC()
+	result, err := store.AppendRawEvent(ctx, RawEventInput{
+		Source:     "claude-code-hook",
+		SessionID:  "session-1",
+		EventType:  "lifecycle.stop",
+		OccurredAt: now,
+		Payload:    []byte(`{"agent_name":"claude-code","capture_quality":"lifecycle_only"}`),
+	})
+	if err != nil || !result.Accepted {
+		t.Fatalf("AppendRawEvent() = %#v, %v", result, err)
+	}
+
+	found, err := store.HasRecentAdapterEvidence(ctx, AdapterEvidenceQuery{
+		AdapterID:       "claude-code",
+		Source:          "claude-code-hook",
+		From:            now.Add(-time.Minute),
+		To:              now.Add(time.Minute),
+		RequiredQuality: "lifecycle_only",
+	})
+	if err != nil {
+		t.Fatalf("HasRecentAdapterEvidence() error = %v", err)
+	}
+	if !found {
+		t.Fatal("Claude lifecycle raw event was not accepted as adapter evidence")
+	}
+}
+
+func TestCanonicalIngestionIdentityDoesNotPersistUpstreamValue(t *testing.T) {
+	identity, err := CanonicalIngestionIdentity(RawEventInput{Source: "fixture", IngestionIdentity: "event-secret-value"}, []byte(`{}`))
+	if err != nil {
+		t.Fatalf("CanonicalIngestionIdentity() error = %v", err)
+	}
+	if identity == "" || strings.Contains(identity, "event-secret-value") {
+		t.Fatalf("ingestion identity = %q", identity)
+	}
+}
+
+func assertTableCount(t *testing.T, store *Store, table string, want int) {
+	t.Helper()
+	var got int
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&got); err != nil {
+		t.Fatalf("count %s: %v", table, err)
+	}
+	if got != want {
+		t.Fatalf("%s count = %d, want %d", table, got, want)
+	}
+}
+
 func TestValidateAllocationRejectsInvalidTotal(t *testing.T) {
 	t.Parallel()
 

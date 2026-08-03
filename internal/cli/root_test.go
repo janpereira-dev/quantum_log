@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/janpereira-dev/quantum_log/internal/app"
+	"github.com/janpereira-dev/quantum_log/internal/storage/sqlite"
 	"github.com/spf13/cobra"
 )
 
@@ -690,6 +691,43 @@ func TestUsageProjectReportsAgentAndCaptureQuality(t *testing.T) {
 	}
 }
 
+func TestUsageJSONLabelsEstimatedCostsAndCaptureQuality(t *testing.T) {
+	home := t.TempDir()
+	worktree := filepath.Join(t.TempDir(), "project")
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, err := runQLog(t, home, "project", "register", "--path", worktree, "--name", "Project", "--slug", "project"); err != nil {
+		t.Fatalf("register project: %v", err)
+	}
+	service, err := app.Open(t.Context(), home)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	project, _, found, err := service.Store.ProjectBySlug(t.Context(), "project")
+	if err != nil || !found {
+		_ = service.Close()
+		t.Fatalf("project lookup: found=%t err=%v", found, err)
+	}
+	_, err = service.Store.RecordModelCall(t.Context(), sqlite.ModelCallInput{ProjectID: project.ID, AgentName: "opencode", Provider: "anthropic", ModelID: "claude", InputTokens: 1, OutputTokens: 2, EstimatedCostUSDMicros: 3, CaptureQuality: "agent_reported"})
+	if closeErr := service.Close(); closeErr != nil {
+		t.Fatalf("close store: %v", closeErr)
+	}
+	if err != nil {
+		t.Fatalf("record model call: %v", err)
+	}
+
+	output, err := runQLog(t, home, "report", "usage", "--json")
+	if err != nil {
+		t.Fatalf("report usage --json: %v", err)
+	}
+	for _, want := range []string{`"capture_quality":"agent_reported"`, `"estimated_cost_usd_micros"`, `"measurements"`} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %s: %s", want, output)
+		}
+	}
+}
+
 func TestCollectorHandlerDoesNotHoldWriterLockBetweenRequests(t *testing.T) {
 	home := t.TempDir()
 	worktree := filepath.Join(t.TempDir(), "project")
@@ -701,7 +739,7 @@ func TestCollectorHandlerDoesNotHoldWriterLockBetweenRequests(t *testing.T) {
 	}
 
 	handler := newCollectorMux(home)
-	request := httptest.NewRequest(http.MethodPost, "/v1/traces", strings.NewReader(`{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"copilot-chat"}}]},"scopeSpans":[{"spans":[{"traceId":"trace-live","attributes":[{"key":"qlog.project","value":{"stringValue":"project"}},{"key":"gen_ai.provider.name","value":{"stringValue":"github"}},{"key":"gen_ai.request.model","value":{"stringValue":"gpt-5"}},{"key":"gen_ai.usage.input_tokens","value":{"intValue":"1"}},{"key":"gen_ai.usage.output_tokens","value":{"intValue":"2"}}]}]}]}]}`))
+	request := httptest.NewRequest(http.MethodPost, "/v1/traces", strings.NewReader(`{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"test-agent"}}]},"scopeSpans":[{"spans":[{"traceId":"trace-live","attributes":[{"key":"qlog.project","value":{"stringValue":"project"}},{"key":"gen_ai.provider.name","value":{"stringValue":"example"}},{"key":"gen_ai.request.model","value":{"stringValue":"model"}},{"key":"gen_ai.usage.input_tokens","value":{"intValue":"1"}},{"key":"gen_ai.usage.output_tokens","value":{"intValue":"2"}}]}]}]}]}`))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -709,8 +747,8 @@ func TestCollectorHandlerDoesNotHoldWriterLockBetweenRequests(t *testing.T) {
 		t.Fatalf("collector response = %d: %s", response.Code, response.Body.String())
 	}
 
-	if output, err := runQLog(t, home, "adapter", "verify", "copilot-vscode", "--json"); err != nil {
-		t.Fatalf("adapter verify should read after collector request: output=%q err=%v", output, err)
+	if output, err := runQLog(t, home, "adapter", "verify", "copilot-vscode", "--json"); err == nil || !strings.Contains(output, `"ready":false`) {
+		t.Fatalf("adapter verify should return failed evidence after collector request: output=%q err=%v", output, err)
 	}
 	if output, err := runQLog(t, home, "usage", "project", "project", "--json"); err != nil {
 		t.Fatalf("usage should read after collector request: output=%q err=%v", output, err)

@@ -60,7 +60,7 @@ func TestAppendRawEventStripsSensitiveKeysFromEvidence(t *testing.T) {
 	}
 	defer func() { _ = store.Close() }()
 	raw := `{"prompt":"hi","keep":"ok","authorization":"bearer xyz"}`
-	id, err := store.AppendRawEvent(context.Background(), RawEventInput{
+	result, err := store.AppendRawEvent(context.Background(), RawEventInput{
 		Source:       "test",
 		SessionID:    "s1",
 		EventType:    "tool",
@@ -71,11 +71,11 @@ func TestAppendRawEventStripsSensitiveKeysFromEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	if id == "" {
+	if result.ID == "" {
 		t.Fatal("empty id")
 	}
 	var stored string
-	if err := store.db.QueryRow(`SELECT project_resolution_evidence_json FROM raw_events WHERE id = ?`, id).Scan(&stored); err != nil {
+	if err := store.db.QueryRow(`SELECT project_resolution_evidence_json FROM raw_events WHERE id = ?`, result.ID).Scan(&stored); err != nil {
 		t.Fatalf("scan: %v", err)
 	}
 	if contains(stored, "hi") || contains(stored, "bearer") {

@@ -96,6 +96,40 @@ func TestAssignUsageRejectsModelCallsWithExistingAllocations(t *testing.T) {
 	}
 }
 
+func TestProjectSummarySeparatesMeasurementQuality(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	initialized, err := app.Initialize(ctx, home)
+	if err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+	if err := initialized.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	service, err := app.Open(ctx, home)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	project, _, err := service.Store.RegisterProject(ctx, "Project", "project", filepath.Join(t.TempDir(), "project"))
+	if err != nil {
+		t.Fatalf("RegisterProject() error = %v", err)
+	}
+	if _, err := service.Store.RecordModelCall(ctx, sqlite.ModelCallInput{ProjectID: project.ID, Provider: "provider", ModelID: "model", InputTokens: 3, CaptureQuality: "agent_reported"}); err != nil {
+		t.Fatalf("RecordModelCall() error = %v", err)
+	}
+	if err := service.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	report, err := callProjectSummary(&server{home: home}, ctx, projectInput{Project: project.Slug})
+	if err != nil {
+		t.Fatalf("get_project_summary error = %v", err)
+	}
+	if len(report.Measurements) != 1 || report.Measurements[0].Quality != "agent_reported" || report.Measurements[0].TotalTokens != 3 {
+		t.Fatalf("measurements = %#v", report.Measurements)
+	}
+}
+
 func callRegister(s *server, ctx context.Context, input registerProjectInput) (registerProjectOutput, error) {
 	_, output, err := s.registerProject(ctx, nil, input)
 	return output, err

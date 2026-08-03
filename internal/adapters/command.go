@@ -73,7 +73,7 @@ func (a commandAdapter) Status(ctx context.Context) (SetupStatus, error) {
 	if installed {
 		state = SetupInstalled
 	}
-	return SetupStatus{AdapterID: a.id, Available: detection.Available, Installed: installed, State: state, CaptureQuality: CaptureLifecycleOnly, Evidence: detection.Evidence, Notes: []string{"setup instructions installed; token capture depends on agent-reported data source"}}, nil
+	return SetupStatus{AdapterID: a.id, Available: detection.Available, Installed: installed, State: state, InstallationState: state, CaptureQuality: CaptureLifecycleOnly, Evidence: detection.Evidence, Notes: []string{"setup instructions installed; token capture depends on agent-reported data source"}}, nil
 }
 
 func (a commandAdapter) Test(ctx context.Context) (TestResult, error) {

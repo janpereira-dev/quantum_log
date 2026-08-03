@@ -49,7 +49,7 @@ func (h Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	writer.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(writer).Encode(map[string]int{"accepted": count})
+	_ = json.NewEncoder(writer).Encode(map[string]int{"accepted": count, "duplicates": 1 - count})
 }
 
 func Ingest(ctx context.Context, service *app.Service, event Event) (int, error) {
@@ -67,6 +67,10 @@ func Ingest(ctx context.Context, service *app.Service, event Event) (int, error)
 		event.OccurredAt = time.Now().UTC()
 	}
 	event = normalizeCodexRawResponse(event)
+	payload := sanitizePluginPayload(event.Payload)
+	if event.Source == "opencode-plugin" {
+		payload = lifecycleOnlyPayload(payload)
+	}
 	line := map[string]any{
 		"source":                        event.Source,
 		"session_id":                    event.SessionID,
@@ -77,7 +81,10 @@ func Ingest(ctx context.Context, service *app.Service, event Event) (int, error)
 		"project_resolution_method":     string(resolved.Resolution.Method),
 		"project_resolution_confidence": string(resolved.Resolution.Confidence),
 		"project_resolution_evidence":   map[string]string{"source": "central-project-resolver"},
-		"payload":                       sanitizePluginPayload(event.Payload),
+		"payload":                       payload,
+	}
+	if event.UpstreamEventID != "" {
+		line["upstream_event_id"] = event.UpstreamEventID
 	}
 	var buffer bytes.Buffer
 	if err := json.NewEncoder(&buffer).Encode(line); err != nil {
@@ -130,12 +137,13 @@ func normalizeCodexRawResponse(event Event) Event {
 }
 
 type Event struct {
-	Source      string          `json:"source"`
-	SessionID   string          `json:"session_id"`
-	EventType   string          `json:"event_type"`
-	OccurredAt  time.Time       `json:"occurred_at"`
-	ProjectHint ProjectHint     `json:"project_hint"`
-	Payload     json.RawMessage `json:"payload"`
+	Source          string          `json:"source"`
+	SessionID       string          `json:"session_id"`
+	EventType       string          `json:"event_type"`
+	OccurredAt      time.Time       `json:"occurred_at"`
+	ProjectHint     ProjectHint     `json:"project_hint"`
+	Payload         json.RawMessage `json:"payload"`
+	UpstreamEventID string          `json:"upstream_event_id"`
 }
 
 type ProjectHint struct {
@@ -151,12 +159,44 @@ func sanitizePluginPayload(payload json.RawMessage) json.RawMessage {
 	if err := json.Unmarshal(payload, &object); err != nil {
 		return json.RawMessage("{}")
 	}
-	for _, key := range []string{"prompt", "response", "content", "arguments", "result", "tool_arguments", "tool_argument", "tool_args", "tool_arg", "tool_result", "tool_results", "authorization", "api_key", "api key", "api_keys", "api keys", "token", "tokens", "secret", "secrets"} {
-		delete(object, key)
+	allowed := make(map[string]any, 11)
+	for _, key := range []string{"provider", "model", "model_id", "agent_name", "capture_quality", "task_id", "turn_id"} {
+		if value, ok := object[key].(string); ok {
+			allowed[key] = value
+		}
 	}
-	next, err := json.Marshal(object)
+	for _, key := range []string{"input_tokens", "output_tokens", "reasoning_tokens", "cached_input_tokens", "cache_write_tokens"} {
+		if value, ok := nonNegativeInteger(object[key]); ok {
+			allowed[key] = value
+		}
+	}
+	next, err := json.Marshal(allowed)
 	if err != nil {
 		return json.RawMessage("{}")
 	}
 	return next
+}
+
+func lifecycleOnlyPayload(payload json.RawMessage) json.RawMessage {
+	var object map[string]any
+	if err := json.Unmarshal(payload, &object); err != nil {
+		return json.RawMessage(`{"capture_quality":"lifecycle_only"}`)
+	}
+	for _, key := range []string{"input_tokens", "output_tokens", "reasoning_tokens", "cached_input_tokens", "cache_write_tokens"} {
+		delete(object, key)
+	}
+	object["capture_quality"] = "lifecycle_only"
+	next, err := json.Marshal(object)
+	if err != nil {
+		return json.RawMessage(`{"capture_quality":"lifecycle_only"}`)
+	}
+	return next
+}
+
+func nonNegativeInteger(value any) (int64, bool) {
+	number, ok := value.(float64)
+	if !ok || number < 0 || number != float64(int64(number)) {
+		return 0, false
+	}
+	return int64(number), true
 }

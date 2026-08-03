@@ -56,7 +56,7 @@ func New(version Version) *cobra.Command {
 	}
 	root.PersistentFlags().StringVar(&home, "home", "", "override the local QUANTUM_LOG data directory")
 	root.SetVersionTemplate("{{.Version}}\n")
-	root.AddCommand(newInitCommand(&home), newDoctorCommand(&home), newVerifyCommand(&home), newMaintenanceCommand(&home), newProjectCommand(&home), newIngestCommand(&home), newUsageCommand(&home), newReportCommand(&home), newAllocationCommand(&home), newPricingCommand(&home), newTaskCommand(&home), newExportCommand(&home), newTUICommand(&home), newAdapterCommand(&home), newSetupCommand(&home), newCollectorCommand(&home), newHookCommand(&home), newRunCommand(&home), newMCPCommand(&home, version), newUnattributedCommand(&home), newBudgetCommand(&home), newAnchorCommand(&home))
+	root.AddCommand(newInitCommand(&home), newDoctorCommand(&home), newVerifyCommand(&home), newMaintenanceCommand(&home), newProjectCommand(&home), newIngestCommand(&home), newUsageCommand(&home), newReportCommand(&home), newAllocationCommand(&home), newPricingCommand(&home), newTaskCommand(&home), newSessionCommand(&home), newExportCommand(&home), newTUICommand(&home), newAdapterCommand(&home), newSetupCommand(&home), newCollectorCommand(&home), newHookCommand(&home), newRunCommand(&home), newMCPCommand(&home, version), newUnattributedCommand(&home), newBudgetCommand(&home), newAnchorCommand(&home))
 	return root
 }
 
@@ -467,6 +467,16 @@ func newReportCommand(home *string) *cobra.Command {
 	summary.Flags().StringVar(&summaryGroupBy, "group-by", "project,provider,model", "comma-separated dimensions")
 	summary.Flags().BoolVar(&summaryJSON, "json", false, "output JSON")
 	report.AddCommand(summary)
+	var usageFrom, usageTo, usageGroupBy string
+	var usageJSON bool
+	usage := &cobra.Command{Use: "usage", Short: "Summarize quality-separated usage", RunE: func(command *cobra.Command, _ []string) error {
+		return runReportSummary(command, home, usageFrom, usageTo, usageGroupBy, usageJSON)
+	}}
+	usage.Flags().StringVar(&usageFrom, "from", "", "inclusive RFC3339 or YYYY-MM-DD start")
+	usage.Flags().StringVar(&usageTo, "to", "", "exclusive RFC3339 or YYYY-MM-DD end")
+	usage.Flags().StringVar(&usageGroupBy, "group-by", "project,agent,provider,model,capture_quality", "comma-separated dimensions")
+	usage.Flags().BoolVar(&usageJSON, "json", false, "output JSON")
+	report.AddCommand(usage)
 	return report
 }
 
@@ -796,6 +806,30 @@ func newTaskCommand(home *string) *cobra.Command {
 	summary.Flags().BoolVar(&summaryJSON, "json", false, "output JSON")
 	task.AddCommand(start, finish, list, summary)
 	return task
+}
+
+func newSessionCommand(home *string) *cobra.Command {
+	var jsonOutput bool
+	summary := &cobra.Command{Use: "summary <session-id>", Short: "Show recorded session evidence summary", Args: cobra.ExactArgs(1), RunE: func(command *cobra.Command, args []string) error {
+		service, err := app.Open(command.Context(), *home)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = service.Close() }()
+		snapshot, err := service.Store.SessionSnapshot(command.Context(), args[0])
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			return writeJSON(command.Root().OutOrStdout(), snapshot)
+		}
+		_, err = fmt.Fprintf(command.Root().OutOrStdout(), "%s | %s | %d raw event(s) | %d model call(s)\n", snapshot.SessionID, snapshot.AgentName, snapshot.RawEventCount, snapshot.ModelCallCount)
+		return err
+	}}
+	summary.Flags().BoolVar(&jsonOutput, "json", false, "output JSON")
+	session := &cobra.Command{Use: "session", Short: "Inspect recorded sessions", Args: cobra.NoArgs}
+	session.AddCommand(summary)
+	return session
 }
 
 func newExportCommand(home *string) *cobra.Command {

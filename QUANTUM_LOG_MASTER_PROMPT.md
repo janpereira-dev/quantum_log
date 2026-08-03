@@ -22,7 +22,7 @@ El ciclo de vida de un milestone usa exactamente `NOT_STARTED`, `IN_PROGRESS`,
 `IMPLEMENTED`, `VERIFIED`, `BLOCKED` o `DEFERRED`. `DETECTION_ONLY` describe la
 madurez de captura de M4, no un séptimo estado del ciclo de vida. Un milestone solo
 puede ser `VERIFIED` cuando cada criterio requerido es `PASS` en
-`docs/verification/milestone-<n>-evidence.md`; cualquier `FAIL`, `NOT_RUN` o
+`docs-int/verification/milestone-<n>-evidence.md`; cualquier `FAIL`, `NOT_RUN` o
 `BLOCKED` lo impide. Las secciones posteriores que describen entregables son
 objetivos de recuperación, no afirmaciones de disponibilidad actual.
 
