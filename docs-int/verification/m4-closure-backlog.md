@@ -15,7 +15,7 @@ P0-01 audit completed on 2026-08-04. Release candidate is `v0.3.2-rc.1`. This is
 
 ## Status Vocabulary
 
-Allowed values: `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED`, `COMPLETE`.
+Allowed values: `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED`, `BLOCKED_EXTERNAL`, `COMPLETE`.
 
 ## P0 Ledger
 
@@ -43,3 +43,37 @@ Allowed values: `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED`, `COMPLETE`.
 | TEST_INFRASTRUCTURE | End-to-end installer download cannot use a local HTTP fixture because HTTPS-only source validation is required; candidate `v0.3.2-rc.1` is not public, and P0-02 must not fall back to an older GitHub release. | Keep HTTPS and checksum controls unchanged. Block end-to-end proof until signed HTTPS RC artifact exists. |
 | REGRESSION | Full `go test -count=1 ./...` fails six existing CLI setup tests because pre-existing unstaged `internal/cli/setup.go` calls `validateCollectorExecutable` for the transient `go test` binary. P0-02 does not modify either setup file. | Out of scope. Fix its test injection or setup behavior separately; focused distribution tests pass. |
 | NON_BLOCKING | Initial ad-hoc PowerShell parser command escaped `$?` incorrectly and failed outside product code. Subsequent PowerShell `--dry-run` executed the script successfully, while Git `sh -n` validated shell syntax. | No product change required. |
+
+## P0-06 Codex Diagnosis
+
+**Status: `BLOCKED_EXTERNAL`.** No QLog defect was proven. Codex CLI `0.146.0` accepted the installed user-level `[otel]` log exporter under `--strict-config`; `codex doctor --json` reported `config.load=ok`, ChatGPT authentication, and healthy provider reachability. The real `codex exec` session persisted its response and token usage locally, but the healthy foreground QLog collector received no request: its only log line was its listener startup.
+
+| Boundary | Evidence | Result |
+|---|---|---|
+| Codex configuration | `%USERPROFILE%\.codex\config.toml` contains `exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/logs", protocol = "binary" } }` and `log_user_prompt = false`; `qlog-otel-state.json` owns these keys. | Accepted by Codex. No unowned configuration was mutated. |
+| Signal and endpoint | Current official Codex source defines `exporter` for logs independently of `trace_exporter`; current QLog collector serves protobuf and JSON logs at `/v1/logs`. | Configured log signal and endpoint match. Adding `trace_exporter` cannot cause Codex log export. |
+| Codex runtime | `~/.codex/sessions/2026/08/04/rollout-2026-08-04T20-14-47-019fcdfc-3c4c-77d2-a103-ffc487824bfa.jsonl` records the authenticated `codex_exec` action, exact response, and `17210` total tokens. | Action executed; local session recording is not an OTLP export. |
+| Collector and decoder | Foreground collector startup recorded `qlog collector listening on http://127.0.0.1:4318 (/v1/traces and /v1/logs OTLP JSON/protobuf, /v1/events qlog JSON)`; previous live status reported `running=true`, `reachable=true`, `health=ok`; no request or decoder error followed. | Failure occurred before QLog request handling, so collector decoding cannot be causal. |
+
+Reproduce without synthetic telemetry:
+
+```powershell
+$home = 'C:\Users\cowbo\AppData\Local\Temp\opencode\p0-06-20260804'
+$qlog = 'C:\Users\cowbo\AppData\Local\Temp\opencode\p0-05\install\qlog.exe'
+$env:QLOG_HOME = $home
+& $qlog collector serve --home $home --log-file "$home\collector.log"
+# Separate terminal, while collector remains healthy:
+codex --strict-config exec --sandbox read-only --cd C:\Users\cowbo\Repositorios\quantum_log "Reply with exactly: P0-06 Codex acceptance."
+& $qlog --home $home adapter verify codex --since 10m --json
+Get-Content "$home\collector.log"
+```
+
+Expected current result: Codex action completes, `raw_evidence` remains false, and collector log contains no export request. Do not add synthetic events or alter Codex trace configuration to claim acceptance.
+
+## P0-06 Test Issue Classification
+
+| Classification | Issue | Disposition |
+|---|---|---|
+| NON_BLOCKING | Unit tests exercise QLog's supported OTLP log decoder but cannot substitute a real Codex emission. | Keep tests as decoder coverage only; do not treat them as runtime proof. |
+| TEST_INFRASTRUCTURE | None observed. Foreground collector was healthy during real-action evidence collection. | No change. |
+| PRODUCT_BUG | None proven. Config parsing, signal selection, endpoint exposure, and decoder boundary all passed. | No product change. |
