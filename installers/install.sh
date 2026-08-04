@@ -169,7 +169,12 @@ mv -f "$staged" "$INSTALL_DIR/qlog"
 if [ "$BOOTSTRAP" -eq 1 ]; then
   printf '%s\n' 'bootstrap consent accepted; starting qlog setup'
   # Run qlog setup --yes only after installed binary verification.
-  "$INSTALL_DIR/qlog" setup --yes --executable "$INSTALL_DIR/qlog"
+  if ! "$INSTALL_DIR/qlog" setup --yes --executable "$INSTALL_DIR/qlog"; then
+    fail "qlog setup failed; rerun $INSTALL_DIR/qlog setup --yes after resolving the reported error"
+  fi
+  if ! "$INSTALL_DIR/qlog" doctor; then
+    fail "qlog health check failed; run $INSTALL_DIR/qlog doctor for diagnostics"
+  fi
 else
   printf '%s\n' 'bootstrap skipped; run qlog setup later to configure capture manually'
 fi

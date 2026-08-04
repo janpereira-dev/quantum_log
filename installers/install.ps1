@@ -76,6 +76,11 @@ for ($index = 0; $index -lt $Arguments.Count; $index++) {
 if ($channel -notin @('stable', 'latest')) { Fail '--channel must be stable or latest' }
 if (-not $releaseBase.StartsWith('https://', [StringComparison]::OrdinalIgnoreCase)) { Fail 'QLOG_RELEASE_BASE must use HTTPS' }
 if ([string]::IsNullOrWhiteSpace($installDir)) { Fail '--install-dir cannot be empty' }
+try {
+    $installDir = [System.IO.Path]::GetFullPath($installDir)
+} catch {
+    Fail "invalid --install-dir: $($_.Exception.Message)"
+}
 
 if ($bootstrap -eq $null -and -not $dryRun -and -not [Console]::IsInputRedirected) {
     $consent = Read-Host 'Consent to bootstrap qlog collector and detected supported adapters for this user? [y/N]'
@@ -159,8 +164,10 @@ try {
     if ($bootstrap) {
         Write-Output 'bootstrap consent accepted; starting qlog setup'
         # Run qlog setup --yes only after installed binary verification.
-        & $target setup --yes
-        if ($LASTEXITCODE -ne 0) { Fail "qlog setup --yes failed (exit $LASTEXITCODE)" }
+        & $target setup --yes --executable $target
+        if ($LASTEXITCODE -ne 0) { Fail "qlog setup failed (exit $LASTEXITCODE); rerun $target setup --yes after resolving the reported error" }
+        & $target doctor
+        if ($LASTEXITCODE -ne 0) { Fail "qlog health check failed (exit $LASTEXITCODE); run $target doctor for diagnostics" }
     } else {
         Write-Output 'bootstrap skipped; run qlog setup later to configure capture manually'
     }
