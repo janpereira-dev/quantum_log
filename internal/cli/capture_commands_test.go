@@ -586,6 +586,32 @@ func TestHookClaudeCodeIngestsDirectlyByDefault(t *testing.T) {
 	}
 }
 
+func TestHookCopilotCLIIngestsLifecycleOnlyWithoutHookPayloadContent(t *testing.T) {
+	home := t.TempDir()
+	worktree := filepath.Join(t.TempDir(), "project")
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, err := runQLog(t, home, "project", "register", "--path", worktree, "--name", "Project", "--slug", "project"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	output, err := runQLogWithInput(t, home, strings.NewReader(`{"sessionId":"session-1","cwd":"`+filepath.ToSlash(worktree)+`","initialPrompt":"must-not-store","toolArgs":{"secret":"must-not-store"},"toolResult":{"textResultForLlm":"must-not-store"},"authorization":"must-not-store"}`), "hook", "copilot-cli", "--event", "postToolUse")
+	if err != nil {
+		t.Fatalf("hook copilot-cli: %v output=%q", err, output)
+	}
+	if !strings.Contains(output, "hook: ingested") {
+		t.Fatalf("hook output = %q", output)
+	}
+	service, err := app.OpenReadOnly(context.Background(), home)
+	if err != nil {
+		t.Fatalf("open ledger: %v", err)
+	}
+	defer func() { _ = service.Close() }()
+	if ok, err := service.Store.HasRecentAdapterEvidence(context.Background(), sqlite.AdapterEvidenceQuery{AdapterID: "copilot", Source: "copilot-cli-hook", RequiredQuality: "lifecycle_only", ProjectSlug: "project", From: time.Now().UTC().Add(-time.Minute), To: time.Now().UTC().Add(time.Minute)}); err != nil || !ok {
+		t.Fatalf("copilot lifecycle evidence = %t, %v", ok, err)
+	}
+}
+
 func TestAdapterStatusTestAndUninstallCommands(t *testing.T) {
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
 	run := func(args ...string) (string, error) {
@@ -707,7 +733,7 @@ func TestSetupDefaultWithoutAllSkipsUnavailableAdapters(t *testing.T) {
 	if err := json.Unmarshal([]byte(output), &result); err != nil {
 		t.Fatalf("decode setup output = %q: %v", output, err)
 	}
-	if !result.Consent || len(result.Adapters) != 4 {
+	if !result.Consent || len(result.Adapters) != 5 {
 		t.Fatalf("bootstrap result = %#v", result)
 	}
 	for _, plan := range result.Adapters {

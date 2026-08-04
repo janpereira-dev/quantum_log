@@ -25,7 +25,7 @@ func TestSetupYesBootstrapsCollectorBeforeAdapterFiles(t *testing.T) {
 	if !result.Consent || !manager.installed || !manager.started {
 		t.Fatalf("bootstrap = %#v", result)
 	}
-	if got := adapterIDs(result.Adapters); !slices.Equal(got, []string{"claude-code", "codex", "copilot-vscode", "opencode"}) {
+	if got := adapterIDs(result.Adapters); !slices.Equal(got, []string{"claude-code", "codex", "copilot", "copilot-vscode", "opencode"}) {
 		t.Fatalf("adapters = %v", got)
 	}
 }

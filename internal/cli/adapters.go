@@ -292,6 +292,8 @@ func evidenceContract(adapterID string) adapterEvidenceContract {
 		return adapterEvidenceContract{Source: "opencode-plugin", Quality: adapters.CaptureLifecycleOnly, SourceEvidenceMessage: "documented source-backed OpenCode usage evidence is required before verification"}
 	case "codex":
 		return adapterEvidenceContract{Source: "otlp-http", Quality: adapters.CaptureOTELReported, RequireCodexResponseCompleted: true, SourceEvidence: true, SourceEvidenceMessage: "Codex 0.145.0 documents OTLP response.completed logs with source-reported tokens"}
+	case "copilot":
+		return adapterEvidenceContract{Source: "copilot-cli-hook", Quality: adapters.CaptureLifecycleOnly, SourceEvidence: true, SourceEvidenceMessage: "GitHub Copilot CLI documents local lifecycle and tool hooks; qlog records only sanitized lifecycle metadata"}
 	case "copilot-vscode":
 		return adapterEvidenceContract{Source: "otlp-http", Quality: adapters.CaptureOTELReported, AllowedAgentNames: []string{"GitHub Copilot Chat"}, RequiredProvider: "github", SourceEvidence: true, SourceEvidenceMessage: "VS Code documents Copilot OTel trace/span identity and gen_ai usage fields"}
 	default:

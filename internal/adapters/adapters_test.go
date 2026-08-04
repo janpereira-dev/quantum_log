@@ -16,8 +16,8 @@ import (
 func TestDefaultRegistryDeclaresOnlyVerifiedCapabilities(t *testing.T) {
 	registry := Default()
 	items := registry.List()
-	if len(items) != 8 {
-		t.Fatalf("List() returned %d adapters, want 8", len(items))
+	if len(items) != 9 {
+		t.Fatalf("List() returned %d adapters, want 9", len(items))
 	}
 	generic, found := registry.Get("generic-jsonl")
 	if !found || !generic.Descriptor().Capabilities.StructuredEvents {
@@ -29,6 +29,10 @@ func TestDefaultRegistryDeclaresOnlyVerifiedCapabilities(t *testing.T) {
 	copilot, found := registry.Get("copilot-vscode")
 	if !found || !copilot.Descriptor().Capabilities.ModelIdentity || !copilot.Descriptor().Capabilities.InputTokens || !copilot.Descriptor().Capabilities.OutputTokens || !copilot.Descriptor().Capabilities.ReasoningTokens || !copilot.Descriptor().Capabilities.CacheTokens || !copilot.Descriptor().Capabilities.StructuredEvents {
 		t.Fatalf("copilot-vscode must declare documented OTel model and token capabilities")
+	}
+	copilotCLI, found := registry.Get("copilot")
+	if !found || !copilotCLI.Descriptor().Capabilities.SessionLifecycle || !copilotCLI.Descriptor().Capabilities.ProjectIdentity || !copilotCLI.Descriptor().Capabilities.WorkingDirectory || !copilotCLI.Descriptor().Capabilities.ToolCalls || !copilotCLI.Descriptor().Capabilities.StructuredEvents || copilotCLI.Descriptor().Capabilities.InputTokens {
+		t.Fatalf("copilot must declare hook lifecycle metadata without token capability")
 	}
 	opencode, found := registry.Get("opencode")
 	if !found || opencode.Descriptor().Capabilities.InputTokens || opencode.Descriptor().Capabilities.OutputTokens || !opencode.Descriptor().Capabilities.ToolCalls || !opencode.Descriptor().Capabilities.SessionLifecycle || !opencode.Descriptor().Capabilities.StructuredEvents {
@@ -61,8 +65,62 @@ func TestStableAdaptersContainOnlyM4Contract(t *testing.T) {
 			t.Fatalf("stable adapter %q lacks stable descriptor flag", adapter.Descriptor().ID)
 		}
 	}
-	if want := []string{"claude-code", "codex", "copilot-vscode", "opencode"}; !slices.Equal(ids, want) {
+	if want := []string{"claude-code", "codex", "copilot", "copilot-vscode", "opencode"}; !slices.Equal(ids, want) {
 		t.Fatalf("stable adapter ids = %v, want %v", ids, want)
+	}
+}
+
+func TestCopilotCLIInstallCreatesIsolatedLifecycleHookConfig(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	home := filepath.Join(t.TempDir(), "qlog home")
+	executable := filepath.Join(t.TempDir(), "qlog.exe")
+	adapter := newCopilotCLIAdapter()
+
+	result, err := adapter.Install(context.Background(), InstallOptions{Home: home, ExecutablePath: executable})
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if !result.Changed {
+		t.Fatalf("install result = %#v", result)
+	}
+	contents := string(mustReadFile(t, adapter.hooksPath()))
+	for _, want := range []string{"\"version\": 1", "sessionStart", "sessionEnd", "agentStop", "postToolUse", "hook copilot-cli --event"} {
+		if !strings.Contains(contents, want) {
+			t.Fatalf("hooks config missing %q:\n%s", want, contents)
+		}
+	}
+	for _, forbidden := range []string{"userPromptSubmitted", "preToolUse", "prompt", "toolArgs", "toolResult", "authorization", "token"} {
+		if strings.Contains(contents, forbidden) {
+			t.Fatalf("hooks config contains forbidden %q:\n%s", forbidden, contents)
+		}
+	}
+	status, err := adapter.Status(context.Background())
+	if err != nil || !status.Installed || status.CaptureQuality != CaptureLifecycleOnly {
+		t.Fatalf("status = %#v, %v", status, err)
+	}
+}
+
+func TestCopilotCLIUninstallRemovesOnlyQlogOwnedHookConfig(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	adapter := newCopilotCLIAdapter()
+	if _, err := adapter.Install(context.Background(), InstallOptions{}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	userHook := filepath.Join(configHome, ".copilot", "hooks", "user.json")
+	if err := os.WriteFile(userHook, []byte(`{"version":1,"hooks":{}}`), 0o600); err != nil {
+		t.Fatalf("write user hook: %v", err)
+	}
+	result, err := adapter.Uninstall(context.Background(), InstallOptions{})
+	if err != nil || !result.Changed {
+		t.Fatalf("uninstall = %#v, %v", result, err)
+	}
+	if _, err := os.Stat(adapter.hooksPath()); !os.IsNotExist(err) {
+		t.Fatalf("qlog hook config remains: %v", err)
+	}
+	if _, err := os.Stat(userHook); err != nil {
+		t.Fatalf("user hook removed: %v", err)
 	}
 }
 
