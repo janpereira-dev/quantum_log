@@ -637,6 +637,7 @@ func TestAdapterStatusTestAndUninstallCommands(t *testing.T) {
 func TestSetupCommandPlansInstallsAndIsIdempotent(t *testing.T) {
 	configHome := t.TempDir()
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	executable := temporaryDurableExecutable(t)
 	run := func(args ...string) (string, error) {
 		command := New(Version{})
 		output := new(bytes.Buffer)
@@ -646,7 +647,7 @@ func TestSetupCommandPlansInstallsAndIsIdempotent(t *testing.T) {
 		return output.String(), err
 	}
 
-	output, err := run("setup", "opencode", "--dry-run", "--json")
+	output, err := run("setup", "opencode", "--dry-run", "--json", "--executable", executable)
 	if err != nil {
 		t.Fatalf("setup dry-run: %v", err)
 	}
@@ -655,7 +656,7 @@ func TestSetupCommandPlansInstallsAndIsIdempotent(t *testing.T) {
 		t.Fatalf("setup dry-run output = %q, %#v, %v", output, plans, err)
 	}
 
-	output, err = run("setup", "opencode", "--yes", "--json")
+	output, err = run("setup", "opencode", "--yes", "--json", "--executable", executable)
 	if err != nil {
 		t.Fatalf("setup opencode: %v", err)
 	}
@@ -672,7 +673,7 @@ func TestSetupCommandPlansInstallsAndIsIdempotent(t *testing.T) {
 		t.Fatalf("opencode plugin missing event forwarding: %q", contents)
 	}
 
-	output, err = run("setup", "opencode", "--yes", "--json")
+	output, err = run("setup", "opencode", "--yes", "--json", "--executable", executable)
 	if err != nil {
 		t.Fatalf("setup opencode second run: %v", err)
 	}
@@ -686,6 +687,7 @@ func TestSetupDefaultWithoutAllSkipsUnavailableAdapters(t *testing.T) {
 	configHome := t.TempDir()
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
 	t.Setenv("PATH", "")
+	executable := temporaryDurableExecutable(t)
 	previousManager := newSetupCollectorManager
 	newSetupCollectorManager = func() collectorManager { return &fakeCollectorManager{} }
 	t.Cleanup(func() { newSetupCollectorManager = previousManager })
@@ -697,7 +699,7 @@ func TestSetupDefaultWithoutAllSkipsUnavailableAdapters(t *testing.T) {
 		err := command.Execute()
 		return output.String(), err
 	}
-	output, err := run("setup", "--yes", "--json")
+	output, err := run("setup", "--yes", "--json", "--executable", executable)
 	if err != nil {
 		t.Fatalf("setup default: %v", err)
 	}
@@ -721,6 +723,7 @@ func TestSetupDefaultWithoutAllSkipsUnavailableAdapters(t *testing.T) {
 func TestSetupAppliedJSONPreservesPathAndBackup(t *testing.T) {
 	configHome := t.TempDir()
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	executable := temporaryDurableExecutable(t)
 	run := func(args ...string) (string, error) {
 		command := New(Version{})
 		output := new(bytes.Buffer)
@@ -729,14 +732,14 @@ func TestSetupAppliedJSONPreservesPathAndBackup(t *testing.T) {
 		err := command.Execute()
 		return output.String(), err
 	}
-	if _, err := run("setup", "opencode", "--yes", "--json"); err != nil {
+	if _, err := run("setup", "opencode", "--yes", "--json", "--executable", executable); err != nil {
 		t.Fatalf("first setup: %v", err)
 	}
 	pluginPath := filepath.Join(configHome, ".config", "opencode", "plugins", "quantum-log.ts")
 	if err := os.WriteFile(pluginPath, []byte("custom"), 0o600); err != nil {
 		t.Fatalf("modify plugin: %v", err)
 	}
-	output, err := run("setup", "opencode", "--yes", "--json")
+	output, err := run("setup", "opencode", "--yes", "--json", "--executable", executable)
 	if err != nil {
 		t.Fatalf("second setup: %v", err)
 	}

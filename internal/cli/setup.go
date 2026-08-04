@@ -207,7 +207,11 @@ func durableExecutablePath(executable string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve qlog executable path %q: %w", executable, err)
 	}
-	return filepath.Clean(resolved), nil
+	resolved = filepath.Clean(resolved)
+	if err := validateCollectorExecutable(resolved); err != nil {
+		return "", err
+	}
+	return resolved, nil
 }
 
 func planSetupAdapters(ctx context.Context, home string, items []adapters.Adapter, yes, dryRun bool) ([]adapters.SetupPlan, error) {
