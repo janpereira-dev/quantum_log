@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -39,6 +40,22 @@ func TestSetupWithoutConsentOnlyPrintsPlan(t *testing.T) {
 	}
 	if result.Consent || manager.installed || manager.started {
 		t.Fatalf("mutated without consent: %#v", result)
+	}
+}
+
+func TestSetupContinuesAfterCollectorExternalPolicyDenial(t *testing.T) {
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
+	manager := &policyDeniedCollectorManager{}
+
+	result, err := bootstrapSupportedAdapters(context.Background(), t.TempDir(), temporaryDurableExecutable(t), true, false, adapters.Default(), manager)
+	if err != nil {
+		t.Fatalf("bootstrapSupportedAdapters() error = %v", err)
+	}
+	if result.Collector.Installed || result.Collector.Started {
+		t.Fatalf("collector = %#v, want external-policy diagnosis without activation", result.Collector)
+	}
+	if !strings.Contains(strings.Join(result.Collector.Actions, "\n"), "Acceso denegado") {
+		t.Fatalf("collector actions = %q, want exact scheduler diagnosis", result.Collector.Actions)
 	}
 }
 
@@ -185,6 +202,12 @@ type fakeCollectorManager struct {
 type ledgerCheckingCollectorManager struct {
 	fakeCollectorManager
 	ledgerExistedAtInstall bool
+}
+
+type policyDeniedCollectorManager struct{ fakeCollectorManager }
+
+func (*policyDeniedCollectorManager) Install(_, _ string) (CollectorStatus, error) {
+	return CollectorStatus{}, errors.New(`task scheduler operation /Create for task "QUANTUM_LOG Collector" failed: exit status 1: Error: Acceso denegado.`)
 }
 
 func (m *ledgerCheckingCollectorManager) Install(home, listen string) (CollectorStatus, error) {
