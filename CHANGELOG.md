@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.2-rc.1 - 2026-08-04
+
+### Release candidate
+
+- Aligned local release-candidate version metadata across binary defaults and distribution artifacts.
+
 ## 0.2.0 - 2026-07-20
 
 ### M1 closed (integrity and attribution)
