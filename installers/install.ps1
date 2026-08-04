@@ -8,7 +8,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $repository = if ($env:QLOG_RELEASE_REPOSITORY) { $env:QLOG_RELEASE_REPOSITORY } else { 'janpereira-dev/quantum_log' }
 $releaseBase = if ($env:QLOG_RELEASE_BASE) { $env:QLOG_RELEASE_BASE } else { "https://github.com/$repository/releases/download" }
-$version = $null
+$version = if ($env:QLOG_RELEASE_VERSION) { $env:QLOG_RELEASE_VERSION } else { 'v0.3.2-rc.1' }
 $channel = 'stable'
 $installDir = if ($env:QLOG_INSTALL_DIR) { $env:QLOG_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\QUANTUM_LOG\bin' }
 $modifyPath = $true
@@ -33,6 +33,7 @@ Options:
 Environment:
   QLOG_RELEASE_REPOSITORY GitHub owner/repository to query for releases.
   QLOG_RELEASE_BASE       HTTPS release-download base URL, without tag or filename.
+  QLOG_RELEASE_VERSION    Release candidate to install when --version is omitted.
 '@ | Write-Output
 }
 
@@ -105,19 +106,6 @@ if ($version) {
         $tag = "v$version"
         $artifactVersion = $version
     }
-} elseif ($dryRun) {
-    $tag = '<latest-release>'
-    $artifactVersion = '<latest-release>'
-} else {
-    $apiUrl = "https://api.github.com/repos/$repository/releases/latest"
-    try {
-        $release = Invoke-RestMethod -Uri $apiUrl -Headers @{ 'User-Agent' = 'qlog-installer' }
-        $tag = [string]$release.tag_name
-    } catch {
-        Fail "could not resolve latest release from ${apiUrl}: $($_.Exception.Message)"
-    }
-    if ([string]::IsNullOrWhiteSpace($tag)) { Fail "could not resolve a tag from $apiUrl" }
-    if ($tag.StartsWith('v')) { $artifactVersion = $tag.Substring(1) } else { $artifactVersion = $tag; $tag = "v$tag" }
 }
 
 $archive = "qlog_${artifactVersion}_${os}_${arch}.zip"

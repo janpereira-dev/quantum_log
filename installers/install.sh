@@ -4,7 +4,7 @@ set -eu
 
 REPOSITORY=${QLOG_RELEASE_REPOSITORY:-janpereira-dev/quantum_log}
 RELEASE_BASE=${QLOG_RELEASE_BASE:-https://github.com/$REPOSITORY/releases/download}
-VERSION=""
+VERSION=${QLOG_RELEASE_VERSION:-v0.3.2-rc.1}
 CHANNEL=stable
 INSTALL_DIR=${QLOG_INSTALL_DIR:-$HOME/.local/bin}
 MODIFY_PATH=1
@@ -29,6 +29,7 @@ Options:
 Environment:
   QLOG_RELEASE_REPOSITORY GitHub owner/repository to query for releases.
   QLOG_RELEASE_BASE       HTTPS release-download base URL, without tag or filename.
+  QLOG_RELEASE_VERSION    Release candidate to install when --version is omitted.
   QLOG_PROFILE            Shell profile to update when PATH needs an entry.
 EOF
 }
@@ -117,14 +118,6 @@ fi
 if [ -n "$VERSION" ]; then
   case "$VERSION" in *[!0-9A-Za-z._-]*) fail "invalid version: $VERSION" ;; esac
   case "$VERSION" in v*) TAG=$VERSION; ARTIFACT_VERSION=${VERSION#v} ;; *) TAG=v$VERSION; ARTIFACT_VERSION=$VERSION ;; esac
-elif [ "$DRY_RUN" -eq 1 ]; then
-  TAG='<latest-release>'
-  ARTIFACT_VERSION='<latest-release>'
-else
-  api_url="https://api.github.com/repos/$REPOSITORY/releases/latest"
-  TAG=$(download_stdout "$api_url" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
-  [ -n "$TAG" ] || fail "could not resolve latest release from $api_url"
-  case "$TAG" in v*) ARTIFACT_VERSION=${TAG#v} ;; *) ARTIFACT_VERSION=$TAG; TAG=v$TAG ;; esac
 fi
 
 ARCHIVE="qlog_${ARTIFACT_VERSION}_${OS}_${ARCH}.tar.gz"
