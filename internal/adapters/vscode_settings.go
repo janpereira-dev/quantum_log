@@ -54,9 +54,13 @@ func applyVSCodeSettings(path string, desired map[string]any, owner string, dryR
 			}
 		}
 	}
+	drifted := make([]string, 0, len(desired))
 	state.Managed = make(map[string]any, len(desired))
 	for key, value := range desired {
 		if !reflect.DeepEqual(settings[key], value) {
+			if hasState {
+				drifted = append(drifted, key)
+			}
 			settings[key] = value
 			changed = true
 		}
@@ -82,7 +86,15 @@ func applyVSCodeSettings(path string, desired map[string]any, owner string, dryR
 		}
 		return change, nil
 	}
-	return writeVSCodeSettings(path, settings, original, existed, action, append(vscodeSettingKeys(desired), qlogVSCodeManagedKey))
+	change, err := writeVSCodeSettings(path, settings, original, existed, action, append(vscodeSettingKeys(desired), qlogVSCodeManagedKey))
+	if err != nil {
+		return SetupChange{}, err
+	}
+	if len(drifted) > 0 {
+		sort.Strings(drifted)
+		change.Description = "qlog managed settings drifted: " + strings.Join(drifted, ", ")
+	}
+	return change, nil
 }
 
 func removeVSCodeSettings(path string, desired map[string]any, owner string, dryRun bool) (SetupChange, error) {
@@ -186,7 +198,11 @@ type vscodeSettingsMarker struct {
 }
 
 func (m vscodeSettingsMarker) toMap(owner string) map[string]any {
-	return map[string]any{owner: map[string]any{"managed": m.Managed, "previous": m.Previous, "previous_present": m.PreviousPresent}}
+	previousPresent := make(map[string]any, len(m.PreviousPresent))
+	for key, value := range m.PreviousPresent {
+		previousPresent[key] = value
+	}
+	return map[string]any{owner: map[string]any{"managed": m.Managed, "previous": m.Previous, "previous_present": previousPresent}}
 }
 
 func vscodeManagedState(settings map[string]any, owner string) (vscodeSettingsMarker, bool) {

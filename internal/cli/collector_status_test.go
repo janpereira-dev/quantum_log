@@ -12,12 +12,12 @@ import (
 )
 
 func TestCollectorStatusReportsPersistentLifecycleFields(t *testing.T) {
-	status := CollectorStatus{Installed: true, Running: true, Reachable: true, Listen: "127.0.0.1:4318", ServiceID: "dev.quantum-log.collector"}
+	status := CollectorStatus{Installed: true, Running: true, Reachable: true, Mode: "user_fallback", Listen: "127.0.0.1:4318", ServiceID: "dev.quantum-log.collector"}
 	encoded, err := json.Marshal(status)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"installed":true`, `"running":true`, `"reachable":true`, `"service_id":"dev.quantum-log.collector"`} {
+	for _, want := range []string{`"installed":true`, `"running":true`, `"reachable":true`, `"mode":"user_fallback"`, `"service_id":"dev.quantum-log.collector"`} {
 		if !bytes.Contains(encoded, []byte(want)) {
 			t.Fatalf("status = %s", encoded)
 		}

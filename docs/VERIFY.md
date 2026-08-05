@@ -66,7 +66,7 @@ Foreground fallback: stop terminal-one collector with `Ctrl+C`, rerun `collector
 | Agent | Real action | Current P0 result |
 | --- | --- | --- |
 | Codex | Run one authenticated `codex exec` action in registered project while collector is healthy. | **BLOCKED_EXTERNAL**: action completed but no OTLP request reached foreground collector. |
-| Copilot CLI | Run one authenticated `copilot -p` action after `qlog setup copilot --yes`. | **BLOCKED_EXTERNAL**: hook installed but no hook event reached qlog. |
+| Copilot CLI | Run one interactive authenticated `copilot` session after `qlog setup copilot --yes`. | **BLOCKED_EXTERNAL**: configuration and parser validation do not prove Copilot invoked qlog hook. |
 | Copilot VS Code | Open registered project in VS Code; send one Copilot Chat/Agent message after `qlog setup copilot-vscode --yes`. | **BLOCKED_EXTERNAL**: this host has no GitHub Copilot extension/login surface. |
 | Claude Code / OpenCode | Run one normal agent action after setup. | Guided validation only; source-backed clean-device event remains pending. |
 
@@ -83,8 +83,24 @@ Do not call capture PASS merely because setup or collector health passed. A vali
 ## Blocked paths
 
 - **Codex:** reproduce only; do not inject synthetic OTLP to manufacture PASS.
-- **Copilot CLI:** reproduce only; do not fabricate hook payloads.
+- **Copilot CLI:** a manual `qlog hook copilot-cli` invocation is not validation. Capture a new real interactive Copilot session after installation, then retain its upstream session evidence and matching locally persisted `copilot-cli-hook` lifecycle record. Do not inject or replay payloads.
 - **Copilot VS Code:** install/authenticate extension and use healthy collector on supported host before attempting real action.
 - **Windows Scheduler:** use foreground fallback when `/Create` returns access denied. This does not verify managed service restart.
 
 If event never appears, retain `BLOCKED_EXTERNAL` or guided-validation status and see [Troubleshooting](TROUBLESHOOTING.md).
+
+## Unattributed VS Code usage
+
+When Copilot OTel has no trusted `process.cwd` or `qlog.cwd`, qlog keeps usage `unattributed`. It never derives ownership from provider, model, agent name, branch, commit, or Git remote.
+
+Inspect local unresolved calls:
+
+```powershell
+& $qlog unattributed list
+```
+
+Only after a local operator determines the owning registered project, repair one call explicitly:
+
+```powershell
+& $qlog unattributed repair <model-call-id> --project <registered-project-slug>
+```

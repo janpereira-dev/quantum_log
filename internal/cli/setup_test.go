@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -63,11 +64,13 @@ func TestSetupContinuesAfterCollectorExternalPolicyDenial(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bootstrapSupportedAdapters() error = %v", err)
 	}
-	if result.Collector.Installed || result.Collector.Started {
-		t.Fatalf("collector = %#v, want external-policy diagnosis without activation", result.Collector)
+	if !result.Collector.Installed || !result.Collector.Started {
+		t.Fatalf("collector = %#v, want installed and started user fallback", result.Collector)
 	}
-	if !strings.Contains(strings.Join(result.Collector.Actions, "\n"), "Acceso denegado") {
-		t.Fatalf("collector actions = %q, want exact scheduler diagnosis", result.Collector.Actions)
+	for _, want := range []string{"Acceso denegado", "user fallback installed and started"} {
+		if !strings.Contains(strings.Join(result.Collector.Actions, "\n"), want) {
+			t.Fatalf("collector actions = %q, want %q", result.Collector.Actions, want)
+		}
 	}
 }
 
@@ -79,16 +82,31 @@ func TestSetupFailsForGenericAccessDeniedCollectorError(t *testing.T) {
 	}
 }
 
-func TestSetupAllIncludesNonStableSetupAdapters(t *testing.T) {
+func TestSetupAllFiltersUnavailableSetupAdapters(t *testing.T) {
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
+	t.Setenv("PATH", "")
 	output, err := runQLog(t, t.TempDir(), "setup", "--all", "--dry-run", "--executable", temporaryDurableExecutable(t))
 	if err != nil {
 		t.Fatalf("setup --all --dry-run: %v\n%s", err, output)
 	}
-	for _, adapterID := range []string{"claude-code", "codex", "copilot-vscode", "opencode", "pi", "openclaw", "hermes"} {
-		if !strings.Contains(output, adapterID+" |") {
-			t.Fatalf("setup --all output missing %q:\n%s", adapterID, output)
-		}
+	if strings.Contains(output, " | ") {
+		t.Fatalf("setup --all planned unavailable adapters:\n%s", output)
+	}
+}
+
+func TestSetupPlansNoUnavailableAdapters(t *testing.T) {
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
+	t.Setenv("PATH", "")
+	output, err := runQLog(t, t.TempDir(), "setup", "--dry-run", "--json")
+	if err != nil {
+		t.Fatalf("setup dry-run: %v\n%s", err, output)
+	}
+	var result BootstrapResult
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatalf("decode setup output = %q: %v", output, err)
+	}
+	if len(result.Adapters) != 0 {
+		t.Fatalf("planned adapters = %#v, want none when all are unavailable", result.Adapters)
 	}
 }
 
@@ -255,6 +273,12 @@ type genericAccessDeniedCollectorManager struct{ fakeCollectorManager }
 
 func (*policyDeniedCollectorManager) Install(_, _ string) (CollectorStatus, error) {
 	return CollectorStatus{}, errors.New(`task scheduler operation /Create for task "QUANTUM_LOG Collector" failed: exit status 1: Error: Acceso denegado.`)
+}
+
+func (m *policyDeniedCollectorManager) InstallFallback(_, listen string) (CollectorStatus, error) {
+	m.installed = true
+	m.started = true
+	return CollectorStatus{Installed: true, Running: true, Listen: listen, Message: "user fallback installed and started"}, nil
 }
 
 func (*genericAccessDeniedCollectorManager) Install(_, _ string) (CollectorStatus, error) {

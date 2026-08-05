@@ -21,6 +21,7 @@ var newSetupCollectorManager = newCollectorManager
 // BootstrapResult reports the consented collector and adapter setup actions.
 type BootstrapResult struct {
 	Consent              bool                     `json:"consent"`
+	PlanOnly             bool                     `json:"plan_only,omitempty"`
 	Collector            CollectorBootstrapStatus `json:"collector"`
 	Adapters             []adapters.SetupPlan     `json:"adapters"`
 	VerificationCommands []string                 `json:"verification_commands,omitempty"`
@@ -33,6 +34,10 @@ type CollectorBootstrapStatus struct {
 	Healthy   bool     `json:"healthy"`
 	Health    string   `json:"health,omitempty"`
 	Actions   []string `json:"actions"`
+}
+
+type collectorFallbackInstaller interface {
+	InstallFallback(home, listen string) (CollectorStatus, error)
 }
 
 func newSetupCommand(home *string) *cobra.Command {
@@ -79,6 +84,13 @@ func newSetupCommand(home *string) *cobra.Command {
 		}
 		resolvedHome := paths.Home
 
+		items, err = availableSetupAdapters(command.Context(), items)
+		if err != nil {
+			return err
+		}
+		if len(args) == 1 && yes && !dryRun && len(items) == 0 {
+			return fmt.Errorf("adapter %s is unavailable", args[0])
+		}
 		plans := make([]adapters.SetupPlan, 0, len(items))
 		for _, adapter := range items {
 			if adapter.Descriptor().ID == "generic-jsonl" {
@@ -88,6 +100,7 @@ func newSetupCommand(home *string) *cobra.Command {
 			var err error
 			if dryRun || !yes {
 				plan, err = adapter.PlanInstall(command.Context(), adapters.SetupOptions{DryRun: true, Yes: yes, Home: resolvedHome})
+				plan = markSetupPlanOnly(plan)
 			} else {
 				installOptions, installOptionsErr := setupInstallOptions(resolvedHome, executable)
 				if installOptionsErr != nil {
@@ -109,7 +122,11 @@ func newSetupCommand(home *string) *cobra.Command {
 			return writeJSON(command.Root().OutOrStdout(), plans)
 		}
 		for _, plan := range plans {
-			if _, err := fmt.Fprintf(command.Root().OutOrStdout(), "%s | %s | capture=%s\n", plan.AdapterID, plan.State, plan.CaptureQuality); err != nil {
+			prefix := ""
+			if plan.PlanOnly {
+				prefix = "plan-only "
+			}
+			if _, err := fmt.Fprintf(command.Root().OutOrStdout(), "%s%s | %s | capture=%s\n", prefix, plan.AdapterID, plan.State, plan.CaptureQuality); err != nil {
 				return err
 			}
 			for _, change := range plan.Changes {
@@ -135,11 +152,15 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 		return BootstrapResult{}, err
 	}
 	items := registry.Stable()
+	items, err = availableSetupAdapters(ctx, items)
+	if err != nil {
+		return BootstrapResult{}, err
+	}
 	plans, err := planSetupAdapters(ctx, paths.Home, items, yes, dryRun)
 	if err != nil {
 		return BootstrapResult{}, err
 	}
-	result := BootstrapResult{Consent: yes, Adapters: plans}
+	result := BootstrapResult{Consent: yes, PlanOnly: !yes || dryRun, Adapters: plans}
 	if !yes || dryRun {
 		if dryRun {
 			result.Collector.Actions = []string{"dry run: collector install and start skipped"}
@@ -163,6 +184,17 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 		if !recordCollectorExternalPolicy(&result.Collector, err) {
 			return BootstrapResult{}, err
 		}
+		fallback, ok := manager.(collectorFallbackInstaller)
+		if !ok {
+			return BootstrapResult{}, fmt.Errorf("install Windows user fallback collector: unsupported collector manager")
+		}
+		fallbackStatus, fallbackErr := fallback.InstallFallback(paths.Home, defaultCollectorListen)
+		if fallbackErr != nil {
+			return BootstrapResult{}, fmt.Errorf("install Windows user fallback collector: %w", fallbackErr)
+		}
+		result.Collector.Installed = fallbackStatus.Installed
+		result.Collector.Started = fallbackStatus.Running
+		result.Collector.Actions = append(result.Collector.Actions, fallbackStatus.Message)
 	} else {
 		result.Collector.Installed = true
 		result.Collector.Actions = append(result.Collector.Actions, installed.Message)
@@ -179,14 +211,6 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 	recordCollectorHealth(ctx, &result.Collector, manager)
 
 	for index, adapter := range items {
-		detection, err := adapter.Detect(ctx)
-		if err != nil {
-			return BootstrapResult{}, err
-		}
-		if !detection.Available {
-			result.Adapters[index].Changes = skippedSetupChanges(result.Adapters[index].Changes, detection.Evidence)
-			continue
-		}
 		installResult, err := adapter.Install(ctx, installOptions)
 		if err != nil {
 			return BootstrapResult{}, err
@@ -258,32 +282,30 @@ func planSetupAdapters(ctx context.Context, home string, items []adapters.Adapte
 		if err != nil {
 			return nil, err
 		}
-		if dryRun {
-			for index := range plan.Changes {
-				plan.Changes[index].Description = "dry run: " + plan.Changes[index].Description
-			}
+		if !yes || dryRun {
+			plan = markSetupPlanOnly(plan)
 		}
 		plans = append(plans, plan)
 	}
 	return plans, nil
 }
 
-func skippedSetupChanges(changes []adapters.SetupChange, reason string) []adapters.SetupChange {
-	if len(changes) == 0 {
-		return []adapters.SetupChange{{Action: "skipped", Description: reason}}
+func markSetupPlanOnly(plan adapters.SetupPlan) adapters.SetupPlan {
+	plan.PlanOnly = true
+	for index := range plan.Changes {
+		plan.Changes[index].Action = "planned"
+		plan.Changes[index].BackupPath = ""
+		description := plan.Changes[index].Description
+		for strings.HasPrefix(description, "dry run: ") {
+			description = strings.TrimPrefix(description, "dry run: ")
+		}
+		plan.Changes[index].Description = "plan only: " + description
 	}
-	skipped := make([]adapters.SetupChange, len(changes))
-	for index, change := range changes {
-		change.Action = "skipped"
-		change.BackupPath = ""
-		change.Description = reason
-		skipped[index] = change
-	}
-	return skipped
+	return plan
 }
 
 func writeBootstrapResult(writer interface{ Write([]byte) (int, error) }, result BootstrapResult) error {
-	if _, err := fmt.Fprintf(writer, "consent=%t collector installed=%t started=%t healthy=%t\n", result.Consent, result.Collector.Installed, result.Collector.Started, result.Collector.Healthy); err != nil {
+	if _, err := fmt.Fprintf(writer, "consent=%t plan_only=%t collector installed=%t started=%t healthy=%t\n", result.Consent, result.PlanOnly, result.Collector.Installed, result.Collector.Started, result.Collector.Healthy); err != nil {
 		return err
 	}
 	for _, action := range result.Collector.Actions {
@@ -292,7 +314,11 @@ func writeBootstrapResult(writer interface{ Write([]byte) (int, error) }, result
 		}
 	}
 	for _, plan := range result.Adapters {
-		if _, err := fmt.Fprintf(writer, "%s | %s | capture=%s\n", plan.AdapterID, plan.State, plan.CaptureQuality); err != nil {
+		prefix := ""
+		if plan.PlanOnly {
+			prefix = "plan-only "
+		}
+		if _, err := fmt.Fprintf(writer, "%s%s | %s | capture=%s\n", prefix, plan.AdapterID, plan.State, plan.CaptureQuality); err != nil {
 			return err
 		}
 		for _, change := range plan.Changes {
@@ -324,6 +350,23 @@ func setupDefaultAdapters(ctx context.Context, items []adapters.Adapter) ([]adap
 		}
 	}
 	return result, nil
+}
+
+func availableSetupAdapters(ctx context.Context, items []adapters.Adapter) ([]adapters.Adapter, error) {
+	available := make([]adapters.Adapter, 0, len(items))
+	for _, adapter := range items {
+		if adapter.Descriptor().ID == "generic-jsonl" {
+			continue
+		}
+		detection, err := adapter.Detect(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if detection.Available {
+			available = append(available, adapter)
+		}
+	}
+	return available, nil
 }
 
 func installResultChanges(adapterID string, result adapters.InstallResult) []adapters.SetupChange {

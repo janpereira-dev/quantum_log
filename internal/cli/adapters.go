@@ -87,6 +87,15 @@ func newAdapterCommand(home *string) *cobra.Command {
 		if !found {
 			return fmt.Errorf("adapter %q not found", args[0])
 		}
+		if !dryRun {
+			detection, err := adapter.Detect(command.Context())
+			if err != nil {
+				return err
+			}
+			if !detection.Available {
+				return fmt.Errorf("adapter %s is unavailable: %s", adapter.Descriptor().ID, detection.Evidence)
+			}
+		}
 		options := adapters.InstallOptions{DryRun: dryRun}
 		if adapter.Descriptor().ID == "copilot" && !dryRun {
 			paths, err := config.Resolve(*home)

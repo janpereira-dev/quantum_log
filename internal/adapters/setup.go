@@ -45,6 +45,7 @@ type SetupChange struct {
 
 type SetupPlan struct {
 	AdapterID      string         `json:"adapter_id"`
+	PlanOnly       bool           `json:"plan_only,omitempty"`
 	State          SetupState     `json:"state"`
 	CaptureQuality CaptureQuality `json:"capture_quality"`
 	Changes        []SetupChange  `json:"changes"`

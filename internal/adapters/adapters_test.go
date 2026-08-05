@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -98,6 +100,42 @@ func TestCopilotCLIInstallCreatesIsolatedLifecycleHookConfig(t *testing.T) {
 	status, err := adapter.Status(context.Background())
 	if err != nil || !status.Installed || status.CaptureQuality != CaptureLifecycleOnly {
 		t.Fatalf("status = %#v, %v", status, err)
+	}
+}
+
+func TestCopilotCLIHooksExposePowerShellGenericCommand(t *testing.T) {
+	config := struct {
+		Hooks map[string][]map[string]any `json:"hooks"`
+	}{}
+	if err := json.Unmarshal([]byte(copilotCLIHooksConfig(`C:\Users\alice\AppData\Local\QUANTUM_LOG`, `C:\Program Files\QUANTUM_LOG\qlog.exe`)), &config); err != nil {
+		t.Fatal(err)
+	}
+	for event, entries := range config.Hooks {
+		if len(entries) != 1 {
+			t.Fatalf("%s entries = %#v", event, entries)
+		}
+		command, _ := entries[0]["command"].(string)
+		for _, want := range []string{"powershell.exe -NoProfile -NonInteractive -Command", "$input |", "hook copilot-cli --event " + event} {
+			if !strings.Contains(command, want) {
+				t.Fatalf("%s generic command missing %q: %s", event, want, command)
+			}
+		}
+	}
+}
+
+func TestCopilotCLIPowerShellHookScriptParsesOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("requires Windows PowerShell")
+	}
+	powershell, err := exec.LookPath("powershell.exe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := copilotCLIPowerShellHookCommand(`C:\Users\alice\AppData\Local\QUANTUM_LOG`, `C:\Program Files\QUANTUM_LOG\qlog.exe`) + " --event sessionStart"
+	command := exec.Command(powershell, "-NoProfile", "-NonInteractive", "-Command", "[scriptblock]::Create($env:QLOG_TEST_POWERSHELL_HOOK) | Out-Null")
+	command.Env = append(os.Environ(), "QLOG_TEST_POWERSHELL_HOOK="+script)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("PowerShell parser failed: %v\n%s", err, output)
 	}
 }
 
@@ -217,6 +255,35 @@ func TestCopilotVSCodeInstallConfiguresNativeOTelWithoutContentCapture(t *testin
 	}
 	if !status.Installed || status.CaptureQuality != CaptureOTELReported {
 		t.Fatalf("status = %#v", status)
+	}
+}
+
+func TestVSCodeCopilotEqualInstallIsByteIdenticalAndReportsExactDrift(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	adapter := newVSCodeCopilotAdapter()
+	if _, err := adapter.Install(context.Background(), InstallOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	settingsPath := filepath.Join(configHome, "Code", "User", "settings.json")
+	first := mustReadFile(t, settingsPath)
+	second, err := adapter.Install(context.Background(), InstallOptions{})
+	if err != nil || second.Changed || len(second.Changes) != 1 || second.Changes[0].Action != "unchanged" {
+		t.Fatalf("equal install = %#v, %v", second, err)
+	}
+	if after := mustReadFile(t, settingsPath); string(after) != string(first) {
+		t.Fatalf("equal install changed settings:\n%s\nwant:\n%s", after, first)
+	}
+
+	settings := readSettingsMap(t, settingsPath)
+	settings["github.copilot.chat.otel.captureContent"] = true
+	writeSettingsMap(t, settingsPath, settings)
+	drifted, err := adapter.Install(context.Background(), InstallOptions{})
+	if err != nil || !drifted.Changed || len(drifted.Changes) != 1 {
+		t.Fatalf("drifted install = %#v, %v", drifted, err)
+	}
+	if got := drifted.Changes[0].Description; got != "qlog managed settings drifted: github.copilot.chat.otel.captureContent" {
+		t.Fatalf("drift description = %q", got)
 	}
 }
 
