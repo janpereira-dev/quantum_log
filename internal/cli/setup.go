@@ -304,20 +304,6 @@ func markSetupPlanOnly(plan adapters.SetupPlan) adapters.SetupPlan {
 	return plan
 }
 
-func skippedSetupChanges(changes []adapters.SetupChange, reason string) []adapters.SetupChange {
-	if len(changes) == 0 {
-		return []adapters.SetupChange{{Action: "skipped", Description: reason}}
-	}
-	skipped := make([]adapters.SetupChange, len(changes))
-	for index, change := range changes {
-		change.Action = "skipped"
-		change.BackupPath = ""
-		change.Description = reason
-		skipped[index] = change
-	}
-	return skipped
-}
-
 func writeBootstrapResult(writer interface{ Write([]byte) (int, error) }, result BootstrapResult) error {
 	if _, err := fmt.Fprintf(writer, "consent=%t plan_only=%t collector installed=%t started=%t healthy=%t\n", result.Consent, result.PlanOnly, result.Collector.Installed, result.Collector.Started, result.Collector.Healthy); err != nil {
 		return err
