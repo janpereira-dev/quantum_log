@@ -21,6 +21,7 @@ var newSetupCollectorManager = newCollectorManager
 // BootstrapResult reports the consented collector and adapter setup actions.
 type BootstrapResult struct {
 	Consent              bool                     `json:"consent"`
+	PlanOnly             bool                     `json:"plan_only,omitempty"`
 	Collector            CollectorBootstrapStatus `json:"collector"`
 	Adapters             []adapters.SetupPlan     `json:"adapters"`
 	VerificationCommands []string                 `json:"verification_commands,omitempty"`
@@ -99,6 +100,7 @@ func newSetupCommand(home *string) *cobra.Command {
 			var err error
 			if dryRun || !yes {
 				plan, err = adapter.PlanInstall(command.Context(), adapters.SetupOptions{DryRun: true, Yes: yes, Home: resolvedHome})
+				plan = markSetupPlanOnly(plan)
 			} else {
 				installOptions, installOptionsErr := setupInstallOptions(resolvedHome, executable)
 				if installOptionsErr != nil {
@@ -120,7 +122,11 @@ func newSetupCommand(home *string) *cobra.Command {
 			return writeJSON(command.Root().OutOrStdout(), plans)
 		}
 		for _, plan := range plans {
-			if _, err := fmt.Fprintf(command.Root().OutOrStdout(), "%s | %s | capture=%s\n", plan.AdapterID, plan.State, plan.CaptureQuality); err != nil {
+			prefix := ""
+			if plan.PlanOnly {
+				prefix = "plan-only "
+			}
+			if _, err := fmt.Fprintf(command.Root().OutOrStdout(), "%s%s | %s | capture=%s\n", prefix, plan.AdapterID, plan.State, plan.CaptureQuality); err != nil {
 				return err
 			}
 			for _, change := range plan.Changes {
@@ -154,7 +160,7 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 	if err != nil {
 		return BootstrapResult{}, err
 	}
-	result := BootstrapResult{Consent: yes, Adapters: plans}
+	result := BootstrapResult{Consent: yes, PlanOnly: !yes || dryRun, Adapters: plans}
 	if !yes || dryRun {
 		if dryRun {
 			result.Collector.Actions = []string{"dry run: collector install and start skipped"}
@@ -276,14 +282,26 @@ func planSetupAdapters(ctx context.Context, home string, items []adapters.Adapte
 		if err != nil {
 			return nil, err
 		}
-		if dryRun {
-			for index := range plan.Changes {
-				plan.Changes[index].Description = "dry run: " + plan.Changes[index].Description
-			}
+		if !yes || dryRun {
+			plan = markSetupPlanOnly(plan)
 		}
 		plans = append(plans, plan)
 	}
 	return plans, nil
+}
+
+func markSetupPlanOnly(plan adapters.SetupPlan) adapters.SetupPlan {
+	plan.PlanOnly = true
+	for index := range plan.Changes {
+		plan.Changes[index].Action = "planned"
+		plan.Changes[index].BackupPath = ""
+		description := plan.Changes[index].Description
+		for strings.HasPrefix(description, "dry run: ") {
+			description = strings.TrimPrefix(description, "dry run: ")
+		}
+		plan.Changes[index].Description = "plan only: " + description
+	}
+	return plan
 }
 
 func skippedSetupChanges(changes []adapters.SetupChange, reason string) []adapters.SetupChange {
@@ -301,7 +319,7 @@ func skippedSetupChanges(changes []adapters.SetupChange, reason string) []adapte
 }
 
 func writeBootstrapResult(writer interface{ Write([]byte) (int, error) }, result BootstrapResult) error {
-	if _, err := fmt.Fprintf(writer, "consent=%t collector installed=%t started=%t healthy=%t\n", result.Consent, result.Collector.Installed, result.Collector.Started, result.Collector.Healthy); err != nil {
+	if _, err := fmt.Fprintf(writer, "consent=%t plan_only=%t collector installed=%t started=%t healthy=%t\n", result.Consent, result.PlanOnly, result.Collector.Installed, result.Collector.Started, result.Collector.Healthy); err != nil {
 		return err
 	}
 	for _, action := range result.Collector.Actions {
@@ -310,7 +328,11 @@ func writeBootstrapResult(writer interface{ Write([]byte) (int, error) }, result
 		}
 	}
 	for _, plan := range result.Adapters {
-		if _, err := fmt.Fprintf(writer, "%s | %s | capture=%s\n", plan.AdapterID, plan.State, plan.CaptureQuality); err != nil {
+		prefix := ""
+		if plan.PlanOnly {
+			prefix = "plan-only "
+		}
+		if _, err := fmt.Fprintf(writer, "%s%s | %s | capture=%s\n", prefix, plan.AdapterID, plan.State, plan.CaptureQuality); err != nil {
 			return err
 		}
 		for _, change := range plan.Changes {

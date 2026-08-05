@@ -112,13 +112,13 @@ func copilotCLIHooksConfig(home, executablePath string) string {
 	return fmt.Sprintf(`{
   "version": 1,
   "hooks": {
-    "sessionStart": [{"type":"command","bash":%q,"powershell":%q,"timeoutSec":5}],
-    "sessionEnd": [{"type":"command","bash":%q,"powershell":%q,"timeoutSec":5}],
-    "agentStop": [{"type":"command","bash":%q,"powershell":%q,"timeoutSec":5}],
-    "postToolUse": [{"type":"command","bash":%q,"powershell":%q,"timeoutSec":5}]
+    "sessionStart": [{"type":"command","command":%q,"bash":%q,"powershell":%q,"timeoutSec":5}],
+    "sessionEnd": [{"type":"command","command":%q,"bash":%q,"powershell":%q,"timeoutSec":5}],
+    "agentStop": [{"type":"command","command":%q,"bash":%q,"powershell":%q,"timeoutSec":5}],
+    "postToolUse": [{"type":"command","command":%q,"bash":%q,"powershell":%q,"timeoutSec":5}]
   }
 }
-`, command+" --event sessionStart", powershell+" --event sessionStart", command+" --event sessionEnd", powershell+" --event sessionEnd", command+" --event agentStop", powershell+" --event agentStop", command+" --event postToolUse", powershell+" --event postToolUse")
+`, copilotCLIGenericHookCommand(home, executablePath, "sessionStart"), command+" --event sessionStart", powershell+" --event sessionStart", copilotCLIGenericHookCommand(home, executablePath, "sessionEnd"), command+" --event sessionEnd", powershell+" --event sessionEnd", copilotCLIGenericHookCommand(home, executablePath, "agentStop"), command+" --event agentStop", powershell+" --event agentStop", copilotCLIGenericHookCommand(home, executablePath, "postToolUse"), command+" --event postToolUse", powershell+" --event postToolUse")
 }
 
 func copilotCLIHookCommand(home, executablePath string) string {
@@ -141,6 +141,14 @@ func copilotCLIPowerShellHookCommand(home, executablePath string) string {
 		command += " --home " + powerShellQuote(home)
 	}
 	return "$input | " + command + " hook copilot-cli"
+}
+
+func copilotCLIGenericHookCommand(home, executablePath, event string) string {
+	return "powershell.exe -NoProfile -NonInteractive -Command " + windowsCommandQuote(copilotCLIPowerShellHookCommand(home, executablePath)+" --event "+event)
+}
+
+func windowsCommandQuote(value string) string {
+	return `"` + strings.ReplaceAll(value, `"`, `\"`) + `"`
 }
 
 func powerShellQuote(value string) string { return "'" + strings.ReplaceAll(value, "'", "''") + "'" }

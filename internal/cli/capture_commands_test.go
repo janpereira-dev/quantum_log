@@ -712,6 +712,13 @@ func TestSetupCommandPlansInstallsAndIsIdempotent(t *testing.T) {
 	if err := json.Unmarshal([]byte(output), &plans); err != nil || len(plans) == 0 {
 		t.Fatalf("setup dry-run output = %q, %#v, %v", output, plans, err)
 	}
+	var planJSON []map[string]any
+	if err := json.Unmarshal([]byte(output), &planJSON); err != nil {
+		t.Fatal(err)
+	}
+	if len(planJSON) != 1 || planJSON[0]["plan_only"] != true || plans[0].Changes[0].Action != "planned" || strings.Contains(output, `"action":"created"`) || strings.Contains(output, `"action":"updated"`) {
+		t.Fatalf("setup dry-run must be unmistakably plan-only: %s", output)
+	}
 
 	output, err = run("setup", "opencode", "--yes", "--json", "--executable", executable)
 	if err != nil {
@@ -738,6 +745,30 @@ func TestSetupCommandPlansInstallsAndIsIdempotent(t *testing.T) {
 	if err := json.Unmarshal([]byte(output), &rerun); err != nil || len(rerun) != 1 || len(rerun[0].Changes) != 1 || rerun[0].Changes[0].Action != "unchanged" {
 		t.Fatalf("setup opencode rerun = %q, %#v, %v", output, rerun, err)
 	}
+}
+
+func TestBareSetupJSONIsPlanOnlyAndLeavesFilesystemSnapshotUnchanged(t *testing.T) {
+	home := t.TempDir()
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	beforeHome := snapshotTree(t, home)
+	beforeConfig := snapshotTree(t, configHome)
+	command := New(Version{})
+	output := new(bytes.Buffer)
+	command.SetArgs([]string{"--home", home, "setup", "--json"})
+	setOutput(command, output)
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(output.Bytes(), &result); err != nil {
+		t.Fatalf("decode bare setup: %v\n%s", err, output.String())
+	}
+	if result["plan_only"] != true || strings.Contains(output.String(), `"action":"created"`) || strings.Contains(output.String(), `"action":"updated"`) {
+		t.Fatalf("bare setup must be unmistakably plan-only: %s", output.String())
+	}
+	assertTreeEqual(t, beforeHome, snapshotTree(t, home))
+	assertTreeEqual(t, beforeConfig, snapshotTree(t, configHome))
 }
 
 func TestSetupDefaultWithoutAllSkipsUnavailableAdapters(t *testing.T) {
