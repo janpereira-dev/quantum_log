@@ -49,7 +49,7 @@ M4 is `IN_PROGRESS`. Its stable auto-capture scope is exactly Claude Code, Codex
 cmd /c "set QLOG_INSTALL_LOCAL_ARTIFACT_DIR=C:\path\to\dist&& npm install --prefix C:\qlog-install .\packaging\npm"
 ```
 
-This one-command P0-validated path installs the local `v0.3.2-rc.1` release-candidate package from its generated artifact directory. A signed HTTPS RC installer is still blocked externally. For consented setup, follow [Install](docs/INSTALL.md). For observed versus unverified agent capture, use [Auto-capture](docs/AUTOCAPTURE.md) and [10-minute verification](docs/VERIFY.md).
+This one-command path installs the local `v0.3.2-rc.2` release-candidate package from its generated artifact directory. A signed HTTPS RC installer is still blocked externally. For consented setup, follow [Install](docs/INSTALL.md). For observed versus unverified agent capture, use [Auto-capture](docs/AUTOCAPTURE.md) and [10-minute verification](docs/VERIFY.md).
 
 ## License
 

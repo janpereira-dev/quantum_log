@@ -53,7 +53,7 @@ Do not add synthetic events to clear these stages.
 
 ## Install cannot fetch RC
 
-`v0.3.2-rc.1` is a local candidate artifact, not a public end-to-end installer acceptance. Use local artifact directory only for RC validation:
+`v0.3.2-rc.2` is a local candidate artifact, not a public end-to-end installer acceptance. Use local artifact directory only for RC validation:
 
 ```powershell
 cmd /c "set QLOG_INSTALL_LOCAL_ARTIFACT_DIR=C:\path\to\dist&& npm install --prefix C:\qlog-install .\packaging\npm"

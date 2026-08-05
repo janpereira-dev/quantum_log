@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.2-rc.2 - 2026-08-05
+
+### Release candidate
+
+- Advanced local release-candidate metadata for the next validation cycle.
+
 ## 0.3.2-rc.1 - 2026-08-04
 
 ### Release candidate

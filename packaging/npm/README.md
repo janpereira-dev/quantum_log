@@ -9,7 +9,7 @@ npm install -g @janpereira.dev/quantum-log
 qlog --version
 ```
 
-Installation selects current supported platform (`darwin`, `linux`, or `win32`) and architecture (`x64` or `arm64`), downloads matching `v0.3.2-rc.1` GitHub Release archive and `checksums.txt`, verifies archive SHA-256, then extracts only `qlog` (or `qlog.exe`). It does not collect or transmit telemetry.
+Installation selects current supported platform (`darwin`, `linux`, or `win32`) and architecture (`x64` or `arm64`), downloads matching `v0.3.2-rc.2` GitHub Release archive and `checksums.txt`, verifies archive SHA-256, then extracts only `qlog` (or `qlog.exe`). It does not collect or transmit telemetry.
 
 Only Node.js built-in modules are used. Node.js 18 or newer is required.
 
