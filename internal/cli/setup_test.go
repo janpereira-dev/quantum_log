@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -52,6 +53,9 @@ func TestSetupPlanDoesNotRequireDurableExecutable(t *testing.T) {
 }
 
 func TestSetupContinuesAfterCollectorExternalPolicyDenial(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("requires Windows Task Scheduler policy diagnostics")
+	}
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
 	manager := &policyDeniedCollectorManager{}
 
