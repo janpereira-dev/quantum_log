@@ -36,6 +36,10 @@ var runWindowsSchedulerCommand = func(args ...string) ([]byte, error) {
 	return exec.Command("schtasks.exe", args...).CombinedOutput()
 }
 
+var windowsCollectorStatusFn = windowsCollectorStatus
+var stopWindowsCollectorFallbackFn = stopWindowsCollectorFallback
+var unregisterWindowsCollectorFallbackFn = unregisterWindowsCollectorFallback
+
 var startWindowsFallbackCollector = func(executable, home, listen, logPath string) (int, int64, error) {
 	command := exec.Command(executable, "--home", home, "collector", "serve", "--listen", listen, "--log-file", logPath, "--fallback-state", collectorFallbackStatePath())
 	command.SysProcAttr = &syscall.SysProcAttr{CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP | windowsDetachedProcess}
@@ -333,13 +337,38 @@ func (windowsCollectorManager) Start(home, listen string) (CollectorStatus, erro
 	if err := validateCollectorListen(listen); err != nil {
 		return CollectorStatus{}, err
 	}
+	status, err := windowsCollectorStatusFn(context.Background(), listen)
+	if err != nil {
+		return CollectorStatus{}, err
+	}
+	if status.Mode == windowsCollectorFallbackMode {
+		state, err := readWindowsCollectorFallbackState()
+		if err != nil {
+			return CollectorStatus{}, err
+		}
+		pid, startedAt, err := startWindowsFallbackCollector(state.Executable, state.Home, state.Listen, state.LogPath)
+		if err != nil {
+			return CollectorStatus{}, fmt.Errorf("start Windows user fallback collector: %w", err)
+		}
+		state.PID, state.StartedAt = pid, startedAt
+		if err := writeWindowsCollectorFallbackState(state); err != nil {
+			_ = stopWindowsCollectorFallbackFn(state)
+			return CollectorStatus{}, err
+		}
+		status.Running = true
+		status.Listen = state.Listen
+		status.LogPath = state.LogPath
+		status.ServiceID = windowsCollectorRunValue
+		status.Message = "user fallback collector started"
+		return status, nil
+	}
 	if _, err := (windowsCollectorManager{}).Install(home, listen); err != nil {
 		return CollectorStatus{}, err
 	}
-	if err := exec.Command("schtasks.exe", "/Run", "/TN", windowsCollectorTaskName).Run(); err != nil {
+	if _, err := runWindowsSchedulerCommand("/Run", "/TN", windowsCollectorTaskName); err != nil {
 		return CollectorStatus{}, err
 	}
-	status, err := windowsCollectorStatus(context.Background(), listen)
+	status, err = windowsCollectorStatusFn(context.Background(), listen)
 	if err != nil {
 		return CollectorStatus{}, err
 	}
@@ -348,7 +377,7 @@ func (windowsCollectorManager) Start(home, listen string) (CollectorStatus, erro
 }
 
 func (windowsCollectorManager) Stop() (CollectorStatus, error) {
-	status, err := windowsCollectorStatus(context.Background(), defaultCollectorListen)
+	status, err := windowsCollectorStatusFn(context.Background(), defaultCollectorListen)
 	if err != nil {
 		return CollectorStatus{}, err
 	}
@@ -361,17 +390,17 @@ func (windowsCollectorManager) Stop() (CollectorStatus, error) {
 		if err != nil {
 			return CollectorStatus{}, err
 		}
-		if err := stopWindowsCollectorFallback(state); err != nil {
+		if err := stopWindowsCollectorFallbackFn(state); err != nil {
 			return CollectorStatus{}, err
 		}
 		status.Running = false
 		status.Message = "user fallback collector stopped"
 		return status, nil
 	}
-	if err := exec.Command("schtasks.exe", "/End", "/TN", windowsCollectorTaskName).Run(); err != nil {
+	if _, err := runWindowsSchedulerCommand("/End", "/TN", windowsCollectorTaskName); err != nil {
 		return CollectorStatus{}, err
 	}
-	status, err = windowsCollectorStatus(context.Background(), defaultCollectorListen)
+	status, err = windowsCollectorStatusFn(context.Background(), defaultCollectorListen)
 	if err != nil {
 		return CollectorStatus{}, err
 	}
@@ -402,26 +431,25 @@ func (windowsCollectorManager) Logs() (string, error) {
 }
 
 func (manager windowsCollectorManager) Uninstall() (CollectorStatus, error) {
-	status, err := windowsCollectorStatus(context.Background(), defaultCollectorListen)
+	status, err := windowsCollectorStatusFn(context.Background(), defaultCollectorListen)
 	if err != nil {
 		return CollectorStatus{}, err
 	}
-	if status.Mode == windowsCollectorFallbackMode {
-		state, stateErr := readWindowsCollectorFallbackState()
-		if stateErr != nil {
-			return CollectorStatus{}, stateErr
-		}
-		if err := stopWindowsCollectorFallback(state); err != nil {
+	if state, stateErr := readWindowsCollectorFallbackState(); stateErr == nil {
+		if err := stopWindowsCollectorFallbackFn(state); err != nil {
 			return CollectorStatus{}, err
 		}
-		if err := unregisterWindowsCollectorFallback(); err != nil {
-			return CollectorStatus{}, err
-		}
-	} else if status.Installed {
+	} else if !os.IsNotExist(stateErr) {
+		return CollectorStatus{}, stateErr
+	}
+	if err := unregisterWindowsCollectorFallbackFn(); err != nil {
+		return CollectorStatus{}, err
+	}
+	if status.Mode == windowsCollectorSchedulerMode && status.Installed {
 		if _, err := manager.Stop(); err != nil {
 			return CollectorStatus{}, err
 		}
-		if err := exec.Command("schtasks.exe", "/Delete", "/TN", windowsCollectorTaskName, "/F").Run(); err != nil {
+		if _, err := runWindowsSchedulerCommand("/Delete", "/TN", windowsCollectorTaskName, "/F"); err != nil {
 			return CollectorStatus{}, err
 		}
 	}

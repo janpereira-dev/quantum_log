@@ -4,8 +4,10 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -181,5 +183,109 @@ func TestWindowsCollectorFallbackRunCommandUsesDurableIdentity(t *testing.T) {
 		if !strings.Contains(command, want) {
 			t.Fatalf("fallback command missing %q: %s", want, command)
 		}
+	}
+}
+
+func TestWindowsCollectorStartRestartsUserFallbackWithoutScheduler(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	state := windowsCollectorFallbackState{
+		Mode:       windowsCollectorFallbackMode,
+		Executable: `C:\Program Files\QUANTUM_LOG\qlog.exe`,
+		Home:       `C:\Users\alice\AppData\Local\QUANTUM_LOG`,
+		Listen:     "127.0.0.1:4318",
+		LogPath:    filepath.Join(collectorStateDir(), "collector.log"),
+	}
+	state.Command = windowsCollectorRunCommand(state)
+	if err := os.MkdirAll(collectorStateDir(), 0o700); err != nil {
+		t.Fatalf("create state directory: %v", err)
+	}
+	if err := writeWindowsCollectorFallbackState(state); err != nil {
+		t.Fatalf("write fallback state: %v", err)
+	}
+	originalStatus := windowsCollectorStatusFn
+	originalStart := startWindowsFallbackCollector
+	t.Cleanup(func() {
+		windowsCollectorStatusFn = originalStatus
+		startWindowsFallbackCollector = originalStart
+	})
+	windowsCollectorStatusFn = func(context.Context, string) (CollectorStatus, error) {
+		return CollectorStatus{Installed: true, Mode: windowsCollectorFallbackMode, Listen: state.Listen, ServiceID: windowsCollectorRunValue}, nil
+	}
+	startWindowsFallbackCollector = func(executable, home, listen, logPath string) (int, int64, error) {
+		if executable != state.Executable || home != state.Home || listen != state.Listen || logPath != state.LogPath {
+			t.Fatalf("fallback start args = %q %q %q %q", executable, home, listen, logPath)
+		}
+		return 42, 99, nil
+	}
+
+	status, err := (windowsCollectorManager{}).Start(state.Home, state.Listen)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if status.Mode != windowsCollectorFallbackMode || !status.Running {
+		t.Fatalf("Start() status = %#v, want running fallback", status)
+	}
+	updated, err := readWindowsCollectorFallbackState()
+	if err != nil {
+		t.Fatalf("read updated fallback state: %v", err)
+	}
+	if updated.PID != 42 || updated.StartedAt != 99 {
+		t.Fatalf("updated fallback state = %#v", updated)
+	}
+}
+
+func TestWindowsCollectorUninstallStopsAndUnregistersFallbackWhenSchedulerWins(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	state := windowsCollectorFallbackState{
+		Mode:       windowsCollectorFallbackMode,
+		Executable: `C:\Program Files\QUANTUM_LOG\qlog.exe`,
+		Home:       `C:\Users\alice\AppData\Local\QUANTUM_LOG`,
+		Listen:     "127.0.0.1:4318",
+		LogPath:    filepath.Join(collectorStateDir(), "collector.log"),
+	}
+	state.Command = windowsCollectorRunCommand(state)
+	if err := os.MkdirAll(collectorStateDir(), 0o700); err != nil {
+		t.Fatalf("create state directory: %v", err)
+	}
+	if err := writeWindowsCollectorFallbackState(state); err != nil {
+		t.Fatalf("write fallback state: %v", err)
+	}
+	originalStatus := windowsCollectorStatusFn
+	originalScheduler := runWindowsSchedulerCommand
+	originalStop := stopWindowsCollectorFallbackFn
+	originalUnregister := unregisterWindowsCollectorFallbackFn
+	t.Cleanup(func() {
+		windowsCollectorStatusFn = originalStatus
+		runWindowsSchedulerCommand = originalScheduler
+		stopWindowsCollectorFallbackFn = originalStop
+		unregisterWindowsCollectorFallbackFn = originalUnregister
+	})
+	windowsCollectorStatusFn = func(context.Context, string) (CollectorStatus, error) {
+		return CollectorStatus{Installed: true, Mode: windowsCollectorSchedulerMode}, nil
+	}
+	var schedulerCalls []string
+	runWindowsSchedulerCommand = func(args ...string) ([]byte, error) {
+		schedulerCalls = append(schedulerCalls, strings.Join(args, " "))
+		return nil, nil
+	}
+	stopped := false
+	stopWindowsCollectorFallbackFn = func(got windowsCollectorFallbackState) error {
+		stopped = got.Command == state.Command
+		return nil
+	}
+	unregistered := false
+	unregisterWindowsCollectorFallbackFn = func() error {
+		unregistered = true
+		return nil
+	}
+
+	if _, err := (windowsCollectorManager{}).Uninstall(); err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	if !stopped || !unregistered {
+		t.Fatalf("fallback cleanup stopped=%t unregistered=%t", stopped, unregistered)
+	}
+	if !slices.Contains(schedulerCalls, "/End /TN "+windowsCollectorTaskName) || !slices.Contains(schedulerCalls, "/Delete /TN "+windowsCollectorTaskName+" /F") {
+		t.Fatalf("scheduler calls = %q", schedulerCalls)
 	}
 }

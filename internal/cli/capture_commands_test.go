@@ -846,6 +846,31 @@ func TestAdapterInstallRejectsUnavailableAdapterBeforeWriting(t *testing.T) {
 	}
 }
 
+func TestAdapterInstallDryRunPlansUnavailableAdapterWithoutWriting(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	t.Setenv("PATH", "")
+	command := New(Version{})
+	output := new(bytes.Buffer)
+	command.SetArgs([]string{"adapter", "install", "opencode", "--dry-run", "--json"})
+	setOutput(command, output)
+	if err := command.Execute(); err != nil {
+		t.Fatalf("adapter install dry run: %v", err)
+	}
+	var result struct {
+		Changed bool `json:"changed"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &result); err != nil {
+		t.Fatalf("decode dry-run result: %v", err)
+	}
+	if result.Changed {
+		t.Fatalf("dry-run changed = true")
+	}
+	if _, err := os.Stat(filepath.Join(configHome, ".config")); !os.IsNotExist(err) {
+		t.Fatalf("dry-run wrote adapter config: %v", err)
+	}
+}
+
 func TestSetupAppliedJSONPreservesPathAndBackup(t *testing.T) {
 	configHome := t.TempDir()
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
