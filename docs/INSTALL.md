@@ -1,6 +1,6 @@
 # Install QUANTUM_LOG
 
-Install `qlog`, then initialize a local ledger. Current P0 evidence covers only local `v0.3.2-rc.1` artifact installation, not a public release acceptance.
+Install `qlog`, then initialize a local ledger. Current candidate is `v0.3.2-rc.2`; existing P0 evidence covers the prior candidate only, not a public release acceptance.
 
 ## One-command RC install
 
@@ -10,7 +10,7 @@ Requires Node.js 18 or later.
 cmd /c "set QLOG_INSTALL_LOCAL_ARTIFACT_DIR=C:\path\to\dist&& npm install --prefix C:\qlog-install .\packaging\npm"
 ```
 
-Run from repository root. `C:\path\to\dist` must contain generated `checksums.txt` and exact host `v0.3.2-rc.1` archive. P0 installed this package into isolated prefix, selected matching platform/architecture artifact, verified SHA-256, and extracted only `qlog` or `qlog.exe`. It uses no telemetry.
+Run from repository root. `C:\path\to\dist` must contain generated `checksums.txt` and exact host `v0.3.2-rc.2` archive. The installer selects matching platform/architecture artifact, verifies SHA-256, and extracts only `qlog` or `qlog.exe`. It uses no telemetry.
 
 Confirm installed binary:
 

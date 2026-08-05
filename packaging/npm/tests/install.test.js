@@ -62,9 +62,9 @@ function zipFile(name, content) {
 test('maps supported platforms to GoReleaser archives', () => {
   const linux = resolvePlatform('linux', 'x64');
   const windows = resolvePlatform('win32', 'arm64');
-  assert.equal(archiveName(linux), 'qlog_0.3.2-rc.1_linux_amd64.tar.gz');
-  assert.equal(archiveName(windows), 'qlog_0.3.2-rc.1_windows_arm64.zip');
-  assert.equal(releaseUrls(linux).archiveUrl, 'https://github.com/janpereira-dev/quantum_log/releases/download/v0.3.2-rc.1/qlog_0.3.2-rc.1_linux_amd64.tar.gz');
+  assert.equal(archiveName(linux), 'qlog_0.3.2-rc.2_linux_amd64.tar.gz');
+  assert.equal(archiveName(windows), 'qlog_0.3.2-rc.2_windows_arm64.zip');
+  assert.equal(releaseUrls(linux).archiveUrl, 'https://github.com/janpereira-dev/quantum_log/releases/download/v0.3.2-rc.2/qlog_0.3.2-rc.2_linux_amd64.tar.gz');
   assert.throws(() => resolvePlatform('freebsd', 'x64'), /unsupported platform/);
   assert.throws(() => resolvePlatform('linux', 'ia32'), /unsupported architecture/);
 });
@@ -72,7 +72,7 @@ test('maps supported platforms to GoReleaser archives', () => {
 test('requires exact SHA-256 manifest entry and verifies content', () => {
   const payload = Buffer.from('verified release');
   const hash = crypto.createHash('sha256').update(payload).digest('hex');
-  const archive = 'qlog_0.3.2-rc.1_linux_amd64.tar.gz';
+  const archive = 'qlog_0.3.2-rc.2_linux_amd64.tar.gz';
   assert.equal(checksumForArchive(`${hash}  ${archive}\n`, archive), hash);
   assert.throws(() => checksumForArchive(`${hash}  another.tar.gz\n`, archive), /no SHA-256 entry/);
   verifySha256(payload, hash);
@@ -80,17 +80,17 @@ test('requires exact SHA-256 manifest entry and verifies content', () => {
 });
 
 test('extracts only qlog from verified TAR release archive', () => {
-  assert.deepEqual(binaryFromArchive(tarFile('qlog_0.3.2-rc.1_linux_amd64/qlog', Buffer.from('binary')), resolvePlatform('linux', 'x64')), Buffer.from('binary'));
+  assert.deepEqual(binaryFromArchive(tarFile('qlog_0.3.2-rc.2_linux_amd64/qlog', Buffer.from('binary')), resolvePlatform('linux', 'x64')), Buffer.from('binary'));
 });
 
 test('extracts only qlog.exe from verified ZIP release archive', () => {
-  assert.deepEqual(binaryFromArchive(zipFile('qlog_0.3.2-rc.1_windows_amd64/qlog.exe', Buffer.from('binary')), resolvePlatform('win32', 'x64')), Buffer.from('binary'));
+  assert.deepEqual(binaryFromArchive(zipFile('qlog_0.3.2-rc.2_windows_amd64/qlog.exe', Buffer.from('binary')), resolvePlatform('win32', 'x64')), Buffer.from('binary'));
 });
 
 test('uses only matching local candidate archive and checksum manifest', () => {
   const directory = path.join(os.tmpdir(), 'qlog-candidate');
   assert.deepEqual(localArtifactPaths(resolvePlatform('linux', 'x64'), directory), {
-    archive: path.join(directory, 'qlog_0.3.2-rc.1_linux_amd64.tar.gz'),
+    archive: path.join(directory, 'qlog_0.3.2-rc.2_linux_amd64.tar.gz'),
     checksums: path.join(directory, 'checksums.txt'),
   });
 });
@@ -101,7 +101,7 @@ test('postinstall dry-run performs no release download', () => {
     encoding: 'utf8',
   });
   assert.match(output, /dry-run, no files downloaded or changed/);
-  assert.match(output, /releases\/download\/v0\.3\.2-rc\.1\/checksums\.txt/);
+  assert.match(output, /releases\/download\/v0\.3\.2-rc\.2\/checksums\.txt/);
 });
 
 test('installs from generated local candidate artifact', { skip: !process.env.QLOG_INSTALL_LOCAL_ARTIFACT_DIR, timeout: 120000 }, async () => {
@@ -155,7 +155,7 @@ test('installs from generated local candidate artifact', { skip: !process.env.QL
     const version = spawnSync(binary, ['--version'], { encoding: 'utf8' });
     assert.equal(version.error, undefined, version.error?.message);
     assert.equal(version.status, 0, version.stderr);
-    assert.match(version.stdout, /qlog 0\.3\.2-rc\.1/);
+    assert.match(version.stdout, /qlog 0\.3\.2-rc\.2/);
   } finally {
     await fs.rm(temporary, { recursive: true, force: true });
     if (packagePath) await fs.rm(packagePath, { force: true });
