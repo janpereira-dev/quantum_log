@@ -50,6 +50,27 @@ func TestHandlerKeepsOpenCodePluginEventsLifecycleOnly(t *testing.T) {
 	}
 }
 
+func TestHandlerKeepsCopilotCLIHookEventsLifecycleOnly(t *testing.T) {
+	ctx := context.Background()
+	service, err := app.Initialize(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("initialize service: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	repo := filepath.Join(t.TempDir(), "repo")
+	if _, _, err := service.Store.RegisterProject(ctx, "Repo", "repo", repo); err != nil {
+		t.Fatalf("register project: %v", err)
+	}
+	count, err := Ingest(ctx, service, Event{Source: "copilot-cli-hook", SessionID: "session-1", EventType: "postToolUse", OccurredAt: time.Now().UTC(), ProjectHint: ProjectHint{CWD: repo}, Payload: json.RawMessage(`{"agent_name":"copilot","capture_quality":"agent_reported","input_tokens":31,"prompt":"must-not-store","tool_args":{"secret":"must-not-store"}}`)})
+	if err != nil || count != 1 {
+		t.Fatalf("ingest = %d, %v", count, err)
+	}
+	report, err := service.Store.Usage(ctx, storepkg.UsageQuery{GroupBy: []string{"project", "agent", "capture_quality"}})
+	if err != nil || len(report.Rows) != 0 || report.TotalTokens != 0 {
+		t.Fatalf("usage = %#v, %v", report, err)
+	}
+}
+
 func TestHandlerMapsCodexRawResponseCompletedUsage(t *testing.T) {
 	ctx := context.Background()
 	service, err := app.Initialize(ctx, t.TempDir())

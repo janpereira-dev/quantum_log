@@ -61,6 +61,67 @@ func TestShellInstallerBootstrapPassesVerifiedExecutablePath(t *testing.T) {
 	}
 }
 
+func TestInstallersBootstrapWithDurableExecutableAndHealthCheck(t *testing.T) {
+	cases := map[string][]string{
+		"installers/install.sh": {
+			`"$INSTALL_DIR/qlog" setup --yes --executable "$INSTALL_DIR/qlog"`,
+			`"$INSTALL_DIR/qlog" doctor`,
+			`qlog health check failed`,
+		},
+		"installers/install.ps1": {
+			`$installDir = [System.IO.Path]::GetFullPath($installDir)`,
+			`& $target setup --yes --executable $target`,
+			`& $target doctor`,
+			`qlog health check failed`,
+		},
+	}
+	for name, required := range cases {
+		t.Run(name, func(t *testing.T) {
+			contents, err := os.ReadFile(filepath.Join("..", "..", filepath.FromSlash(name)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range required {
+				if !strings.Contains(string(contents), want) {
+					t.Fatalf("%s missing %q", name, want)
+				}
+			}
+		})
+	}
+}
+
+func TestInstallersResolveChannelsUnlessVersionIsExplicit(t *testing.T) {
+	cases := map[string][]string{
+		"installers/install.sh":  {"QLOG_RELEASE_VERSION:-", "releases/latest", "resolve_release"},
+		"installers/install.ps1": {"QLOG_RELEASE_VERSION", "releases/latest", "Resolve-Release"},
+	}
+	for name, required := range cases {
+		t.Run(name, func(t *testing.T) {
+			contents, err := os.ReadFile(filepath.Join("..", "..", filepath.FromSlash(name)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range required {
+				if !strings.Contains(string(contents), want) {
+					t.Fatalf("%s missing channel resolution %q", name, want)
+				}
+			}
+		})
+	}
+}
+
+func TestWindowsSmokeGuideStartsItsOwnForegroundCollector(t *testing.T) {
+	contents, err := os.ReadFile(filepath.Join("..", "..", "scripts", "smoke-v0.3.2-rc.1-windows.ps1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"foreground collector started by this harness is terminated before continuation", "collector serve --log-file"} {
+		if !strings.Contains(string(contents), want) {
+			t.Fatalf("Windows smoke guide missing %q", want)
+		}
+	}
+}
+
 func TestPowerShellInstallerSkipsBootstrapPromptWhenNoninteractive(t *testing.T) {
 	contents, err := os.ReadFile(filepath.Join("..", "..", "installers", "install.ps1"))
 	if err != nil {
@@ -118,5 +179,33 @@ func TestShellInstallDryRunDoesNotWrite(t *testing.T) {
 	}
 	if !strings.Contains(string(output), "dry-run: no files downloaded or changed") {
 		t.Fatalf("dry-run output = %q", output)
+	}
+}
+
+func TestPowerShellInstallDryRunPinsRequestedCandidateWithoutWrites(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("PowerShell installer smoke test runs on Windows CI jobs")
+	}
+	pwsh, err := exec.LookPath("pwsh")
+	if err != nil {
+		t.Skip("pwsh is unavailable")
+	}
+	installDir := filepath.Join(t.TempDir(), "bin")
+	command := exec.Command(pwsh, "-NoProfile", "-File", filepath.Join("..", "..", "installers", "install.ps1"), "--dry-run", "--version", "v0.3.2-rc.1", "--install-dir", installDir, "--no-modify-path", "--no-bootstrap")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("dry-run failed: %v\n%s", err, output)
+	}
+	if _, err := os.Stat(installDir); !os.IsNotExist(err) {
+		t.Fatalf("dry-run created install directory: %v", err)
+	}
+	for _, want := range []string{
+		"release: v0.3.2-rc.1",
+		"qlog_0.3.2-rc.1_windows_",
+		"dry-run: no files downloaded or changed",
+	} {
+		if !strings.Contains(string(output), want) {
+			t.Fatalf("dry-run output missing %q:\n%s", want, output)
+		}
 	}
 }

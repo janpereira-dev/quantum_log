@@ -87,7 +87,18 @@ func newAdapterCommand(home *string) *cobra.Command {
 		if !found {
 			return fmt.Errorf("adapter %q not found", args[0])
 		}
-		result, err := adapter.Install(command.Context(), adapters.InstallOptions{DryRun: dryRun})
+		options := adapters.InstallOptions{DryRun: dryRun}
+		if adapter.Descriptor().ID == "copilot" && !dryRun {
+			paths, err := config.Resolve(*home)
+			if err != nil {
+				return err
+			}
+			options, err = setupInstallOptions(paths.Home, "")
+			if err != nil {
+				return fmt.Errorf("install Copilot CLI adapter: %w", err)
+			}
+		}
+		result, err := adapter.Install(command.Context(), options)
 		if err != nil {
 			return err
 		}
@@ -257,6 +268,7 @@ func (localAdapterStatusAccess) HasRecentEvidence(ctx context.Context, home stri
 		From:                          now.Add(-time.Hour),
 		To:                            now,
 		RequiredQuality:               string(contract.Quality),
+		RequiredProvider:              contract.RequiredProvider,
 		RequireCodexResponseCompleted: contract.RequireCodexResponseCompleted,
 	})
 }
@@ -277,6 +289,7 @@ type adapterEvidenceContract struct {
 	Source                        string
 	Quality                       adapters.CaptureQuality
 	AllowedAgentNames             []string
+	RequiredProvider              string
 	RequireCodexResponseCompleted bool
 	SourceEvidence                bool
 	SourceEvidenceMessage         string
@@ -290,8 +303,10 @@ func evidenceContract(adapterID string) adapterEvidenceContract {
 		return adapterEvidenceContract{Source: "opencode-plugin", Quality: adapters.CaptureLifecycleOnly, SourceEvidenceMessage: "documented source-backed OpenCode usage evidence is required before verification"}
 	case "codex":
 		return adapterEvidenceContract{Source: "otlp-http", Quality: adapters.CaptureOTELReported, RequireCodexResponseCompleted: true, SourceEvidence: true, SourceEvidenceMessage: "Codex 0.145.0 documents OTLP response.completed logs with source-reported tokens"}
+	case "copilot":
+		return adapterEvidenceContract{Source: "copilot-cli-hook", Quality: adapters.CaptureLifecycleOnly, SourceEvidence: true, SourceEvidenceMessage: "GitHub Copilot CLI documents local lifecycle and tool hooks; qlog records only sanitized lifecycle metadata"}
 	case "copilot-vscode":
-		return adapterEvidenceContract{Source: "otlp-http", Quality: adapters.CaptureOTELReported, AllowedAgentNames: []string{"GitHub Copilot Chat"}, SourceEvidence: true, SourceEvidenceMessage: "VS Code documents Copilot OTel trace/span identity and gen_ai usage fields"}
+		return adapterEvidenceContract{Source: "otlp-http", Quality: adapters.CaptureOTELReported, AllowedAgentNames: []string{"GitHub Copilot Chat"}, RequiredProvider: "github", SourceEvidence: true, SourceEvidenceMessage: "VS Code documents Copilot OTel trace/span identity and gen_ai usage fields"}
 	default:
 		return adapterEvidenceContract{SourceEvidenceMessage: "adapter is outside stable verification scope"}
 	}
@@ -332,7 +347,7 @@ func verifyAdapter(ctx context.Context, home string, adapter adapters.Adapter, p
 	}
 	defer func() { _ = service.Close() }()
 	now := time.Now().UTC()
-	foundEvidence, err := service.Store.HasRecentAdapterEvidence(ctx, sqlite.AdapterEvidenceQuery{AdapterID: adapter.Descriptor().ID, AllowedAgentNames: contract.AllowedAgentNames, Source: contract.Source, From: now.Add(-duration), To: now, ProjectSlug: projectSlug, RequiredQuality: string(contract.Quality), RequireCodexResponseCompleted: contract.RequireCodexResponseCompleted})
+	foundEvidence, err := service.Store.HasRecentAdapterEvidence(ctx, sqlite.AdapterEvidenceQuery{AdapterID: adapter.Descriptor().ID, AllowedAgentNames: contract.AllowedAgentNames, Source: contract.Source, From: now.Add(-duration), To: now, ProjectSlug: projectSlug, RequiredQuality: string(contract.Quality), RequiredProvider: contract.RequiredProvider, RequireCodexResponseCompleted: contract.RequireCodexResponseCompleted})
 	if err != nil {
 		stages = append(stages, adapterVerifyStage{Name: "raw_evidence", Passed: false, Required: true, Message: err.Error()})
 		return adapterVerifyResult{AdapterID: adapter.Descriptor().ID, Stages: stages, Message: "evidence query failed"}

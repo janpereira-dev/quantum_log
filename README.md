@@ -6,7 +6,10 @@ QUANTUM_LOG is local-first observability and FinOps for AI coding agents. It rec
 
 ## Start here
 
-- [Documentation](docs/README.md)
+- [Install](docs/INSTALL.md)
+- [Auto-capture](docs/AUTOCAPTURE.md)
+- [10-minute verification](docs/VERIFY.md)
+- [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Security policy](SECURITY.md)
 - [Architecture decision records](docs/architecture/)
 
@@ -28,37 +31,25 @@ Capture quality is explicit. Provider-reported, agent-reported, lifecycle-only, 
 | M5 | `IMPLEMENTED` | Milestone acceptance evidence required for `VERIFIED`. |
 | M6 | `IMPLEMENTED` | Milestone acceptance evidence required for `VERIFIED`. |
 
-M4 is `IN_PROGRESS`. Its stable auto-capture scope is exactly Claude Code, Codex, Copilot VS Code, and OpenCode. Generic JSONL import remains available, but it is not M4 auto-capture. A configured adapter is not verified capture: every release claim needs recorded source evidence and clean-device real-agent evidence in [M4 evidence](docs-int/verification/m4-evidence.md).
+M4 is `IN_PROGRESS`. Its stable auto-capture scope is exactly Claude Code, Codex, Copilot CLI, Copilot VS Code, and OpenCode. Generic JSONL import remains available, but it is not M4 auto-capture. A configured adapter is not verified capture: every release claim needs recorded source evidence and clean-device real-agent evidence in [M4 evidence](docs-int/verification/m4-evidence.md).
 
 | Adapter | Current quality | M4 release status |
 | --- | --- | --- |
 | Claude Code | `lifecycle_only` | Awaiting clean-device lifecycle evidence. |
-| Codex | `otel_reported` | Documented OTLP `response.completed` logs with source-reported tokens are supported; clean-device accepted `response.completed` evidence and normal verification remain required. |
-| Copilot VS Code | `otel_reported` | Documented VS Code OTel configuration and sanctioned Copilot model/token evidence are supported; clean-device real-agent acceptance remains required. |
+| Codex | `otel_reported` | `BLOCKED_EXTERNAL`: a real authenticated action completed, but no OTLP request reached a healthy foreground collector. |
+| Copilot CLI | `lifecycle_only` | `BLOCKED_EXTERNAL`: official qlog-owned hooks were installed and a real action completed, but no hook event reached qlog. |
+| Copilot VS Code | `otel_reported` | `BLOCKED_EXTERNAL`: qlog wrote content-disabled OTel settings, but this host lacks the GitHub Copilot extension/login surface. |
 | OpenCode | `lifecycle_only` | Awaiting documented usage schema and clean-device evidence. |
 
 `lifecycle_only` records sanitized lifecycle evidence with no token counters. `unavailable` means qlog does not claim automatic counters. `agent_reported`, `otel_reported`, and `provider_reported` require documented source counters; `estimated` is visibly non-measured. Reports keep capture qualities separate and label cost fields as estimated; they never manufacture tokens or provider spend.
 
-## Capture bootstrap
-
-`qlog setup --yes` is consented qlog bootstrap. It installs and starts a qlog-owned collector on `127.0.0.1:4318`, then configures only detected stable adapters. Re-running it preserves unchanged qlog-managed configuration and reports changed, unchanged, or skipped actions. Use `qlog setup --dry-run` to inspect its plan first.
-
-The collector serves OTLP on `/v1/traces`, qlog JSON events on `/v1/events`, and health on `/healthz`. It refuses a non-loopback listener unless `--allow-non-loopback` is explicit. Manage its user-owned lifecycle with `qlog collector install`, `start`, `status --json`, `logs`, `stop`, `restart`, and `uninstall`. Adapter configuration updates retain a recoverable qlog backup when an existing managed file changes.
-
-`qlog adapter verify <adapter> --project <slug> --json` writes its stages and exits non-zero until every required gate passes: setup, availability, collector reachability, quality, source evidence, and fresh durable evidence. Lifecycle adapters require a real raw event. Reported-token adapters additionally require exactly linked normalized model-call evidence with source-reported tokens. Use `qlog report usage --json`, `qlog usage project <slug> --json`, and `qlog session summary <session-id> --json` to inspect recorded quality-separated evidence.
-
-Replayed events are suppressed by a durable sanitized ingestion identity before ledger append and normalization. A replay cannot increase raw-event, model-call, token, or estimated-cost totals. Current `/v1/events` responses expose accepted-event count only; use records and reports, not a response field, to prove suppression.
-
 ## Quick start
 
-```bash
-go install github.com/janpereira-dev/quantum_log/cmd/qlog@v0.3.0
-qlog init
-qlog project register --path . --name MY_PROJECT
-qlog project current --json
-qlog verify
-qlog doctor --json
+```powershell
+cmd /c "set QLOG_INSTALL_LOCAL_ARTIFACT_DIR=C:\path\to\dist&& npm install --prefix C:\qlog-install .\packaging\npm"
 ```
+
+This one-command P0-validated path installs the local `v0.3.2-rc.1` release-candidate package from its generated artifact directory. A signed HTTPS RC installer is still blocked externally. For consented setup, follow [Install](docs/INSTALL.md). For observed versus unverified agent capture, use [Auto-capture](docs/AUTOCAPTURE.md) and [10-minute verification](docs/VERIFY.md).
 
 ## License
 

@@ -8,7 +8,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $repository = if ($env:QLOG_RELEASE_REPOSITORY) { $env:QLOG_RELEASE_REPOSITORY } else { 'janpereira-dev/quantum_log' }
 $releaseBase = if ($env:QLOG_RELEASE_BASE) { $env:QLOG_RELEASE_BASE } else { "https://github.com/$repository/releases/download" }
-$version = $null
+$version = if ($env:QLOG_RELEASE_VERSION) { $env:QLOG_RELEASE_VERSION } else { $null }
 $channel = 'stable'
 $installDir = if ($env:QLOG_INSTALL_DIR) { $env:QLOG_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\QUANTUM_LOG\bin' }
 $modifyPath = $true
@@ -33,11 +33,18 @@ Options:
 Environment:
   QLOG_RELEASE_REPOSITORY GitHub owner/repository to query for releases.
   QLOG_RELEASE_BASE       HTTPS release-download base URL, without tag or filename.
+  QLOG_RELEASE_VERSION    Fixed release version; overrides --channel.
 '@ | Write-Output
 }
 
 function Fail([string]$Message) {
     throw "install.ps1: $Message"
+}
+
+function Resolve-Release {
+    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$repository/releases/latest" -Headers @{ 'User-Agent' = 'qlog-installer' }
+    if ([string]::IsNullOrWhiteSpace($release.tag_name)) { Fail "could not resolve latest release for channel $channel" }
+    return $release.tag_name
 }
 
 for ($index = 0; $index -lt $Arguments.Count; $index++) {
@@ -76,6 +83,11 @@ for ($index = 0; $index -lt $Arguments.Count; $index++) {
 if ($channel -notin @('stable', 'latest')) { Fail '--channel must be stable or latest' }
 if (-not $releaseBase.StartsWith('https://', [StringComparison]::OrdinalIgnoreCase)) { Fail 'QLOG_RELEASE_BASE must use HTTPS' }
 if ([string]::IsNullOrWhiteSpace($installDir)) { Fail '--install-dir cannot be empty' }
+try {
+    $installDir = [System.IO.Path]::GetFullPath($installDir)
+} catch {
+    Fail "invalid --install-dir: $($_.Exception.Message)"
+}
 
 if ($bootstrap -eq $null -and -not $dryRun -and -not [Console]::IsInputRedirected) {
     $consent = Read-Host 'Consent to bootstrap qlog collector and detected supported adapters for this user? [y/N]'
@@ -91,28 +103,14 @@ switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture) {
     default { Fail "unsupported architecture: $([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)" }
 }
 
-if ($version) {
-    if ($version -notmatch '^[0-9A-Za-z._-]+$') { Fail "invalid version: $version" }
-    if ($version.StartsWith('v')) {
-        $tag = $version
-        $artifactVersion = $version.Substring(1)
-    } else {
-        $tag = "v$version"
-        $artifactVersion = $version
-    }
-} elseif ($dryRun) {
-    $tag = '<latest-release>'
-    $artifactVersion = '<latest-release>'
+if (-not $version) { $version = Resolve-Release }
+if ($version -notmatch '^[0-9A-Za-z._-]+$') { Fail "invalid version: $version" }
+if ($version.StartsWith('v')) {
+    $tag = $version
+    $artifactVersion = $version.Substring(1)
 } else {
-    $apiUrl = "https://api.github.com/repos/$repository/releases/latest"
-    try {
-        $release = Invoke-RestMethod -Uri $apiUrl -Headers @{ 'User-Agent' = 'qlog-installer' }
-        $tag = [string]$release.tag_name
-    } catch {
-        Fail "could not resolve latest release from ${apiUrl}: $($_.Exception.Message)"
-    }
-    if ([string]::IsNullOrWhiteSpace($tag)) { Fail "could not resolve a tag from $apiUrl" }
-    if ($tag.StartsWith('v')) { $artifactVersion = $tag.Substring(1) } else { $artifactVersion = $tag; $tag = "v$tag" }
+    $tag = "v$version"
+    $artifactVersion = $version
 }
 
 $archive = "qlog_${artifactVersion}_${os}_${arch}.zip"
@@ -159,8 +157,10 @@ try {
     if ($bootstrap) {
         Write-Output 'bootstrap consent accepted; starting qlog setup'
         # Run qlog setup --yes only after installed binary verification.
-        & $target setup --yes
-        if ($LASTEXITCODE -ne 0) { Fail "qlog setup --yes failed (exit $LASTEXITCODE)" }
+        & $target setup --yes --executable $target
+        if ($LASTEXITCODE -ne 0) { Fail "qlog setup failed (exit $LASTEXITCODE); rerun $target setup --yes after resolving the reported error" }
+        & $target doctor
+        if ($LASTEXITCODE -ne 0) { Fail "qlog health check failed (exit $LASTEXITCODE); run $target doctor for diagnostics" }
     } else {
         Write-Output 'bootstrap skipped; run qlog setup later to configure capture manually'
     }

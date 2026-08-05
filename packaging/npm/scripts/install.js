@@ -6,7 +6,7 @@ const https = require('node:https');
 const path = require('node:path');
 const { gunzipSync, inflateRawSync } = require('node:zlib');
 
-const VERSION = '0.1.0';
+const VERSION = require('../package.json').version;
 const TAG = `v${VERSION}`;
 const RELEASE_BASE = 'https://github.com/janpereira-dev/quantum_log/releases/download';
 const MAX_CHECKSUM_BYTES = 1024 * 1024;
@@ -32,6 +32,14 @@ function releaseUrls(platform) {
     archive,
     archiveUrl: `${release}/${archive}`,
     checksumsUrl: `${release}/checksums.txt`,
+  };
+}
+
+function localArtifactPaths(platform, directory) {
+  const archive = archiveName(platform);
+  return {
+    archive: path.join(directory, archive),
+    checksums: path.join(directory, 'checksums.txt'),
   };
 }
 
@@ -190,18 +198,25 @@ async function writeBinary(binary, platform) {
 async function install() {
   const platform = resolvePlatform();
   const urls = releaseUrls(platform);
+  const artifactDirectory = process.env.QLOG_INSTALL_LOCAL_ARTIFACT_DIR;
+  const localArtifacts = artifactDirectory ? localArtifactPaths(platform, artifactDirectory) : null;
   if (process.env.QLOG_INSTALL_DRY_RUN === '1' || process.argv.includes('--dry-run')) {
     console.log(`qlog npm installer: platform ${platform.os}/${platform.arch}`);
-    console.log(`qlog npm installer: checksums ${urls.checksumsUrl}`);
-    console.log(`qlog npm installer: archive ${urls.archiveUrl}`);
+    console.log(`qlog npm installer: checksums ${localArtifacts ? localArtifacts.checksums : urls.checksumsUrl}`);
+    console.log(`qlog npm installer: archive ${localArtifacts ? localArtifacts.archive : urls.archiveUrl}`);
     console.log('qlog npm installer: dry-run, no files downloaded or changed');
     return;
   }
-  const manifest = (await download(urls.checksumsUrl, MAX_CHECKSUM_BYTES)).toString('utf8');
+  const manifest = localArtifacts
+    ? await fs.readFile(localArtifacts.checksums, 'utf8')
+    : (await download(urls.checksumsUrl, MAX_CHECKSUM_BYTES)).toString('utf8');
   const expected = checksumForArchive(manifest, urls.archive);
-  const archive = await download(urls.archiveUrl, MAX_ARCHIVE_BYTES);
+  const archive = localArtifacts
+    ? await fs.readFile(localArtifacts.archive)
+    : await download(urls.archiveUrl, MAX_ARCHIVE_BYTES);
+  if (archive.length > MAX_ARCHIVE_BYTES) throw new Error(`local artifact exceeds ${MAX_ARCHIVE_BYTES} byte limit: ${localArtifacts.archive}`);
   verifySha256(archive, expected);
   await writeBinary(binaryFromArchive(archive, platform), platform);
 }
 
-module.exports = { VERSION, archiveName, binaryFromArchive, checksumForArchive, install, releaseUrls, resolvePlatform, verifySha256 };
+module.exports = { VERSION, archiveName, binaryFromArchive, checksumForArchive, install, localArtifactPaths, releaseUrls, resolvePlatform, verifySha256 };

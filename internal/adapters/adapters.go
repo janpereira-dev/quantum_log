@@ -137,6 +137,7 @@ func Default() *Registry {
 		newOpenCodeAdapter(),
 		newClaudeCodeAdapter(),
 		newCodexAdapter(),
+		newCopilotCLIAdapter(),
 		newCommandAdapter("pi", "Pi", "pi", ".config/pi/qlog.md"),
 		newVSCodeCopilotAdapter(),
 		newCommandAdapter("openclaw", "OpenClaw", "openclaw", ".config/openclaw/qlog.md"),

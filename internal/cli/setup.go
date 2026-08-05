@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 
 	"github.com/janpereira-dev/quantum_log/internal/adapters"
 	"github.com/janpereira-dev/quantum_log/internal/app"
@@ -18,15 +20,18 @@ var newSetupCollectorManager = newCollectorManager
 
 // BootstrapResult reports the consented collector and adapter setup actions.
 type BootstrapResult struct {
-	Consent   bool                     `json:"consent"`
-	Collector CollectorBootstrapStatus `json:"collector"`
-	Adapters  []adapters.SetupPlan     `json:"adapters"`
+	Consent              bool                     `json:"consent"`
+	Collector            CollectorBootstrapStatus `json:"collector"`
+	Adapters             []adapters.SetupPlan     `json:"adapters"`
+	VerificationCommands []string                 `json:"verification_commands,omitempty"`
 }
 
 // CollectorBootstrapStatus distinguishes requested operations from their results.
 type CollectorBootstrapStatus struct {
 	Installed bool     `json:"installed"`
 	Started   bool     `json:"started"`
+	Healthy   bool     `json:"healthy"`
+	Health    string   `json:"health,omitempty"`
 	Actions   []string `json:"actions"`
 }
 
@@ -74,10 +79,6 @@ func newSetupCommand(home *string) *cobra.Command {
 		}
 		resolvedHome := paths.Home
 
-		installOptions, err := setupInstallOptions(resolvedHome, executable)
-		if err != nil {
-			return err
-		}
 		plans := make([]adapters.SetupPlan, 0, len(items))
 		for _, adapter := range items {
 			if adapter.Descriptor().ID == "generic-jsonl" {
@@ -88,6 +89,10 @@ func newSetupCommand(home *string) *cobra.Command {
 			if dryRun || !yes {
 				plan, err = adapter.PlanInstall(command.Context(), adapters.SetupOptions{DryRun: true, Yes: yes, Home: resolvedHome})
 			} else {
+				installOptions, installOptionsErr := setupInstallOptions(resolvedHome, executable)
+				if installOptionsErr != nil {
+					return installOptionsErr
+				}
 				result, installErr := adapter.Install(command.Context(), installOptions)
 				if installErr != nil {
 					return installErr
@@ -155,16 +160,23 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 
 	installed, err := manager.Install(paths.Home, defaultCollectorListen)
 	if err != nil {
-		return BootstrapResult{}, err
+		if !recordCollectorExternalPolicy(&result.Collector, err) {
+			return BootstrapResult{}, err
+		}
+	} else {
+		result.Collector.Installed = true
+		result.Collector.Actions = append(result.Collector.Actions, installed.Message)
+		started, startErr := manager.Start(paths.Home, defaultCollectorListen)
+		if startErr != nil {
+			if !recordCollectorExternalPolicy(&result.Collector, startErr) {
+				return BootstrapResult{}, startErr
+			}
+		} else {
+			result.Collector.Started = true
+			result.Collector.Actions = append(result.Collector.Actions, started.Message)
+		}
 	}
-	result.Collector.Installed = true
-	result.Collector.Actions = append(result.Collector.Actions, installed.Message)
-	started, err := manager.Start(paths.Home, defaultCollectorListen)
-	if err != nil {
-		return BootstrapResult{}, err
-	}
-	result.Collector.Started = true
-	result.Collector.Actions = append(result.Collector.Actions, started.Message)
+	recordCollectorHealth(ctx, &result.Collector, manager)
 
 	for index, adapter := range items {
 		detection, err := adapter.Detect(ctx)
@@ -180,8 +192,33 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 			return BootstrapResult{}, err
 		}
 		result.Adapters[index].Changes = installResultChanges(adapter.Descriptor().ID, installResult)
+		result.VerificationCommands = append(result.VerificationCommands, "qlog adapter verify "+adapter.Descriptor().ID)
 	}
 	return result, nil
+}
+
+func recordCollectorExternalPolicy(status *CollectorBootstrapStatus, err error) bool {
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	diagnosis := err.Error()
+	lower := strings.ToLower(diagnosis)
+	if !strings.Contains(lower, "task scheduler operation /create") || (!strings.Contains(lower, "access denied") && !strings.Contains(lower, "acceso denegado")) {
+		return false
+	}
+	status.Actions = append(status.Actions, "collector activation blocked by external policy: "+diagnosis)
+	return true
+}
+
+func recordCollectorHealth(ctx context.Context, status *CollectorBootstrapStatus, manager collectorManager) {
+	health, err := manager.Status(ctx, defaultCollectorListen)
+	if err != nil {
+		status.Actions = append(status.Actions, "collector health check failed: "+err.Error())
+		return
+	}
+	status.Healthy = health.Reachable
+	status.Health = health.Message
+	status.Actions = append(status.Actions, fmt.Sprintf("collector health check: reachable=%t running=%t: %s", health.Reachable, health.Running, health.Message))
 }
 
 func setupInstallOptions(home, executable string) (adapters.InstallOptions, error) {
@@ -207,7 +244,11 @@ func durableExecutablePath(executable string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve qlog executable path %q: %w", executable, err)
 	}
-	return filepath.Clean(resolved), nil
+	resolved = filepath.Clean(resolved)
+	if err := validateCollectorExecutable(resolved); err != nil {
+		return "", err
+	}
+	return resolved, nil
 }
 
 func planSetupAdapters(ctx context.Context, home string, items []adapters.Adapter, yes, dryRun bool) ([]adapters.SetupPlan, error) {
@@ -242,7 +283,7 @@ func skippedSetupChanges(changes []adapters.SetupChange, reason string) []adapte
 }
 
 func writeBootstrapResult(writer interface{ Write([]byte) (int, error) }, result BootstrapResult) error {
-	if _, err := fmt.Fprintf(writer, "consent=%t collector installed=%t started=%t\n", result.Consent, result.Collector.Installed, result.Collector.Started); err != nil {
+	if _, err := fmt.Fprintf(writer, "consent=%t collector installed=%t started=%t healthy=%t\n", result.Consent, result.Collector.Installed, result.Collector.Started, result.Collector.Healthy); err != nil {
 		return err
 	}
 	for _, action := range result.Collector.Actions {
@@ -258,6 +299,11 @@ func writeBootstrapResult(writer interface{ Write([]byte) (int, error) }, result
 			if _, err := fmt.Fprintf(writer, "  %s %s\n", change.Action, change.Path); err != nil {
 				return err
 			}
+		}
+	}
+	for _, command := range result.VerificationCommands {
+		if _, err := fmt.Fprintf(writer, "after your first agent event, verify: %s\n", command); err != nil {
+			return err
 		}
 	}
 	return nil

@@ -68,7 +68,7 @@ func Ingest(ctx context.Context, service *app.Service, event Event) (int, error)
 	}
 	event = normalizeCodexRawResponse(event)
 	payload := sanitizePluginPayload(event.Payload)
-	if event.Source == "opencode-plugin" {
+	if event.Source == "opencode-plugin" || event.Source == "copilot-cli-hook" {
 		payload = lifecycleOnlyPayload(payload)
 	}
 	line := map[string]any{

@@ -4,7 +4,7 @@ set -eu
 
 REPOSITORY=${QLOG_RELEASE_REPOSITORY:-janpereira-dev/quantum_log}
 RELEASE_BASE=${QLOG_RELEASE_BASE:-https://github.com/$REPOSITORY/releases/download}
-VERSION=""
+VERSION=${QLOG_RELEASE_VERSION:-}
 CHANNEL=stable
 INSTALL_DIR=${QLOG_INSTALL_DIR:-$HOME/.local/bin}
 MODIFY_PATH=1
@@ -29,6 +29,7 @@ Options:
 Environment:
   QLOG_RELEASE_REPOSITORY GitHub owner/repository to query for releases.
   QLOG_RELEASE_BASE       HTTPS release-download base URL, without tag or filename.
+  QLOG_RELEASE_VERSION    Fixed release version; overrides --channel.
   QLOG_PROFILE            Shell profile to update when PATH needs an entry.
 EOF
 }
@@ -88,6 +89,13 @@ download_stdout() {
   fi
 }
 
+resolve_release() {
+  api="https://api.github.com/repos/$REPOSITORY/releases/latest"
+  tag=$(download_stdout "$api" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
+  [ -n "$tag" ] || fail "could not resolve latest release for channel $CHANNEL"
+  printf '%s\n' "$tag"
+}
+
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" | awk '{print $1}'
@@ -114,18 +122,9 @@ else
   LIBC=not-applicable
 fi
 
-if [ -n "$VERSION" ]; then
-  case "$VERSION" in *[!0-9A-Za-z._-]*) fail "invalid version: $VERSION" ;; esac
-  case "$VERSION" in v*) TAG=$VERSION; ARTIFACT_VERSION=${VERSION#v} ;; *) TAG=v$VERSION; ARTIFACT_VERSION=$VERSION ;; esac
-elif [ "$DRY_RUN" -eq 1 ]; then
-  TAG='<latest-release>'
-  ARTIFACT_VERSION='<latest-release>'
-else
-  api_url="https://api.github.com/repos/$REPOSITORY/releases/latest"
-  TAG=$(download_stdout "$api_url" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
-  [ -n "$TAG" ] || fail "could not resolve latest release from $api_url"
-  case "$TAG" in v*) ARTIFACT_VERSION=${TAG#v} ;; *) ARTIFACT_VERSION=$TAG; TAG=v$TAG ;; esac
-fi
+if [ -z "$VERSION" ]; then VERSION=$(resolve_release); fi
+case "$VERSION" in *[!0-9A-Za-z._-]*) fail "invalid version: $VERSION" ;; esac
+case "$VERSION" in v*) TAG=$VERSION; ARTIFACT_VERSION=${VERSION#v} ;; *) TAG=v$VERSION; ARTIFACT_VERSION=$VERSION ;; esac
 
 ARCHIVE="qlog_${ARTIFACT_VERSION}_${OS}_${ARCH}.tar.gz"
 RELEASE_URL="$RELEASE_BASE/$TAG"
@@ -169,7 +168,12 @@ mv -f "$staged" "$INSTALL_DIR/qlog"
 if [ "$BOOTSTRAP" -eq 1 ]; then
   printf '%s\n' 'bootstrap consent accepted; starting qlog setup'
   # Run qlog setup --yes only after installed binary verification.
-  "$INSTALL_DIR/qlog" setup --yes --executable "$INSTALL_DIR/qlog"
+  if ! "$INSTALL_DIR/qlog" setup --yes --executable "$INSTALL_DIR/qlog"; then
+    fail "qlog setup failed; rerun $INSTALL_DIR/qlog setup --yes after resolving the reported error"
+  fi
+  if ! "$INSTALL_DIR/qlog" doctor; then
+    fail "qlog health check failed; run $INSTALL_DIR/qlog doctor for diagnostics"
+  fi
 else
   printf '%s\n' 'bootstrap skipped; run qlog setup later to configure capture manually'
 fi

@@ -149,6 +149,14 @@ func TestAdapterVerifyCopilotInstalledSettingsAreNotEnough(t *testing.T) {
 	}
 }
 
+func TestAdapterInstallCopilotRejectsTransientExecutable(t *testing.T) {
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
+	output, err := runQLog(t, t.TempDir(), "adapter", "install", "copilot")
+	if err == nil || !strings.Contains(err.Error(), "transient executable") {
+		t.Fatalf("adapter install copilot error = %v output=%q", err, output)
+	}
+}
+
 func TestAdapterVerifyCopilotRejectsGenericIngestedUsage(t *testing.T) {
 	home := t.TempDir()
 	configHome := t.TempDir()
@@ -214,46 +222,8 @@ func TestAdapterVerifyCopilotRejectsSpoofedOTLPHTTPImport(t *testing.T) {
 }
 
 func TestAdapterVerifyCopilotAcceptsSanctionedOTLPEvidence(t *testing.T) {
-	home := t.TempDir()
-	configHome := t.TempDir()
-	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
-	fakeCode := "code"
-	if runtime.GOOS == "windows" {
-		fakeCode += ".exe"
-	}
-	codeDir := t.TempDir()
-	codePath := filepath.Join(codeDir, fakeCode)
-	if err := os.WriteFile(codePath, nil, 0o700); err != nil {
-		t.Fatalf("create fake code executable: %v", err)
-	}
-	t.Setenv("PATH", codeDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	worktree := filepath.Join(t.TempDir(), "project")
-	if _, err := runQLog(t, home, "init"); err != nil {
-		t.Fatalf("init: %v", err)
-	}
-	if _, err := runQLog(t, home, "adapter", "install", "copilot-vscode"); err != nil {
-		t.Fatalf("install: %v", err)
-	}
-	if _, err := runQLog(t, home, "project", "register", "--path", worktree, "--name", "Project", "--slug", "project"); err != nil {
-		t.Fatalf("register: %v", err)
-	}
-
-	server := httptest.NewServer(newCollectorMux(home))
-	t.Cleanup(server.Close)
-	t.Setenv("QLOG_COLLECTOR_URL", server.URL+"/v1/traces")
-	request, err := http.NewRequest(http.MethodPost, server.URL+"/v1/traces", strings.NewReader(`{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"copilot-chat"}}]},"scopeSpans":[{"spans":[{"traceId":"trace-copilot","spanId":"span-copilot","attributes":[{"key":"qlog.project","value":{"stringValue":"project"}},{"key":"gen_ai.provider.name","value":{"stringValue":"github"}},{"key":"gen_ai.agent.name","value":{"stringValue":"GitHub Copilot Chat"}},{"key":"gen_ai.request.model","value":{"stringValue":"gpt-5"}},{"key":"gen_ai.usage.input_tokens","value":{"intValue":"1"}},{"key":"gen_ai.usage.output_tokens","value":{"intValue":"2"}}]}]}]}]}`))
-	if err != nil {
-		t.Fatalf("create request: %v", err)
-	}
-	request.Header.Set("Content-Type", "application/json")
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		t.Fatalf("collector request: %v", err)
-	}
-	defer func() { _ = response.Body.Close() }()
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("collector response = %d", response.StatusCode)
-	}
+	home, serverURL := setupCopilotVerification(t)
+	postCopilotOTLPTrace(t, serverURL, `,{"key":"gen_ai.provider.name","value":{"stringValue":"github"}}`)
 
 	output, err := runQLog(t, home, "adapter", "verify", "copilot-vscode", "--project", "project", "--json")
 	if err != nil {
@@ -267,6 +237,72 @@ func TestAdapterVerifyCopilotAcceptsSanctionedOTLPEvidence(t *testing.T) {
 	}
 	if !result.Ready {
 		t.Fatalf("sanctioned Copilot OTLP usage did not verify: %s", output)
+	}
+}
+
+func TestAdapterVerifyCopilotRejectsMissingOrNonGitHubProvider(t *testing.T) {
+	for _, test := range []struct {
+		name              string
+		providerAttribute string
+	}{
+		{name: "provider omitted", providerAttribute: ""},
+		{name: "provider openai", providerAttribute: `,{"key":"gen_ai.provider.name","value":{"stringValue":"openai"}}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			home, serverURL := setupCopilotVerification(t)
+			postCopilotOTLPTrace(t, serverURL, test.providerAttribute)
+
+			output, err := runQLog(t, home, "adapter", "verify", "copilot-vscode", "--project", "project", "--json")
+			if err == nil || !strings.Contains(output, `"ready":false`) {
+				t.Fatalf("Copilot evidence incorrectly verified: output=%s err=%v", output, err)
+			}
+		})
+	}
+}
+
+func setupCopilotVerification(t *testing.T) (string, string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
+	fakeCode := "code"
+	if runtime.GOOS == "windows" {
+		fakeCode += ".exe"
+	}
+	codeDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(codeDir, fakeCode), nil, 0o700); err != nil {
+		t.Fatalf("create fake code executable: %v", err)
+	}
+	t.Setenv("PATH", codeDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, err := runQLog(t, home, "adapter", "install", "copilot-vscode"); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if _, err := runQLog(t, home, "project", "register", "--path", filepath.Join(t.TempDir(), "project"), "--name", "Project", "--slug", "project"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	server := httptest.NewServer(newCollectorMux(home))
+	t.Cleanup(server.Close)
+	t.Setenv("QLOG_COLLECTOR_URL", server.URL+"/v1/traces")
+	return home, server.URL
+}
+
+func postCopilotOTLPTrace(t *testing.T, serverURL, providerAttribute string) {
+	t.Helper()
+	payload := `{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"copilot-chat"}}]},"scopeSpans":[{"spans":[{"traceId":"trace-copilot","spanId":"span-copilot","attributes":[{"key":"qlog.project","value":{"stringValue":"project"}}` + providerAttribute + `,{"key":"gen_ai.agent.name","value":{"stringValue":"GitHub Copilot Chat"}},{"key":"gen_ai.request.model","value":{"stringValue":"gpt-5"}},{"key":"gen_ai.usage.input_tokens","value":{"intValue":"1"}},{"key":"gen_ai.usage.output_tokens","value":{"intValue":"2"}}]}]}]}]}`
+	request, err := http.NewRequest(http.MethodPost, serverURL+"/v1/traces", strings.NewReader(payload))
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("collector request: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("collector response = %d", response.StatusCode)
 	}
 }
 
@@ -558,6 +594,55 @@ func TestHookClaudeCodeIngestsDirectlyByDefault(t *testing.T) {
 	}
 }
 
+func TestHookCopilotCLIIngestsLifecycleOnlyWithoutHookPayloadContent(t *testing.T) {
+	home := t.TempDir()
+	worktree := filepath.Join(t.TempDir(), "project")
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, err := runQLog(t, home, "project", "register", "--path", worktree, "--name", "Project", "--slug", "project"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	output, err := runQLogWithInput(t, home, strings.NewReader(`{"sessionId":"session-1","cwd":"`+filepath.ToSlash(worktree)+`","initialPrompt":"must-not-store","toolArgs":{"secret":"must-not-store"},"toolResult":{"textResultForLlm":"must-not-store"},"authorization":"must-not-store"}`), "hook", "copilot-cli", "--event", "postToolUse")
+	if err != nil {
+		t.Fatalf("hook copilot-cli: %v output=%q", err, output)
+	}
+	if output != "" {
+		t.Fatalf("Copilot hook output = %q, want empty", output)
+	}
+	service, err := app.OpenReadOnly(context.Background(), home)
+	if err != nil {
+		t.Fatalf("open ledger: %v", err)
+	}
+	defer func() { _ = service.Close() }()
+	if ok, err := service.Store.HasRecentAdapterEvidence(context.Background(), sqlite.AdapterEvidenceQuery{AdapterID: "copilot", Source: "copilot-cli-hook", RequiredQuality: "lifecycle_only", ProjectSlug: "project", From: time.Now().UTC().Add(-time.Minute), To: time.Now().UTC().Add(time.Minute)}); err != nil || !ok {
+		t.Fatalf("copilot lifecycle evidence = %t, %v", ok, err)
+	}
+}
+
+func TestHookCopilotCLIForwardsWithoutOutput(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/events" {
+			t.Fatalf("path = %s", request.URL.Path)
+		}
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("QLOG_COLLECTOR_URL", server.URL+"/v1/events")
+
+	command := New(Version{})
+	output := new(bytes.Buffer)
+	command.SetArgs([]string{"hook", "copilot-cli", "--event", "agentStop"})
+	command.SetIn(strings.NewReader(`{"sessionId":"session-1","cwd":"C:/repo"}`))
+	setOutput(command, output)
+	if err := command.Execute(); err != nil {
+		t.Fatalf("hook copilot-cli: %v output=%q", err, output.String())
+	}
+	if output.String() != "" {
+		t.Fatalf("Copilot hook output = %q, want empty", output.String())
+	}
+}
+
 func TestAdapterStatusTestAndUninstallCommands(t *testing.T) {
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
 	run := func(args ...string) (string, error) {
@@ -609,6 +694,7 @@ func TestAdapterStatusTestAndUninstallCommands(t *testing.T) {
 func TestSetupCommandPlansInstallsAndIsIdempotent(t *testing.T) {
 	configHome := t.TempDir()
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	executable := temporaryDurableExecutable(t)
 	run := func(args ...string) (string, error) {
 		command := New(Version{})
 		output := new(bytes.Buffer)
@@ -618,7 +704,7 @@ func TestSetupCommandPlansInstallsAndIsIdempotent(t *testing.T) {
 		return output.String(), err
 	}
 
-	output, err := run("setup", "opencode", "--dry-run", "--json")
+	output, err := run("setup", "opencode", "--dry-run", "--json", "--executable", executable)
 	if err != nil {
 		t.Fatalf("setup dry-run: %v", err)
 	}
@@ -627,7 +713,7 @@ func TestSetupCommandPlansInstallsAndIsIdempotent(t *testing.T) {
 		t.Fatalf("setup dry-run output = %q, %#v, %v", output, plans, err)
 	}
 
-	output, err = run("setup", "opencode", "--yes", "--json")
+	output, err = run("setup", "opencode", "--yes", "--json", "--executable", executable)
 	if err != nil {
 		t.Fatalf("setup opencode: %v", err)
 	}
@@ -644,7 +730,7 @@ func TestSetupCommandPlansInstallsAndIsIdempotent(t *testing.T) {
 		t.Fatalf("opencode plugin missing event forwarding: %q", contents)
 	}
 
-	output, err = run("setup", "opencode", "--yes", "--json")
+	output, err = run("setup", "opencode", "--yes", "--json", "--executable", executable)
 	if err != nil {
 		t.Fatalf("setup opencode second run: %v", err)
 	}
@@ -658,6 +744,7 @@ func TestSetupDefaultWithoutAllSkipsUnavailableAdapters(t *testing.T) {
 	configHome := t.TempDir()
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
 	t.Setenv("PATH", "")
+	executable := temporaryDurableExecutable(t)
 	previousManager := newSetupCollectorManager
 	newSetupCollectorManager = func() collectorManager { return &fakeCollectorManager{} }
 	t.Cleanup(func() { newSetupCollectorManager = previousManager })
@@ -669,7 +756,7 @@ func TestSetupDefaultWithoutAllSkipsUnavailableAdapters(t *testing.T) {
 		err := command.Execute()
 		return output.String(), err
 	}
-	output, err := run("setup", "--yes", "--json")
+	output, err := run("setup", "--yes", "--json", "--executable", executable)
 	if err != nil {
 		t.Fatalf("setup default: %v", err)
 	}
@@ -677,7 +764,7 @@ func TestSetupDefaultWithoutAllSkipsUnavailableAdapters(t *testing.T) {
 	if err := json.Unmarshal([]byte(output), &result); err != nil {
 		t.Fatalf("decode setup output = %q: %v", output, err)
 	}
-	if !result.Consent || len(result.Adapters) != 4 {
+	if !result.Consent || len(result.Adapters) != 5 {
 		t.Fatalf("bootstrap result = %#v", result)
 	}
 	for _, plan := range result.Adapters {
@@ -693,6 +780,7 @@ func TestSetupDefaultWithoutAllSkipsUnavailableAdapters(t *testing.T) {
 func TestSetupAppliedJSONPreservesPathAndBackup(t *testing.T) {
 	configHome := t.TempDir()
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	executable := temporaryDurableExecutable(t)
 	run := func(args ...string) (string, error) {
 		command := New(Version{})
 		output := new(bytes.Buffer)
@@ -701,14 +789,14 @@ func TestSetupAppliedJSONPreservesPathAndBackup(t *testing.T) {
 		err := command.Execute()
 		return output.String(), err
 	}
-	if _, err := run("setup", "opencode", "--yes", "--json"); err != nil {
+	if _, err := run("setup", "opencode", "--yes", "--json", "--executable", executable); err != nil {
 		t.Fatalf("first setup: %v", err)
 	}
 	pluginPath := filepath.Join(configHome, ".config", "opencode", "plugins", "quantum-log.ts")
 	if err := os.WriteFile(pluginPath, []byte("custom"), 0o600); err != nil {
 		t.Fatalf("modify plugin: %v", err)
 	}
-	output, err := run("setup", "opencode", "--yes", "--json")
+	output, err := run("setup", "opencode", "--yes", "--json", "--executable", executable)
 	if err != nil {
 		t.Fatalf("second setup: %v", err)
 	}
