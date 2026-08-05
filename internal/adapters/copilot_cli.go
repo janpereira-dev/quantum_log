@@ -86,7 +86,7 @@ func (a copilotCLIAdapter) Uninstall(_ context.Context, options InstallOptions) 
 }
 
 func (a copilotCLIAdapter) Ingest(context.Context, io.Reader) ([]RawRecord, error) {
-	return nil, errors.New("Copilot CLI hooks post directly to qlog /v1/events")
+	return nil, errors.New("copilot CLI hooks post directly to qlog /v1/events")
 }
 
 func (a copilotCLIAdapter) Normalize(record RawRecord) (RawRecord, error) { return record, nil }

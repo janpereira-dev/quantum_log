@@ -131,7 +131,7 @@ func TestSetupInstallOptionsRejectsTransientExecutablePaths(t *testing.T) {
 			if (err != nil) != test.wantErr {
 				t.Fatalf("setupInstallOptions() error = %v, wantErr %t", err, test.wantErr)
 			}
-			if !test.wantErr && options.ExecutablePath != filepath.Clean(test.path) {
+			if !test.wantErr && options.ExecutablePath != canonicalExecutablePath(t, test.path) {
 				t.Fatalf("ExecutablePath = %q", options.ExecutablePath)
 			}
 		})
@@ -165,7 +165,7 @@ func TestBuiltArtifactSetupWritesDurableHookCommand(t *testing.T) {
 		t.Fatalf("read generated Claude Code settings: %v", err)
 	}
 	contents := string(settings)
-	escapedArtifact := strings.ReplaceAll(artifact, `\`, `\\`)
+	escapedArtifact := strings.ReplaceAll(canonicalExecutablePath(t, artifact), `\`, `\\`)
 	if !strings.Contains(contents, escapedArtifact) {
 		t.Fatalf("generated hook does not reference built artifact %q: %s", artifact, contents)
 	}
@@ -192,6 +192,15 @@ func temporaryDurableExecutable(t *testing.T) string {
 		t.Fatalf("write durable executable: %v", err)
 	}
 	return path
+}
+
+func canonicalExecutablePath(t *testing.T, path string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatalf("resolve executable path %q: %v", path, err)
+	}
+	return filepath.Clean(resolved)
 }
 
 type fakeCollectorManager struct {
