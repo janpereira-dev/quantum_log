@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +20,29 @@ import (
 	"github.com/janpereira-dev/quantum_log/internal/storage/sqlite"
 	"github.com/spf13/cobra"
 )
+
+func TestMain(m *testing.M) {
+	fixtureDir, err := os.MkdirTemp("", "qlog-adapter-fixtures-")
+	if err != nil {
+		panic(err)
+	}
+	for _, name := range []string{"claude", "codex", "copilot", "code", "opencode"} {
+		if runtime.GOOS == "windows" {
+			name += ".exe"
+		}
+		if err := os.WriteFile(filepath.Join(fixtureDir, name), nil, 0o700); err != nil {
+			_ = os.RemoveAll(fixtureDir)
+			panic(err)
+		}
+	}
+	if err := os.Setenv("PATH", fixtureDir+string(os.PathListSeparator)+os.Getenv("PATH")); err != nil {
+		_ = os.RemoveAll(fixtureDir)
+		panic(err)
+	}
+	exitCode := m.Run()
+	_ = os.RemoveAll(fixtureDir)
+	os.Exit(exitCode)
+}
 
 func TestCoreCommandsInitializeAndReportProject(t *testing.T) {
 	home := t.TempDir()
