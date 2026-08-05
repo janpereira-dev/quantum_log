@@ -28,6 +28,7 @@ func newCollectorCommand(home *string) *cobra.Command {
 	var allowNonLoopback bool
 	var jsonOutput bool
 	var logFile string
+	var fallbackState string
 	status := &cobra.Command{Use: "status", Short: "Show managed collector status", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
 		output, err := collectorStatus(command.Context(), *home, listen, command.Flags().Changed("home"), command.Flags().Changed("listen"), newCollectorManager())
 		if err != nil {
@@ -57,6 +58,9 @@ func newCollectorCommand(home *string) *cobra.Command {
 			return err
 		}
 		defer func() { _ = closeLog() }()
+		if err := recordCollectorFallbackProcess(fallbackState, *home, listen, logFile); err != nil {
+			return err
+		}
 		server := &http.Server{Addr: listen, Handler: newCollectorMux(*home), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: time.Minute}
 		_, err = fmt.Fprintf(output, "qlog collector listening on http://%s (/v1/traces and /v1/logs OTLP JSON/protobuf, /v1/events qlog JSON)\n", listen)
 		if err != nil {
@@ -72,6 +76,8 @@ func newCollectorCommand(home *string) *cobra.Command {
 	serve.Flags().StringVar(&listen, "listen", "127.0.0.1:4318", "OTLP/HTTP listen address")
 	serve.Flags().BoolVar(&allowNonLoopback, "allow-non-loopback", false, "allow a non-loopback listen address")
 	serve.Flags().StringVar(&logFile, "log-file", "", "append collector startup and error messages to this qlog-owned log file")
+	serve.Flags().StringVar(&fallbackState, "fallback-state", "", "internal user fallback state path")
+	_ = serve.Flags().MarkHidden("fallback-state")
 	collector.AddCommand(
 		status,
 		serve,
@@ -144,6 +150,7 @@ type CollectorStatus struct {
 	Installed bool     `json:"installed"`
 	Running   bool     `json:"running"`
 	Reachable bool     `json:"reachable"`
+	Mode      string   `json:"mode"`
 	Listen    string   `json:"listen"`
 	ServiceID string   `json:"service_id"`
 	StatePath string   `json:"state_path"`

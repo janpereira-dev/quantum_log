@@ -35,6 +35,10 @@ type CollectorBootstrapStatus struct {
 	Actions   []string `json:"actions"`
 }
 
+type collectorFallbackInstaller interface {
+	InstallFallback(home, listen string) (CollectorStatus, error)
+}
+
 func newSetupCommand(home *string) *cobra.Command {
 	registry := adapters.Default()
 	var all, yes, dryRun, jsonOutput bool
@@ -79,6 +83,13 @@ func newSetupCommand(home *string) *cobra.Command {
 		}
 		resolvedHome := paths.Home
 
+		items, err = availableSetupAdapters(command.Context(), items)
+		if err != nil {
+			return err
+		}
+		if len(args) == 1 && yes && !dryRun && len(items) == 0 {
+			return fmt.Errorf("adapter %s is unavailable", args[0])
+		}
 		plans := make([]adapters.SetupPlan, 0, len(items))
 		for _, adapter := range items {
 			if adapter.Descriptor().ID == "generic-jsonl" {
@@ -135,6 +146,10 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 		return BootstrapResult{}, err
 	}
 	items := registry.Stable()
+	items, err = availableSetupAdapters(ctx, items)
+	if err != nil {
+		return BootstrapResult{}, err
+	}
 	plans, err := planSetupAdapters(ctx, paths.Home, items, yes, dryRun)
 	if err != nil {
 		return BootstrapResult{}, err
@@ -163,6 +178,17 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 		if !recordCollectorExternalPolicy(&result.Collector, err) {
 			return BootstrapResult{}, err
 		}
+		fallback, ok := manager.(collectorFallbackInstaller)
+		if !ok {
+			return BootstrapResult{}, fmt.Errorf("install Windows user fallback collector: unsupported collector manager")
+		}
+		fallbackStatus, fallbackErr := fallback.InstallFallback(paths.Home, defaultCollectorListen)
+		if fallbackErr != nil {
+			return BootstrapResult{}, fmt.Errorf("install Windows user fallback collector: %w", fallbackErr)
+		}
+		result.Collector.Installed = fallbackStatus.Installed
+		result.Collector.Started = fallbackStatus.Running
+		result.Collector.Actions = append(result.Collector.Actions, fallbackStatus.Message)
 	} else {
 		result.Collector.Installed = true
 		result.Collector.Actions = append(result.Collector.Actions, installed.Message)
@@ -179,14 +205,6 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 	recordCollectorHealth(ctx, &result.Collector, manager)
 
 	for index, adapter := range items {
-		detection, err := adapter.Detect(ctx)
-		if err != nil {
-			return BootstrapResult{}, err
-		}
-		if !detection.Available {
-			result.Adapters[index].Changes = skippedSetupChanges(result.Adapters[index].Changes, detection.Evidence)
-			continue
-		}
 		installResult, err := adapter.Install(ctx, installOptions)
 		if err != nil {
 			return BootstrapResult{}, err
@@ -324,6 +342,23 @@ func setupDefaultAdapters(ctx context.Context, items []adapters.Adapter) ([]adap
 		}
 	}
 	return result, nil
+}
+
+func availableSetupAdapters(ctx context.Context, items []adapters.Adapter) ([]adapters.Adapter, error) {
+	available := make([]adapters.Adapter, 0, len(items))
+	for _, adapter := range items {
+		if adapter.Descriptor().ID == "generic-jsonl" {
+			continue
+		}
+		detection, err := adapter.Detect(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if detection.Available {
+			available = append(available, adapter)
+		}
+	}
+	return available, nil
 }
 
 func installResultChanges(adapterID string, result adapters.InstallResult) []adapters.SetupChange {

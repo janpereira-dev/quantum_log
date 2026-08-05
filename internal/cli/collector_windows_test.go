@@ -167,3 +167,19 @@ func TestCreateWindowsCollectorTaskReportsSchedulerDiagnostic(t *testing.T) {
 		}
 	}
 }
+
+func TestWindowsCollectorFallbackRunCommandUsesDurableIdentity(t *testing.T) {
+	state := windowsCollectorFallbackState{
+		Mode:       windowsCollectorFallbackMode,
+		Executable: `C:\Program Files\QUANTUM_LOG\qlog.exe`,
+		Home:       `C:\Users\alice\AppData\Local\QUANTUM_LOG`,
+		Listen:     "127.0.0.1:4318",
+		LogPath:    `C:\Users\alice\AppData\Local\QUANTUM_LOG\collector\collector.log`,
+	}
+	command := windowsCollectorRunCommand(state)
+	for _, want := range []string{state.Executable, "--home", state.Home, "collector serve", "--listen 127.0.0.1:4318", "--log-file", state.LogPath, "--fallback-state"} {
+		if !strings.Contains(command, want) {
+			t.Fatalf("fallback command missing %q: %s", want, command)
+		}
+	}
+}

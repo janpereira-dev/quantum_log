@@ -764,16 +764,54 @@ func TestSetupDefaultWithoutAllSkipsUnavailableAdapters(t *testing.T) {
 	if err := json.Unmarshal([]byte(output), &result); err != nil {
 		t.Fatalf("decode setup output = %q: %v", output, err)
 	}
-	if !result.Consent || len(result.Adapters) != 5 {
+	if !result.Consent || len(result.Adapters) != 0 {
 		t.Fatalf("bootstrap result = %#v", result)
-	}
-	for _, plan := range result.Adapters {
-		if len(plan.Changes) != 1 || plan.Changes[0].Action != "skipped" {
-			t.Fatalf("adapter plan = %#v", plan)
-		}
 	}
 	if _, err := os.Stat(filepath.Join(configHome, ".config")); !os.IsNotExist(err) {
 		t.Fatalf("default setup created config for unavailable adapters: %v", err)
+	}
+}
+
+func TestSetupPlanningVariantsDoNotMutateCollectorLedgerOrAdapterConfig(t *testing.T) {
+	configHome := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	previousManager := newSetupCollectorManager
+	manager := &fakeCollectorManager{}
+	newSetupCollectorManager = func() collectorManager { return manager }
+	t.Cleanup(func() { newSetupCollectorManager = previousManager })
+
+	for _, args := range [][]string{{"setup"}, {"setup", "--dry-run"}, {"setup", "--all", "--dry-run"}, {"setup", "opencode", "--dry-run"}} {
+		command := New(Version{})
+		command.SetArgs(append([]string{"--home", home}, args...))
+		if err := command.Execute(); err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+	}
+	if manager.installed || manager.started {
+		t.Fatalf("collector manager mutated: %#v", manager)
+	}
+	if _, err := os.Stat(filepath.Join(home, "qlog.db")); !os.IsNotExist(err) {
+		t.Fatalf("planning created ledger: %v", err)
+	}
+	for _, path := range []string{filepath.Join(configHome, ".claude"), filepath.Join(configHome, ".codex"), filepath.Join(configHome, ".copilot"), filepath.Join(configHome, ".config"), filepath.Join(configHome, "Code")} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("planning created adapter config %s: %v", path, err)
+		}
+	}
+}
+
+func TestAdapterInstallRejectsUnavailableAdapterBeforeWriting(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	t.Setenv("PATH", "")
+	command := New(Version{})
+	command.SetArgs([]string{"adapter", "install", "opencode", "--json"})
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "adapter opencode is unavailable") {
+		t.Fatalf("adapter install error = %v, want unavailable adapter", err)
+	}
+	if _, err := os.Stat(filepath.Join(configHome, ".config")); !os.IsNotExist(err) {
+		t.Fatalf("unavailable install wrote adapter config: %v", err)
 	}
 }
 

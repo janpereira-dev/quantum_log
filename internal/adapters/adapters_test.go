@@ -220,6 +220,35 @@ func TestCopilotVSCodeInstallConfiguresNativeOTelWithoutContentCapture(t *testin
 	}
 }
 
+func TestVSCodeCopilotEqualInstallIsByteIdenticalAndReportsExactDrift(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	adapter := newVSCodeCopilotAdapter()
+	if _, err := adapter.Install(context.Background(), InstallOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	settingsPath := filepath.Join(configHome, "Code", "User", "settings.json")
+	first := mustReadFile(t, settingsPath)
+	second, err := adapter.Install(context.Background(), InstallOptions{})
+	if err != nil || second.Changed || len(second.Changes) != 1 || second.Changes[0].Action != "unchanged" {
+		t.Fatalf("equal install = %#v, %v", second, err)
+	}
+	if after := mustReadFile(t, settingsPath); string(after) != string(first) {
+		t.Fatalf("equal install changed settings:\n%s\nwant:\n%s", after, first)
+	}
+
+	settings := readSettingsMap(t, settingsPath)
+	settings["github.copilot.chat.otel.captureContent"] = true
+	writeSettingsMap(t, settingsPath, settings)
+	drifted, err := adapter.Install(context.Background(), InstallOptions{})
+	if err != nil || !drifted.Changed || len(drifted.Changes) != 1 {
+		t.Fatalf("drifted install = %#v, %v", drifted, err)
+	}
+	if got := drifted.Changes[0].Description; got != "qlog managed settings drifted: github.copilot.chat.otel.captureContent" {
+		t.Fatalf("drift description = %q", got)
+	}
+}
+
 func TestVSCodeCopilotInstallHandlesJSONCAndPreservesSettings(t *testing.T) {
 	configHome := t.TempDir()
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
