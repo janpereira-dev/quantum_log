@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/janpereira-dev/quantum_log/internal/adapters"
@@ -78,10 +79,6 @@ func newSetupCommand(home *string) *cobra.Command {
 		}
 		resolvedHome := paths.Home
 
-		installOptions, err := setupInstallOptions(resolvedHome, executable)
-		if err != nil {
-			return err
-		}
 		plans := make([]adapters.SetupPlan, 0, len(items))
 		for _, adapter := range items {
 			if adapter.Descriptor().ID == "generic-jsonl" {
@@ -92,6 +89,10 @@ func newSetupCommand(home *string) *cobra.Command {
 			if dryRun || !yes {
 				plan, err = adapter.PlanInstall(command.Context(), adapters.SetupOptions{DryRun: true, Yes: yes, Home: resolvedHome})
 			} else {
+				installOptions, installOptionsErr := setupInstallOptions(resolvedHome, executable)
+				if installOptionsErr != nil {
+					return installOptionsErr
+				}
 				result, installErr := adapter.Install(command.Context(), installOptions)
 				if installErr != nil {
 					return installErr
@@ -197,9 +198,12 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 }
 
 func recordCollectorExternalPolicy(status *CollectorBootstrapStatus, err error) bool {
+	if runtime.GOOS != "windows" {
+		return false
+	}
 	diagnosis := err.Error()
 	lower := strings.ToLower(diagnosis)
-	if !strings.Contains(lower, "access denied") && !strings.Contains(lower, "acceso denegado") {
+	if !strings.Contains(lower, "task scheduler operation /create") || (!strings.Contains(lower, "access denied") && !strings.Contains(lower, "acceso denegado")) {
 		return false
 	}
 	status.Actions = append(status.Actions, "collector activation blocked by external policy: "+diagnosis)

@@ -4,7 +4,7 @@ set -eu
 
 REPOSITORY=${QLOG_RELEASE_REPOSITORY:-janpereira-dev/quantum_log}
 RELEASE_BASE=${QLOG_RELEASE_BASE:-https://github.com/$REPOSITORY/releases/download}
-VERSION=${QLOG_RELEASE_VERSION:-v0.3.2-rc.1}
+VERSION=${QLOG_RELEASE_VERSION:-}
 CHANNEL=stable
 INSTALL_DIR=${QLOG_INSTALL_DIR:-$HOME/.local/bin}
 MODIFY_PATH=1
@@ -29,7 +29,7 @@ Options:
 Environment:
   QLOG_RELEASE_REPOSITORY GitHub owner/repository to query for releases.
   QLOG_RELEASE_BASE       HTTPS release-download base URL, without tag or filename.
-  QLOG_RELEASE_VERSION    Release candidate to install when --version is omitted.
+  QLOG_RELEASE_VERSION    Fixed release version; overrides --channel.
   QLOG_PROFILE            Shell profile to update when PATH needs an entry.
 EOF
 }
@@ -89,6 +89,13 @@ download_stdout() {
   fi
 }
 
+resolve_release() {
+  api="https://api.github.com/repos/$REPOSITORY/releases/latest"
+  tag=$(download_stdout "$api" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
+  [ -n "$tag" ] || fail "could not resolve latest release for channel $CHANNEL"
+  printf '%s\n' "$tag"
+}
+
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" | awk '{print $1}'
@@ -115,10 +122,9 @@ else
   LIBC=not-applicable
 fi
 
-if [ -n "$VERSION" ]; then
-  case "$VERSION" in *[!0-9A-Za-z._-]*) fail "invalid version: $VERSION" ;; esac
-  case "$VERSION" in v*) TAG=$VERSION; ARTIFACT_VERSION=${VERSION#v} ;; *) TAG=v$VERSION; ARTIFACT_VERSION=$VERSION ;; esac
-fi
+if [ -z "$VERSION" ]; then VERSION=$(resolve_release); fi
+case "$VERSION" in *[!0-9A-Za-z._-]*) fail "invalid version: $VERSION" ;; esac
+case "$VERSION" in v*) TAG=$VERSION; ARTIFACT_VERSION=${VERSION#v} ;; *) TAG=v$VERSION; ARTIFACT_VERSION=$VERSION ;; esac
 
 ARCHIVE="qlog_${ARTIFACT_VERSION}_${OS}_${ARCH}.tar.gz"
 RELEASE_URL="$RELEASE_BASE/$TAG"

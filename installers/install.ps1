@@ -8,7 +8,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $repository = if ($env:QLOG_RELEASE_REPOSITORY) { $env:QLOG_RELEASE_REPOSITORY } else { 'janpereira-dev/quantum_log' }
 $releaseBase = if ($env:QLOG_RELEASE_BASE) { $env:QLOG_RELEASE_BASE } else { "https://github.com/$repository/releases/download" }
-$version = if ($env:QLOG_RELEASE_VERSION) { $env:QLOG_RELEASE_VERSION } else { 'v0.3.2-rc.1' }
+$version = if ($env:QLOG_RELEASE_VERSION) { $env:QLOG_RELEASE_VERSION } else { $null }
 $channel = 'stable'
 $installDir = if ($env:QLOG_INSTALL_DIR) { $env:QLOG_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\QUANTUM_LOG\bin' }
 $modifyPath = $true
@@ -33,12 +33,18 @@ Options:
 Environment:
   QLOG_RELEASE_REPOSITORY GitHub owner/repository to query for releases.
   QLOG_RELEASE_BASE       HTTPS release-download base URL, without tag or filename.
-  QLOG_RELEASE_VERSION    Release candidate to install when --version is omitted.
+  QLOG_RELEASE_VERSION    Fixed release version; overrides --channel.
 '@ | Write-Output
 }
 
 function Fail([string]$Message) {
     throw "install.ps1: $Message"
+}
+
+function Resolve-Release {
+    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$repository/releases/latest" -Headers @{ 'User-Agent' = 'qlog-installer' }
+    if ([string]::IsNullOrWhiteSpace($release.tag_name)) { Fail "could not resolve latest release for channel $channel" }
+    return $release.tag_name
 }
 
 for ($index = 0; $index -lt $Arguments.Count; $index++) {
@@ -97,15 +103,14 @@ switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture) {
     default { Fail "unsupported architecture: $([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)" }
 }
 
-if ($version) {
-    if ($version -notmatch '^[0-9A-Za-z._-]+$') { Fail "invalid version: $version" }
-    if ($version.StartsWith('v')) {
-        $tag = $version
-        $artifactVersion = $version.Substring(1)
-    } else {
-        $tag = "v$version"
-        $artifactVersion = $version
-    }
+if (-not $version) { $version = Resolve-Release }
+if ($version -notmatch '^[0-9A-Za-z._-]+$') { Fail "invalid version: $version" }
+if ($version.StartsWith('v')) {
+    $tag = $version
+    $artifactVersion = $version.Substring(1)
+} else {
+    $tag = "v$version"
+    $artifactVersion = $version
 }
 
 $archive = "qlog_${artifactVersion}_${os}_${arch}.zip"

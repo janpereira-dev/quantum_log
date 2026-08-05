@@ -90,6 +90,38 @@ func TestInstallersBootstrapWithDurableExecutableAndHealthCheck(t *testing.T) {
 	}
 }
 
+func TestInstallersResolveChannelsUnlessVersionIsExplicit(t *testing.T) {
+	cases := map[string][]string{
+		"installers/install.sh":  {"QLOG_RELEASE_VERSION:-", "releases/latest", "resolve_release"},
+		"installers/install.ps1": {"QLOG_RELEASE_VERSION", "releases/latest", "Resolve-Release"},
+	}
+	for name, required := range cases {
+		t.Run(name, func(t *testing.T) {
+			contents, err := os.ReadFile(filepath.Join("..", "..", filepath.FromSlash(name)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range required {
+				if !strings.Contains(string(contents), want) {
+					t.Fatalf("%s missing channel resolution %q", name, want)
+				}
+			}
+		})
+	}
+}
+
+func TestWindowsSmokeGuideStartsItsOwnForegroundCollector(t *testing.T) {
+	contents, err := os.ReadFile(filepath.Join("..", "..", "scripts", "smoke-v0.3.2-rc.1-windows.ps1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"foreground collector started by this harness is terminated before continuation", "collector serve --log-file"} {
+		if !strings.Contains(string(contents), want) {
+			t.Fatalf("Windows smoke guide missing %q", want)
+		}
+	}
+}
+
 func TestPowerShellInstallerSkipsBootstrapPromptWhenNoninteractive(t *testing.T) {
 	contents, err := os.ReadFile(filepath.Join("..", "..", "installers", "install.ps1"))
 	if err != nil {

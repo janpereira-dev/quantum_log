@@ -97,6 +97,9 @@ func (a copilotCLIAdapter) hooksPath() string {
 	if root := os.Getenv("QLOG_ADAPTER_CONFIG_HOME"); root != "" {
 		return filepath.Join(root, ".copilot", "hooks", "qlog.json")
 	}
+	if home := os.Getenv("COPILOT_HOME"); home != "" {
+		return filepath.Join(home, "hooks", "qlog.json")
+	}
 	if home, err := os.UserHomeDir(); err == nil {
 		return filepath.Join(home, ".copilot", "hooks", "qlog.json")
 	}

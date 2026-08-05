@@ -149,6 +149,14 @@ func TestAdapterVerifyCopilotInstalledSettingsAreNotEnough(t *testing.T) {
 	}
 }
 
+func TestAdapterInstallCopilotRejectsTransientExecutable(t *testing.T) {
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
+	output, err := runQLog(t, t.TempDir(), "adapter", "install", "copilot")
+	if err == nil || !strings.Contains(err.Error(), "transient executable") {
+		t.Fatalf("adapter install copilot error = %v output=%q", err, output)
+	}
+}
+
 func TestAdapterVerifyCopilotRejectsGenericIngestedUsage(t *testing.T) {
 	home := t.TempDir()
 	configHome := t.TempDir()
@@ -599,8 +607,8 @@ func TestHookCopilotCLIIngestsLifecycleOnlyWithoutHookPayloadContent(t *testing.
 	if err != nil {
 		t.Fatalf("hook copilot-cli: %v output=%q", err, output)
 	}
-	if !strings.Contains(output, "hook: ingested") {
-		t.Fatalf("hook output = %q", output)
+	if output != "" {
+		t.Fatalf("Copilot hook output = %q, want empty", output)
 	}
 	service, err := app.OpenReadOnly(context.Background(), home)
 	if err != nil {
@@ -609,6 +617,29 @@ func TestHookCopilotCLIIngestsLifecycleOnlyWithoutHookPayloadContent(t *testing.
 	defer func() { _ = service.Close() }()
 	if ok, err := service.Store.HasRecentAdapterEvidence(context.Background(), sqlite.AdapterEvidenceQuery{AdapterID: "copilot", Source: "copilot-cli-hook", RequiredQuality: "lifecycle_only", ProjectSlug: "project", From: time.Now().UTC().Add(-time.Minute), To: time.Now().UTC().Add(time.Minute)}); err != nil || !ok {
 		t.Fatalf("copilot lifecycle evidence = %t, %v", ok, err)
+	}
+}
+
+func TestHookCopilotCLIForwardsWithoutOutput(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/events" {
+			t.Fatalf("path = %s", request.URL.Path)
+		}
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("QLOG_COLLECTOR_URL", server.URL+"/v1/events")
+
+	command := New(Version{})
+	output := new(bytes.Buffer)
+	command.SetArgs([]string{"hook", "copilot-cli", "--event", "agentStop"})
+	command.SetIn(strings.NewReader(`{"sessionId":"session-1","cwd":"C:/repo"}`))
+	setOutput(command, output)
+	if err := command.Execute(); err != nil {
+		t.Fatalf("hook copilot-cli: %v output=%q", err, output.String())
+	}
+	if output.String() != "" {
+		t.Fatalf("Copilot hook output = %q, want empty", output.String())
 	}
 }
 

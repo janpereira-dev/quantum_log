@@ -87,7 +87,18 @@ func newAdapterCommand(home *string) *cobra.Command {
 		if !found {
 			return fmt.Errorf("adapter %q not found", args[0])
 		}
-		result, err := adapter.Install(command.Context(), adapters.InstallOptions{DryRun: dryRun})
+		options := adapters.InstallOptions{DryRun: dryRun}
+		if adapter.Descriptor().ID == "copilot" && !dryRun {
+			paths, err := config.Resolve(*home)
+			if err != nil {
+				return err
+			}
+			options, err = setupInstallOptions(paths.Home, "")
+			if err != nil {
+				return fmt.Errorf("install Copilot CLI adapter: %w", err)
+			}
+		}
+		result, err := adapter.Install(command.Context(), options)
 		if err != nil {
 			return err
 		}

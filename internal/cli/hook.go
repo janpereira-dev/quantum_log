@@ -141,18 +141,16 @@ func ingestOrForwardHook(command *cobra.Command, home *string, event qlogevent.E
 		if response.StatusCode < 200 || response.StatusCode > 299 {
 			return fmt.Errorf("collector rejected hook event: %s", response.Status)
 		}
-		_, err = fmt.Fprintln(command.Root().OutOrStdout(), "hook: forwarded")
-		return err
+		return nil
 	}
 	service, err := app.Open(command.Context(), *home)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = service.Close() }()
-	count, err := qlogevent.Ingest(command.Context(), service, event)
+	_, err = qlogevent.Ingest(command.Context(), service, event)
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(command.Root().OutOrStdout(), "hook: ingested %d\n", count)
-	return err
+	return nil
 }

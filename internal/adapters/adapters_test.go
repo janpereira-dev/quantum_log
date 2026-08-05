@@ -101,6 +101,21 @@ func TestCopilotCLIInstallCreatesIsolatedLifecycleHookConfig(t *testing.T) {
 	}
 }
 
+func TestCopilotCLIHooksPreferCOPILOT_HOMEAfterTestOverride(t *testing.T) {
+	override := t.TempDir()
+	copilotHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", override)
+	t.Setenv("COPILOT_HOME", copilotHome)
+	adapter := newCopilotCLIAdapter()
+	if got, want := adapter.hooksPath(), filepath.Join(override, ".copilot", "hooks", "qlog.json"); got != want {
+		t.Fatalf("test override hooks path = %q, want %q", got, want)
+	}
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", "")
+	if got, want := adapter.hooksPath(), filepath.Join(copilotHome, "hooks", "qlog.json"); got != want {
+		t.Fatalf("COPILOT_HOME hooks path = %q, want %q", got, want)
+	}
+}
+
 func TestCopilotCLIUninstallRemovesOnlyQlogOwnedHookConfig(t *testing.T) {
 	configHome := t.TempDir()
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)

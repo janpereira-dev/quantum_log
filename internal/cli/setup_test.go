@@ -43,6 +43,14 @@ func TestSetupWithoutConsentOnlyPrintsPlan(t *testing.T) {
 	}
 }
 
+func TestSetupPlanDoesNotRequireDurableExecutable(t *testing.T) {
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
+	output, err := runQLog(t, t.TempDir(), "setup", "copilot", "--dry-run")
+	if err != nil {
+		t.Fatalf("setup plan: %v\n%s", err, output)
+	}
+}
+
 func TestSetupContinuesAfterCollectorExternalPolicyDenial(t *testing.T) {
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
 	manager := &policyDeniedCollectorManager{}
@@ -56,6 +64,14 @@ func TestSetupContinuesAfterCollectorExternalPolicyDenial(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(result.Collector.Actions, "\n"), "Acceso denegado") {
 		t.Fatalf("collector actions = %q, want exact scheduler diagnosis", result.Collector.Actions)
+	}
+}
+
+func TestSetupFailsForGenericAccessDeniedCollectorError(t *testing.T) {
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
+	manager := &genericAccessDeniedCollectorManager{}
+	if _, err := bootstrapSupportedAdapters(context.Background(), t.TempDir(), temporaryDurableExecutable(t), true, false, adapters.Default(), manager); err == nil {
+		t.Fatal("bootstrap succeeded for generic access denied error")
 	}
 }
 
@@ -154,7 +170,8 @@ func TestBuiltArtifactSetupWritesDurableHookCommand(t *testing.T) {
 	}
 
 	configHome := t.TempDir()
-	setup := exec.Command(artifact, "--home", t.TempDir(), "setup", "claude-code", "--yes")
+	home := t.TempDir()
+	setup := exec.Command(artifact, "--home", home, "setup", "claude-code", "--yes")
 	setup.Env = append(os.Environ(), "QLOG_ADAPTER_CONFIG_HOME="+configHome)
 	if output, err := setup.CombinedOutput(); err != nil {
 		t.Fatalf("run built artifact setup: %v\n%s", err, output)
@@ -171,6 +188,21 @@ func TestBuiltArtifactSetupWritesDurableHookCommand(t *testing.T) {
 	}
 	if strings.Contains(contents, "go-build") || strings.Contains(contents, ".test") {
 		t.Fatalf("generated hook references transient Go executable: %s", contents)
+	}
+
+	copilotHome := filepath.Join(t.TempDir(), "copilot-hooks")
+	directInstall := exec.Command(artifact, "--home", home, "adapter", "install", "copilot")
+	directInstall.Env = append(os.Environ(), "COPILOT_HOME="+copilotHome, "QLOG_ADAPTER_CONFIG_HOME=")
+	if output, err := directInstall.CombinedOutput(); err != nil {
+		t.Fatalf("run built artifact adapter install: %v\n%s", err, output)
+	}
+	hooks, err := os.ReadFile(filepath.Join(copilotHome, "hooks", "qlog.json"))
+	if err != nil {
+		t.Fatalf("read generated Copilot hooks: %v", err)
+	}
+	escapedHome := strings.ReplaceAll(home, `\`, `\\`)
+	if !strings.Contains(string(hooks), escapedArtifact) || !strings.Contains(string(hooks), escapedHome) {
+		t.Fatalf("generated Copilot hook does not use artifact and selected home: %s", hooks)
 	}
 }
 
@@ -215,8 +247,14 @@ type ledgerCheckingCollectorManager struct {
 
 type policyDeniedCollectorManager struct{ fakeCollectorManager }
 
+type genericAccessDeniedCollectorManager struct{ fakeCollectorManager }
+
 func (*policyDeniedCollectorManager) Install(_, _ string) (CollectorStatus, error) {
 	return CollectorStatus{}, errors.New(`task scheduler operation /Create for task "QUANTUM_LOG Collector" failed: exit status 1: Error: Acceso denegado.`)
+}
+
+func (*genericAccessDeniedCollectorManager) Install(_, _ string) (CollectorStatus, error) {
+	return CollectorStatus{}, errors.New("create collector directory: access denied")
 }
 
 func (m *ledgerCheckingCollectorManager) Install(home, listen string) (CollectorStatus, error) {

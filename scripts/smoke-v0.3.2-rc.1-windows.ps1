@@ -76,6 +76,7 @@ function Start-ForegroundCollector {
 }
 
 function Write-RealAgentGuide([string]$CollectorMode) {
+	$collectorLog = Join-Path $script:Evidence 'collector.log'
     $guide = @"
 P0-09 real-agent continuation
 
@@ -86,6 +87,9 @@ Adapter config home: $script:AdapterConfigHome
 Collector mode: $CollectorMode
 
 Do not inject OTLP, qlog JSON events, or synthetic telemetry.
+The foreground collector started by this harness is terminated before continuation.
+In a separate PowerShell terminal, start a new foreground collector and leave it running:
+  & "$script:Qlog" --home "$script:QlogHome" collector serve --log-file "$collectorLog"
 In a separate terminal, use one installed detected agent normally against this clean project:
   $script:ProjectRoot
 
