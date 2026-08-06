@@ -654,15 +654,6 @@ func first(primary, fallback map[string]string, keys ...string) string {
 	return ""
 }
 
-func number(values map[string]string, keys ...string) int64 {
-	for _, key := range keys {
-		if value, err := strconv.ParseInt(values[key], 10, 64); err == nil {
-			return value
-		}
-	}
-	return 0
-}
-
 func requiredNumber(values map[string]string, key string) (int64, bool) {
 	value, err := strconv.ParseInt(values[key], 10, 64)
 	return value, err == nil && value >= 0
