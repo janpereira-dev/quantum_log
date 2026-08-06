@@ -26,6 +26,7 @@ const maxBodyBytes = 4 << 20
 var errUnsupportedMediaType = errors.New("unsupported OTLP content type")
 var errUnsupportedCodexLog = errors.New("unsupported Codex OTLP log record")
 var errUnsupportedCopilotSpan = errors.New("unsupported Copilot OTLP span")
+var errUnsupportedClaudeSpan = errors.New("unsupported Claude Code OTLP span")
 
 type Receiver struct {
 	service *app.Service
@@ -156,14 +157,14 @@ func decodeLogRequest(request *http.Request, writer http.ResponseWriter) (export
 func (r Receiver) ingest(ctx context.Context, request exportTraceServiceRequest) (int, int, error) {
 	var lines bytes.Buffer
 	count := 0
-	unsupportedCopilotSpan := false
+	unsupportedAgentSpan := false
 	for _, resourceSpan := range request.ResourceSpans {
 		resource := attributes(resourceSpan.Resource.Attributes)
 		for _, scopeSpan := range resourceSpan.ScopeSpans {
 			for _, span := range scopeSpan.Spans {
 				line, err := r.event(ctx, resource, attributes(span.Attributes), span)
-				if errors.Is(err, errUnsupportedCopilotSpan) {
-					unsupportedCopilotSpan = true
+				if errors.Is(err, errUnsupportedCopilotSpan) || errors.Is(err, errUnsupportedClaudeSpan) {
+					unsupportedAgentSpan = true
 					continue
 				}
 				if err != nil {
@@ -177,7 +178,7 @@ func (r Receiver) ingest(ctx context.Context, request exportTraceServiceRequest)
 		}
 	}
 	if count == 0 {
-		if unsupportedCopilotSpan {
+		if unsupportedAgentSpan {
 			return 0, 0, errUnsupportedCopilotSpan
 		}
 		return 0, 0, nil
@@ -226,6 +227,9 @@ func (r Receiver) ingestLogs(ctx context.Context, request exportLogsServiceReque
 func (r Receiver) event(ctx context.Context, resource, span map[string]string, input span) (map[string]any, error) {
 	if isCopilotTelemetryCandidate(resource, span) {
 		return r.copilotSpanEvent(ctx, resource, span, input)
+	}
+	if isClaudeTelemetryCandidate(resource, span) {
+		return r.claudeSpanEvent(ctx, resource, span, input)
 	}
 	cwd := first(span, resource, "process.cwd", "qlog.cwd")
 	adapterProject := first(span, resource, "qlog.project")
@@ -285,41 +289,28 @@ func (r Receiver) event(ctx context.Context, resource, span map[string]string, i
 	return line, nil
 }
 
-func (r Receiver) copilotSpanEvent(ctx context.Context, resource, attributes map[string]string, input span) (map[string]any, error) {
-	if resource["service.name"] != "copilot-chat" || attributes["gen_ai.agent.name"] != "GitHub Copilot Chat" || input.TraceID == "" || input.SpanID == "" {
-		return nil, errUnsupportedCopilotSpan
+func (r Receiver) claudeSpanEvent(ctx context.Context, resource, attributes map[string]string, input span) (map[string]any, error) {
+	if resource["service.name"] != "claude-code" || input.TraceID == "" || input.SpanID == "" {
+		return nil, errUnsupportedClaudeSpan
 	}
-	model := first(attributes, resource, "gen_ai.response.model", "gen_ai.request.model")
+	model := first(attributes, resource, "model", "gen_ai.response.model", "gen_ai.request.model")
 	if model == "" {
-		return nil, errUnsupportedCopilotSpan
+		return nil, errUnsupportedClaudeSpan
 	}
-	payload := map[string]any{
-		"provider":        first(attributes, resource, "gen_ai.provider.name", "gen_ai.system"),
-		"model":           model,
-		"agent_name":      "GitHub Copilot Chat",
-		"capture_quality": "otel_reported",
+	payload := map[string]any{"provider": "anthropic", "model": model, "agent_name": "claude-code", "capture_quality": "otel_reported"}
+	observations := metricObservations(attributes, "otel", []metricKeySet{
+		{name: "input_tokens", keys: []string{"input_tokens", "gen_ai.usage.input_tokens"}},
+		{name: "output_tokens", keys: []string{"output_tokens", "gen_ai.usage.output_tokens"}},
+		{name: "cached_input_tokens", keys: []string{"cache_read_input_tokens", "gen_ai.usage.cache_read.input_tokens"}},
+		{name: "cache_write_tokens", keys: []string{"cache_creation_input_tokens", "gen_ai.usage.cache_creation.input_tokens"}},
+	})
+	if len(observations) == 0 {
+		return nil, errUnsupportedClaudeSpan
 	}
-	totalTokens := int64(0)
-	for _, bucket := range []struct {
-		name string
-		keys []string
-	}{
-		{"input_tokens", []string{"gen_ai.usage.input_tokens", "gen_ai.usage.prompt_tokens"}},
-		{"output_tokens", []string{"gen_ai.usage.output_tokens", "gen_ai.usage.completion_tokens"}},
-		{"reasoning_tokens", []string{"gen_ai.usage.reasoning.output_tokens", "gen_ai.usage.reasoning_tokens"}},
-		{"cached_input_tokens", []string{"gen_ai.usage.cache_read.input_tokens"}},
-		{"cache_write_tokens", []string{"gen_ai.usage.cache_creation.input_tokens"}},
-	} {
-		value, found := optionalNumber(attributes, bucket.keys...)
-		if !found {
-			continue
-		}
-		payload[bucket.name] = value
-		totalTokens += value
+	for _, observation := range observations {
+		payload[observation["name"].(string)] = observation["value"]
 	}
-	if totalTokens == 0 {
-		return nil, errUnsupportedCopilotSpan
-	}
+	payload["metric_observations"] = observations
 	resolved, err := r.service.ResolveProject(ctx, "", first(attributes, resource, "qlog.project"), first(attributes, resource, "process.cwd", "qlog.cwd"))
 	if err != nil {
 		return nil, err
@@ -328,9 +319,70 @@ func (r Receiver) copilotSpanEvent(ctx context.Context, resource, attributes map
 	if occurredAt.IsZero() {
 		occurredAt = time.Now().UTC()
 	}
-	sessionID := first(attributes, resource, "session.id", "gen_ai.conversation.id")
+	sessionID := first(attributes, resource, "session.id")
 	if sessionID == "" {
 		sessionID = input.TraceID
+	}
+	return map[string]any{
+		"source": "otlp-http", "session_id": sessionID, "event_type": "model.call", "occurred_at": occurredAt,
+		"project_id": resolved.ProjectID, "project_location_id": resolved.LocationID,
+		"project_resolution_method": string(resolved.Resolution.Method), "project_resolution_confidence": string(resolved.Resolution.Confidence),
+		"project_resolution_evidence": map[string]string{"source": "central-project-resolver"},
+		"upstream_event_id":           input.TraceID + "/" + input.SpanID, "payload": payload,
+	}, nil
+}
+
+func (r Receiver) copilotSpanEvent(ctx context.Context, resource, attributes map[string]string, input span) (map[string]any, error) {
+	serviceName := resource["service.name"]
+	agentName := attributes["gen_ai.agent.name"]
+	if input.TraceID == "" || input.SpanID == "" || (serviceName != "copilot-chat" && serviceName != "github-copilot") || (serviceName == "copilot-chat" && agentName != "GitHub Copilot Chat") {
+		return nil, errUnsupportedCopilotSpan
+	}
+	if agentName == "" {
+		agentName = "GitHub Copilot CLI"
+	}
+	model := first(attributes, resource, "gen_ai.response.model", "gen_ai.request.model")
+	if model == "" {
+		return nil, errUnsupportedCopilotSpan
+	}
+	payload := map[string]any{
+		"provider":        first(attributes, resource, "gen_ai.provider.name", "gen_ai.system"),
+		"model":           model,
+		"agent_name":      agentName,
+		"capture_quality": "otel_reported",
+	}
+	if payload["provider"] == "" && serviceName == "github-copilot" {
+		payload["provider"] = "github"
+	}
+	observations := metricObservations(attributes, "otel", []metricKeySet{
+		{name: "input_tokens", keys: []string{"gen_ai.usage.input_tokens", "gen_ai.usage.prompt_tokens"}},
+		{name: "output_tokens", keys: []string{"gen_ai.usage.output_tokens", "gen_ai.usage.completion_tokens"}},
+		{name: "reasoning_tokens", keys: []string{"gen_ai.usage.reasoning.output_tokens", "gen_ai.usage.reasoning_tokens"}},
+		{name: "cached_input_tokens", keys: []string{"gen_ai.usage.cache_read.input_tokens"}},
+		{name: "cache_write_tokens", keys: []string{"gen_ai.usage.cache_creation.input_tokens"}},
+		{name: "total_tokens", keys: []string{"gen_ai.usage.total_tokens"}},
+	})
+	if len(observations) == 0 {
+		return nil, errUnsupportedCopilotSpan
+	}
+	for _, observation := range observations {
+		payload[observation["name"].(string)] = observation["value"]
+	}
+	payload["metric_observations"] = observations
+	resolved, err := r.resolveCopilotProject(ctx, resource, attributes)
+	if err != nil {
+		return nil, err
+	}
+	occurredAt := fromUnixNano(input.StartTimeUnixNano)
+	if occurredAt.IsZero() {
+		occurredAt = time.Now().UTC()
+	}
+	sessionID := first(attributes, resource, "gen_ai.conversation.id", "session.id")
+	if sessionID == "" {
+		sessionID = input.TraceID
+	}
+	if windowSessionID := first(attributes, resource, "session.id"); windowSessionID != "" && windowSessionID != sessionID {
+		payload["copilot_window_session_id"] = windowSessionID
 	}
 	return map[string]any{
 		"source":                        "otlp-http",
@@ -345,6 +397,20 @@ func (r Receiver) copilotSpanEvent(ctx context.Context, resource, attributes map
 		"upstream_event_id":             input.TraceID + "/" + input.SpanID,
 		"payload":                       payload,
 	}, nil
+}
+
+func (r Receiver) resolveCopilotProject(ctx context.Context, resource, attributes map[string]string) (app.ResolvedProject, error) {
+	if adapterProject := first(attributes, resource, "qlog.project"); adapterProject != "" {
+		return r.service.ResolveProject(ctx, "", adapterProject, "")
+	}
+	cwd := first(attributes, resource, "process.cwd", "qlog.cwd")
+	if cwd != "" {
+		return r.service.ResolveProject(ctx, "", "", cwd)
+	}
+	return r.service.ResolveProjectFromVerifiedGitContext(ctx,
+		first(attributes, resource, "github.copilot.git.root", "github.copilot.git.repository_root"),
+		first(attributes, resource, "github.copilot.git.repository", "github.copilot.git.remote_url"),
+	)
 }
 
 func codexLogIdentity(record map[string]string, input logRecord) string {
@@ -388,12 +454,19 @@ func (r Receiver) codexLogEvent(ctx context.Context, resource, record map[string
 		"input_tokens":             inputTokens,
 		"output_tokens":            outputTokens,
 	}
+	observations := []map[string]any{
+		{"name": "input_tokens", "value": inputTokens, "source": "otel", "raw_key": "input_tokens", "confidence": "reported"},
+		{"name": "output_tokens", "value": outputTokens, "source": "otel", "raw_key": "output_tokens", "confidence": "reported"},
+	}
 	if value, found := requiredNumber(record, "cached_input_tokens"); found {
 		payload["cached_input_tokens"] = value
+		observations = append(observations, map[string]any{"name": "cached_input_tokens", "value": value, "source": "otel", "raw_key": "cached_input_tokens", "confidence": "reported"})
 	}
 	if value, found := requiredNumber(record, "reasoning_output_tokens"); found {
 		payload["reasoning_tokens"] = value
+		observations = append(observations, map[string]any{"name": "reasoning_tokens", "value": value, "source": "otel", "raw_key": "reasoning_output_tokens", "confidence": "reported"})
 	}
+	payload["metric_observations"] = observations
 	occurredAt := fromUnixNano(input.TimeUnixNano)
 	if occurredAt.IsZero() {
 		occurredAt = time.Now().UTC()
@@ -419,6 +492,30 @@ func (r Receiver) codexLogEvent(ctx context.Context, resource, record map[string
 
 func isCopilotTelemetryCandidate(resource, attributes map[string]string) bool {
 	return strings.Contains(strings.ToLower(resource["service.name"]), "copilot") || strings.Contains(strings.ToLower(attributes["gen_ai.agent.name"]), "copilot")
+}
+
+func isClaudeTelemetryCandidate(resource, attributes map[string]string) bool {
+	return resource["service.name"] == "claude-code" || attributes["agent.name"] == "claude-code"
+}
+
+type metricKeySet struct {
+	name string
+	keys []string
+}
+
+func metricObservations(values map[string]string, source string, sets []metricKeySet) []map[string]any {
+	result := make([]map[string]any, 0, len(sets))
+	for _, set := range sets {
+		for _, key := range set.keys {
+			value, found := optionalNumber(values, key)
+			if !found {
+				continue
+			}
+			result = append(result, map[string]any{"name": set.name, "value": value, "source": source, "raw_key": key, "confidence": "reported"})
+			break
+		}
+	}
+	return result
 }
 
 type exportTraceServiceRequest struct {

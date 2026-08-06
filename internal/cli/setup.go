@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/janpereira-dev/quantum_log/internal/adapters"
 	"github.com/janpereira-dev/quantum_log/internal/app"
@@ -235,7 +236,9 @@ func recordCollectorExternalPolicy(status *CollectorBootstrapStatus, err error) 
 }
 
 func recordCollectorHealth(ctx context.Context, status *CollectorBootstrapStatus, manager collectorManager) {
-	health, err := manager.Status(ctx, defaultCollectorListen)
+	health, err := pollCollectorReadiness(ctx, func(ctx context.Context) (CollectorStatus, error) {
+		return manager.Status(ctx, defaultCollectorListen)
+	})
 	if err != nil {
 		status.Actions = append(status.Actions, "collector health check failed: "+err.Error())
 		return
@@ -243,6 +246,48 @@ func recordCollectorHealth(ctx context.Context, status *CollectorBootstrapStatus
 	status.Healthy = health.Reachable
 	status.Health = health.Message
 	status.Actions = append(status.Actions, fmt.Sprintf("collector health check: reachable=%t running=%t: %s", health.Reachable, health.Running, health.Message))
+}
+
+const collectorReadinessTimeout = 3 * time.Second
+
+func pollCollectorReadiness(ctx context.Context, check func(context.Context) (CollectorStatus, error)) (CollectorStatus, error) {
+	deadline := time.NewTimer(collectorReadinessTimeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	var last CollectorStatus
+	var lastErr error
+	for {
+		status, err := check(ctx)
+		if err == nil {
+			last = status
+			if status.Reachable {
+				return status, nil
+			}
+			if !status.Installed && !status.Running {
+				if status.Message == "" {
+					status.Message = "collector is not installed or running"
+				}
+				return status, nil
+			}
+			lastErr = nil
+		} else {
+			lastErr = err
+		}
+		select {
+		case <-ctx.Done():
+			return last, ctx.Err()
+		case <-deadline.C:
+			if lastErr != nil {
+				return last, fmt.Errorf("collector did not become ready within %s: %w", collectorReadinessTimeout, lastErr)
+			}
+			if last.Message == "" {
+				last.Message = "no collector health response"
+			}
+			return last, fmt.Errorf("collector did not become ready within %s: %s", collectorReadinessTimeout, last.Message)
+		case <-ticker.C:
+		}
+	}
 }
 
 func setupInstallOptions(home, executable string) (adapters.InstallOptions, error) {

@@ -149,6 +149,30 @@ func TestLinuxCollectorUninstallKeepsStateWhenReloadFails(t *testing.T) {
 	}
 }
 
+func TestLinuxCollectorUninstallIsIdempotentWithoutUnit(t *testing.T) {
+	var calls []string
+	resetLinuxCollectorUninstallSeams(t)
+	stopLinuxCollector = func() (CollectorStatus, error) {
+		calls = append(calls, "stop")
+		return CollectorStatus{}, nil
+	}
+	runLinuxSystemctl = func(args ...string) error {
+		calls = append(calls, strings.Join(args, " "))
+		return nil
+	}
+	removeLinuxCollectorUnit = func(string) error { return os.ErrNotExist }
+	removeLinuxCollectorTree = func(string) error { return nil }
+	removeLinuxCollectorState = func(string) error { return nil }
+	readManagedLinuxCollectorState = func(string) linuxCollectorState { return linuxCollectorState{Home: t.TempDir()} }
+
+	if _, err := (linuxCollectorManager{}).Uninstall(); err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	if !slices.Equal(calls, []string{"stop"}) {
+		t.Fatalf("uninstall calls = %q, want only idempotent stop", calls)
+	}
+}
+
 func resetLinuxCollectorUninstallSeams(t *testing.T) {
 	t.Helper()
 	previousSystemctl := runLinuxSystemctl

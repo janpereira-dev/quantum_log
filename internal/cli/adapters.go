@@ -309,7 +309,7 @@ func evidenceContract(adapterID string) adapterEvidenceContract {
 	case "claude-code":
 		return adapterEvidenceContract{Source: "claude-code-hook", Quality: adapters.CaptureLifecycleOnly, SourceEvidence: true, SourceEvidenceMessage: "Claude Code hooks emit lifecycle evidence only"}
 	case "opencode":
-		return adapterEvidenceContract{Source: "opencode-plugin", Quality: adapters.CaptureLifecycleOnly, SourceEvidenceMessage: "documented source-backed OpenCode usage evidence is required before verification"}
+		return adapterEvidenceContract{Source: "opencode-plugin", Quality: adapters.CaptureAgentReported, SourceEvidence: true, SourceEvidenceMessage: "OpenCode 1.18.x plugin source contract records allowlisted assistant-reported usage"}
 	case "codex":
 		return adapterEvidenceContract{Source: "otlp-http", Quality: adapters.CaptureOTELReported, RequireCodexResponseCompleted: true, SourceEvidence: true, SourceEvidenceMessage: "Codex 0.145.0 documents OTLP response.completed logs with source-reported tokens"}
 	case "copilot":

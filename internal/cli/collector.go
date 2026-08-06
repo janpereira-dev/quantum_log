@@ -115,7 +115,9 @@ func collectorStatus(ctx context.Context, home, listen string, homeExplicit, lis
 	output.Database = finalPaths.Database
 	output.Endpoints = []string{"/v1/traces", "/v1/logs", "/v1/events", "/healthz"}
 	output.Scope = "loopback-only by default"
-	output.Health = output.Message
+	if output.Health == "" {
+		output.Health = output.Message
+	}
 	return output, nil
 }
 
@@ -179,6 +181,23 @@ func probeCollectorHealth(ctx context.Context, listen string) collectorHealth {
 		return collectorHealth{Health: response.Status}
 	}
 	return collectorHealth{Reachable: true, Running: true, Health: "ok"}
+}
+
+func collectorStatusWithHealth(status CollectorStatus, health collectorHealth) CollectorStatus {
+	status.Reachable = health.Reachable
+	status.Health = health.Health
+	if health.Reachable {
+		status.Running = true
+	}
+	switch {
+	case !status.Installed && !health.Reachable:
+		status.Message = "collector is not installed; run qlog collector install or qlog setup --yes"
+	case status.Installed && !health.Reachable:
+		status.Message = "collector is installed but not reachable; run qlog collector restart or qlog collector logs"
+	default:
+		status.Message = health.Health
+	}
+	return status
 }
 
 type requestScopedHandler struct {
@@ -303,4 +322,16 @@ func validateCollectorExecutable(executable string) error {
 		return fmt.Errorf("cannot install managed collector from transient executable %q; build or install a durable qlog.exe, then run that binary to install the managed collector", executable)
 	}
 	return nil
+}
+
+// collectorStartupStatus preserves service state when startup exceeds the bounded
+// readiness window, while making a ready collector explicit to callers.
+func collectorStartupStatus(ctx context.Context, status CollectorStatus, check func(context.Context) (CollectorStatus, error)) (CollectorStatus, error) {
+	ready, err := pollCollectorReadiness(ctx, check)
+	if err == nil {
+		ready.Message = "collector started and ready"
+		return ready, nil
+	}
+	status.Message = "collector start requested; readiness=" + err.Error()
+	return status, nil
 }

@@ -19,7 +19,7 @@ type claudeCodeAdapter struct{}
 func newClaudeCodeAdapter() claudeCodeAdapter { return claudeCodeAdapter{} }
 
 func (claudeCodeAdapter) Descriptor() Descriptor {
-	return Descriptor{ID: "claude-code", Name: "Claude Code", Version: "hooks", Stable: true, Capabilities: Capabilities{SessionLifecycle: true, ProjectIdentity: true, WorkingDirectory: true, StructuredEvents: true}}
+	return Descriptor{ID: "claude-code", Name: "Claude Code", Version: "hooks-otel", Stable: true, Capabilities: Capabilities{ModelIdentity: true, InputTokens: true, OutputTokens: true, CacheTokens: true, SessionLifecycle: true, ProjectIdentity: true, WorkingDirectory: true, StructuredEvents: true}}
 }
 
 func (claudeCodeAdapter) Detect(context.Context) (Detection, error) {
@@ -49,7 +49,7 @@ func (a claudeCodeAdapter) PlanInstall(_ context.Context, options SetupOptions) 
 	if options.DryRun {
 		change.Description = "dry run: " + change.Description
 	}
-	return SetupPlan{AdapterID: "claude-code", State: SetupPartial, CaptureQuality: CaptureLifecycleOnly, Changes: []SetupChange{change}, Notes: []string{"installs Claude Code lifecycle hooks that call qlog hook claude-code; hooks do not expose exact token usage"}}, nil
+	return SetupPlan{AdapterID: "claude-code", State: SetupPartial, CaptureQuality: CaptureOTELReported, Changes: []SetupChange{change}, Notes: []string{"installs Claude Code lifecycle hooks and trace-only OTel configuration", "OTel message content capture is disabled; source E2E evidence remains required"}}, nil
 }
 
 func (a claudeCodeAdapter) Status(ctx context.Context) (SetupStatus, error) {
@@ -62,7 +62,11 @@ func (a claudeCodeAdapter) Status(ctx context.Context) (SetupStatus, error) {
 	if detection.Available || installed {
 		state = SetupPartial
 	}
-	return SetupStatus{AdapterID: "claude-code", Available: detection.Available, Installed: installed, State: state, InstallationState: state, CaptureQuality: CaptureLifecycleOnly, Evidence: detection.Evidence, Notes: []string{"Claude Code hook capture is lifecycle-only until official token usage is available"}}, nil
+	quality := CaptureLifecycleOnly
+	if claudeSettingsHasOTEL(a.settingsPath()) {
+		quality = CaptureOTELReported
+	}
+	return SetupStatus{AdapterID: "claude-code", Available: detection.Available, Installed: installed, State: state, InstallationState: state, CaptureQuality: quality, Evidence: detection.Evidence, Notes: []string{"Claude Code hooks retain lifecycle and CWD evidence; trace-only OTel disables message content capture", "No source E2E evidence is claimed by setup"}}, nil
 }
 
 func (a claudeCodeAdapter) Test(ctx context.Context) (TestResult, error) {
@@ -180,6 +184,11 @@ func claudeSettingsHasQlog(path string) bool {
 	return err == nil && bytesContains(contents, []byte("qlog")) && bytesContains(contents, []byte("hook claude-code"))
 }
 
+func claudeSettingsHasOTEL(path string) bool {
+	contents, err := os.ReadFile(path)
+	return err == nil && bytesContains(contents, []byte("CLAUDE_CODE_ENABLE_TELEMETRY")) && bytesContains(contents, []byte("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"))
+}
+
 func claudeCodeHookCommand(home, executablePath string) string {
 	if strings.TrimSpace(executablePath) != "" {
 		command := shellQuote(executablePath)
@@ -213,7 +222,28 @@ func claudeSettingsWithQlogHooks(current []byte, command string) ([]byte, error)
 		hooks[event] = claudeHookEntriesWithQlog(hooks[event], command)
 	}
 	settings["hooks"] = hooks
+	env, _ := settings["env"].(map[string]any)
+	if env == nil {
+		env = map[string]any{}
+	}
+	for key, value := range claudeCodeOTELEnvironment() {
+		env[key] = value
+	}
+	settings["env"] = env
 	return json.MarshalIndent(settings, "", "  ")
+}
+
+func claudeCodeOTELEnvironment() map[string]string {
+	return map[string]string{
+		"CLAUDE_CODE_ENABLE_TELEMETRY":                       "1",
+		"CLAUDE_CODE_ENHANCED_TELEMETRY_BETA":                "1",
+		"OTEL_TRACES_EXPORTER":                               "otlp",
+		"OTEL_METRICS_EXPORTER":                              "none",
+		"OTEL_LOGS_EXPORTER":                                 "none",
+		"OTEL_EXPORTER_OTLP_PROTOCOL":                        "http/json",
+		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT":                 "http://127.0.0.1:4318/v1/traces",
+		"OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "false",
+	}
 }
 
 func claudeSettingsWithoutQlogHooks(current []byte) ([]byte, error) {

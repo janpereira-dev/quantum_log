@@ -85,6 +85,27 @@ func TestDarwinCollectorStartBootstrapsWhenJobIsNotLoaded(t *testing.T) {
 	}
 }
 
+func TestDarwinCollectorStartReportsReadiness(t *testing.T) {
+	resetDarwinCollectorStartSeams(t)
+	runDarwinLaunchctl = func(args ...string) error {
+		if args[0] == "print" {
+			return errors.New("not loaded")
+		}
+		return nil
+	}
+	statusDarwinCollector = func(context.Context, string) (CollectorStatus, error) {
+		return CollectorStatus{Installed: true, Running: true, Reachable: true, Message: "ok"}, nil
+	}
+
+	status, err := (darwinCollectorManager{}).Start(t.TempDir(), "127.0.0.1:4318")
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if !status.Reachable || status.Message != "collector started and ready" {
+		t.Fatalf("Start() status = %#v", status)
+	}
+}
+
 func TestDarwinCollectorStartReturnsUnexpectedBootoutFailure(t *testing.T) {
 	var calls [][]string
 	resetDarwinCollectorStartSeams(t)

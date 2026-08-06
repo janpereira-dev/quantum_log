@@ -231,6 +231,58 @@ func TestSessionSnapshotPreservesResolutionConfidenceAndLifecycleEvidence(t *tes
 	}
 }
 
+func TestSessionSnapshotsReturnsAggregateEvidenceWithoutPayloads(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if _, err := store.AppendRawEvent(ctx, RawEventInput{Source: "fixture", SessionID: "session-b", EventType: "session.completed", OccurredAt: time.Now().UTC(), Payload: []byte(`{"agent_name":"opencode","capture_quality":"lifecycle_only","prompt":"must-not-return"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.EnsureSession(ctx, "session-a", "claude-code", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshots, err := store.SessionSnapshots(ctx)
+	if err != nil {
+		t.Fatalf("SessionSnapshots() error = %v", err)
+	}
+	if len(snapshots) != 2 || snapshots[0].SessionID != "session-a" || snapshots[1].SessionID != "session-b" {
+		t.Fatalf("SessionSnapshots() = %#v", snapshots)
+	}
+	if snapshots[1].LifecycleEventCount != 1 || snapshots[1].ModelCallCount != 0 {
+		t.Fatalf("lifecycle snapshot = %#v", snapshots[1])
+	}
+}
+
+func TestCapabilityReportCountsRecognizedRawEvidenceWithoutInventingUsage(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	project, _, err := store.RegisterProject(ctx, "Project", "project", filepath.Join(t.TempDir(), "project"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	for _, eventType := range []string{"lifecycle.stop", "tool.execute.failed", "mcp.call"} {
+		if _, err := store.AppendRawEvent(ctx, RawEventInput{Source: "fixture", SessionID: "session-1", EventType: eventType, ProjectID: project.ID, OccurredAt: now, Payload: []byte(`{"agent_name":"fixture","capture_quality":"lifecycle_only"}`)}); err != nil {
+			t.Fatalf("append %s: %v", eventType, err)
+		}
+	}
+	report, err := store.CapabilityReport(ctx, CapabilityQuery{ProjectSlug: project.Slug, AgentName: "fixture", SessionID: "session-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ModelCalls != 0 || report.Tokens != 0 || report.LifecycleEvents != 1 || report.ToolCalls != 1 || report.MCPCalls != 1 || report.Errors != 1 {
+		t.Fatalf("capability report = %#v", report)
+	}
+}
+
 func measurement(measurements []MeasurementSummary, quality string) MeasurementSummary {
 	for _, summary := range measurements {
 		if summary.Quality == quality {

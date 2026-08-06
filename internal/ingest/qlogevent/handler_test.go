@@ -17,7 +17,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-func TestHandlerKeepsOpenCodePluginEventsLifecycleOnly(t *testing.T) {
+func TestHandlerRecordsOpenCodeAssistantUsageWithoutRawContent(t *testing.T) {
 	ctx := context.Background()
 	service, err := app.Initialize(ctx, t.TempDir())
 	if err != nil {
@@ -29,7 +29,7 @@ func TestHandlerKeepsOpenCodePluginEventsLifecycleOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("register project: %v", err)
 	}
-	payload := `{"source":"opencode-plugin","session_id":"session-1","event_type":"model.call","occurred_at":"` + time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC).Format(time.RFC3339) + `","project_hint":{"cwd":"` + filepath.ToSlash(repo) + `"},"payload":{"provider":"anthropic","model":"claude-sonnet","agent_name":"opencode","input_tokens":31,"output_tokens":37,"capture_quality":"agent_reported","prompt":"must not persist"}}`
+	payload := `{"source":"opencode-plugin","session_id":"session-1","event_type":"model.call","occurred_at":"` + time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC).Format(time.RFC3339) + `","project_hint":{"cwd":"` + filepath.ToSlash(repo) + `"},"upstream_event_id":"message:message-1","payload":{"provider":"anthropic","model":"claude-sonnet","agent_name":"opencode","message_id":"message-1","input_tokens":0,"output_tokens":37,"reasoning_tokens":3,"cached_input_tokens":5,"cache_write_tokens":7,"estimated_cost_usd_micros":1234,"capture_quality":"agent_reported","created_at":1760000000000,"completed_at":1760000001000,"finish":"stop","prompt":"must not persist","response":"must not persist","tool_args":{"secret":"must not persist"}}}`
 	request := httptest.NewRequest(http.MethodPost, "/v1/events", bytes.NewBufferString(payload))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
@@ -45,8 +45,65 @@ func TestHandlerKeepsOpenCodePluginEventsLifecycleOnly(t *testing.T) {
 		t.Fatalf("rows = %#v", report.Rows)
 	}
 	row := report.Rows[0]
-	if row.ProjectSlug != project.Slug || row.AgentName != "opencode" || row.TotalTokens != 0 || row.CaptureQuality != "lifecycle_only" {
+	if row.ProjectSlug != project.Slug || row.AgentName != "opencode" || row.Provider != "anthropic" || row.Model != "claude-sonnet" || row.InputTokens != 0 || row.OutputTokens != 37 || row.ReasoningTokens != 3 || row.CachedInputTokens != 5 || row.CacheWriteTokens != 7 || row.TotalTokens != 52 || row.CaptureQuality != "agent_reported" {
 		t.Fatalf("row = %#v", row)
+	}
+	var stored string
+	reader, err := sql.Open("sqlite", "file:"+filepath.ToSlash(service.Paths.Database)+"?mode=ro")
+	if err != nil {
+		t.Fatalf("open raw event reader: %v", err)
+	}
+	t.Cleanup(func() { _ = reader.Close() })
+	if err := reader.QueryRowContext(ctx, `SELECT payload_json_sanitized FROM raw_events WHERE source = 'opencode-plugin'`).Scan(&stored); err != nil {
+		t.Fatalf("read raw event: %v", err)
+	}
+	for _, forbidden := range []string{"prompt", "response", "tool_args", "secret"} {
+		if strings.Contains(stored, forbidden) {
+			t.Fatalf("OpenCode raw payload retained forbidden %q: %s", forbidden, stored)
+		}
+	}
+	if !strings.Contains(stored, `"input_tokens":0`) || strings.Contains(stored, "total_tokens") || strings.Contains(stored, "missing_tokens") {
+		t.Fatalf("OpenCode usage missing-vs-zero semantics changed: %s", stored)
+	}
+}
+
+func TestHandlerKeepsOpenCodeStepFinishAsCorroborationWithoutDoubleCounting(t *testing.T) {
+	ctx := context.Background()
+	service, err := app.Initialize(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("initialize service: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	repo := filepath.Join(t.TempDir(), "repo")
+	if _, _, err := service.Store.RegisterProject(ctx, "Repo", "repo", repo); err != nil {
+		t.Fatalf("register project: %v", err)
+	}
+
+	primary := Event{Source: "opencode-plugin", SessionID: "session-1", EventType: "model.call", UpstreamEventID: "message:message-1", OccurredAt: time.Now().UTC(), ProjectHint: ProjectHint{CWD: repo}, Payload: json.RawMessage(`{"provider":"anthropic","model":"claude-sonnet","agent_name":"opencode","message_id":"message-1","input_tokens":11,"output_tokens":13,"capture_quality":"agent_reported"}`)}
+	if count, err := Ingest(ctx, service, primary); err != nil || count != 1 {
+		t.Fatalf("primary ingest = %d, %v", count, err)
+	}
+	if count, err := Ingest(ctx, service, primary); err != nil || count != 0 {
+		t.Fatalf("duplicate primary ingest = %d, %v", count, err)
+	}
+	stepFinish := Event{Source: "opencode-plugin", SessionID: "session-1", EventType: "agent.event", UpstreamEventID: "part:part-1", OccurredAt: time.Now().UTC(), ProjectHint: ProjectHint{CWD: repo}, Payload: json.RawMessage(`{"agent_name":"opencode","message_id":"message-1","part_id":"part-1","finish":"stop","capture_quality":"agent_reported","input_tokens":99}`)}
+	if count, err := Ingest(ctx, service, stepFinish); err != nil || count != 1 {
+		t.Fatalf("step-finish ingest = %d, %v", count, err)
+	}
+	var rawEvents, modelCalls int
+	reader, err := sql.Open("sqlite", "file:"+filepath.ToSlash(service.Paths.Database)+"?mode=ro")
+	if err != nil {
+		t.Fatalf("open raw event reader: %v", err)
+	}
+	t.Cleanup(func() { _ = reader.Close() })
+	if err := reader.QueryRowContext(ctx, `SELECT COUNT(*) FROM raw_events WHERE source = 'opencode-plugin'`).Scan(&rawEvents); err != nil {
+		t.Fatalf("count raw events: %v", err)
+	}
+	if err := reader.QueryRowContext(ctx, `SELECT COUNT(*) FROM model_calls`).Scan(&modelCalls); err != nil {
+		t.Fatalf("count model calls: %v", err)
+	}
+	if rawEvents != 2 || modelCalls != 1 {
+		t.Fatalf("raw_events=%d model_calls=%d, want 2 and 1", rawEvents, modelCalls)
 	}
 }
 

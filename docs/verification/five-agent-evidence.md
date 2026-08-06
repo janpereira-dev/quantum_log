@@ -1,0 +1,13 @@
+# Five-Agent Autocapture Evidence
+
+Status values are evidence-based. `PASS` means automated contract coverage or recorded external acceptance. `PARTIAL` means recorded evidence covers only stated fields. `BLOCKED_EXTERNAL` means no real local-agent session was available. `NOT_EMITTED_BY_SOURCE` means inspected source contract does not establish that metric.
+
+| Adapter | Setup and ingest contract | Metric evidence | Attribution and dedupe | Acceptance status |
+|---|---|---|---|---|
+| Codex | Unit-tested managed `[otel]` log exporter with `log_user_prompt = false`; receiver accepts only `codex.sse_event` / `response.completed` logs with trace/span identity. | Input/output required; cache and reasoning persisted only when emitted. | Response ID extends trace/span identity; replay tests pass. | `BLOCKED_EXTERNAL` for real-agent E2E. |
+| Claude Code | Unit-tested hooks plus trace-only OTLP settings with message-content capture disabled; receiver accepts documented trace token fields. | Explicit `0` is reported; absent values are not emitted. | Trace/span identity deduplicates replay. | `BLOCKED_EXTERNAL` for real-agent E2E. |
+| GitHub Copilot CLI | Unit-tested qlog-owned lifecycle hooks and opt-in local OTLP environment file; lifecycle hooks post sanitized envelopes only. | Lifecycle hooks: `NOT_EMITTED_BY_SOURCE` for tokens. OTLP tokens require a real emitted span. | Hook ingestion identity is deduplicated by ledger identity. | `PASS` for recorded lifecycle acceptance; OTLP token E2E remains `BLOCKED_EXTERNAL`. |
+| GitHub Copilot for VS Code | Unit-tested idempotent JSONC settings management and constrained Copilot OTel ingest. | GenAI token attributes persist raw-key provenance; reported zero is distinct from absence. | Conversation ID precedes window session; only unique verified Git root and remote map to a project. | `PARTIAL`: recorded real OTel calls lacked safe project attribution; ambiguous calls remain unattributed. |
+| OpenCode | Unit-tested global plugin installation using documented lifecycle and tool event surfaces. | `NOT_EMITTED_BY_SOURCE`: inspected plugin event schema establishes no provider-reported token field. | Sanitized session ID and CWD enter central resolver; no remote mapping is used. | `BLOCKED_EXTERNAL` for plugin E2E; no token value is fabricated. |
+
+All five contracts reject persistence of prompts, responses, tool arguments, tool results, credentials, authorization data, and secrets. Automated tests prove parser, configuration, privacy, identity, and report behavior; they do not substitute for a clean-device real-agent session.

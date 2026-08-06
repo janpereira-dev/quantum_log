@@ -752,6 +752,132 @@ func TestUsageJSONLabelsEstimatedCostsAndCaptureQuality(t *testing.T) {
 	}
 }
 
+func TestReportTodayJSONKeepsLifecycleEvidenceAndNullableMetricCoverage(t *testing.T) {
+	home := t.TempDir()
+	worktree := filepath.Join(t.TempDir(), "project")
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runQLog(t, home, "project", "register", "--path", worktree, "--name", "Project", "--slug", "project"); err != nil {
+		t.Fatal(err)
+	}
+	service, err := app.Open(t.Context(), home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, _, found, err := service.Store.ProjectBySlug(t.Context(), "project")
+	if err != nil || !found {
+		_ = service.Close()
+		t.Fatalf("project = %#v found=%t err=%v", project, found, err)
+	}
+	if _, err := service.Store.AppendRawEvent(t.Context(), sqlite.RawEventInput{Source: "claude-code-hook", SessionID: "session-1", EventType: "lifecycle.stop", ProjectID: project.ID, OccurredAt: time.Now().UTC(), Payload: []byte(`{"agent_name":"claude-code","capture_quality":"lifecycle_only"}`)}); err != nil {
+		_ = service.Close()
+		t.Fatal(err)
+	}
+	if err := service.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	output, err := runQLog(t, home, "report", "today", "--json")
+	if err != nil {
+		t.Fatalf("report today: %v\n%s", err, output)
+	}
+	var report struct {
+		ModelCalls      int64 `json:"model_calls"`
+		LifecycleEvents int64 `json:"lifecycle_events"`
+		MetricCoverage  []struct {
+			Name  string `json:"name"`
+			State string `json:"state"`
+			Value *int64 `json:"value"`
+		} `json:"metric_coverage"`
+	}
+	if err := json.Unmarshal([]byte(output), &report); err != nil {
+		t.Fatalf("decode report: %v\n%s", err, output)
+	}
+	if report.ModelCalls != 0 || report.LifecycleEvents != 1 || len(report.MetricCoverage) == 0 {
+		t.Fatalf("report = %#v", report)
+	}
+	for _, metric := range report.MetricCoverage {
+		if metric.State != "not_emitted" || metric.Value != nil {
+			t.Fatalf("metric = %#v", metric)
+		}
+	}
+}
+
+func TestReportProjectCSVUsesNotEmittedMarkerForAbsentMetric(t *testing.T) {
+	home := t.TempDir()
+	worktree := filepath.Join(t.TempDir(), "project")
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runQLog(t, home, "project", "register", "--path", worktree, "--name", "Project", "--slug", "project"); err != nil {
+		t.Fatal(err)
+	}
+	output, err := runQLog(t, home, "report", "project", "project", "--csv")
+	if err != nil {
+		t.Fatalf("report project csv: %v\n%s", err, output)
+	}
+	if !strings.Contains(output, "metric,state,value") || !strings.Contains(output, "input_tokens,not_emitted,—") {
+		t.Fatalf("csv output = %q", output)
+	}
+}
+
+func TestReportProjectJSONPreservesReportedZeroMetricProvenance(t *testing.T) {
+	home := t.TempDir()
+	worktree := filepath.Join(t.TempDir(), "project")
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runQLog(t, home, "project", "register", "--path", worktree, "--name", "Project", "--slug", "project"); err != nil {
+		t.Fatal(err)
+	}
+	service, err := app.Open(t.Context(), home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, _, found, err := service.Store.ProjectBySlug(t.Context(), "project")
+	if err != nil || !found {
+		_ = service.Close()
+		t.Fatalf("project found=%t err=%v", found, err)
+	}
+	zero := int64(0)
+	if _, err := service.Store.RecordModelCall(t.Context(), sqlite.ModelCallInput{ProjectID: project.ID, AgentName: "claude-code", Provider: "anthropic", ModelID: "claude", CaptureQuality: "otel_reported", Metrics: []sqlite.MetricInput{{Name: "input_tokens", Value: &zero, Source: "otel", RawKey: "input_tokens", Confidence: "reported"}}}); err != nil {
+		_ = service.Close()
+		t.Fatal(err)
+	}
+	if err := service.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	output, err := runQLog(t, home, "report", "project", "project", "--json")
+	if err != nil {
+		t.Fatalf("report project: %v\n%s", err, output)
+	}
+	var report struct {
+		MetricCoverage []struct {
+			Name       string `json:"name"`
+			State      string `json:"state"`
+			Value      *int64 `json:"value"`
+			Provenance []struct {
+				Source string `json:"source"`
+				RawKey string `json:"raw_key"`
+			} `json:"provenance"`
+		} `json:"metric_coverage"`
+	}
+	if err := json.Unmarshal([]byte(output), &report); err != nil {
+		t.Fatal(err)
+	}
+	for _, metric := range report.MetricCoverage {
+		if metric.Name == "input_tokens" {
+			if metric.State != "reported" || metric.Value == nil || *metric.Value != 0 || len(metric.Provenance) != 1 || metric.Provenance[0].Source != "otel" || metric.Provenance[0].RawKey != "input_tokens" {
+				t.Fatalf("input metric = %#v", metric)
+			}
+			return
+		}
+	}
+	t.Fatal("input token coverage missing")
+}
+
 func TestCollectorHandlerDoesNotHoldWriterLockBetweenRequests(t *testing.T) {
 	home := t.TempDir()
 	worktree := filepath.Join(t.TempDir(), "project")

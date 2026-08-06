@@ -117,6 +117,7 @@ func applyCodexOTelConfig(configPath, statePath string, dryRun bool) (SetupChang
 	if err != nil && !os.IsNotExist(err) {
 		return SetupChange{}, fmt.Errorf("read Codex config: %w", err)
 	}
+	configMissing := os.IsNotExist(err)
 	updated, state, changed, err := updateCodexOTel(string(contents), codexOTelSettings())
 	if err != nil {
 		return SetupChange{}, err
@@ -124,7 +125,7 @@ func applyCodexOTelConfig(configPath, statePath string, dryRun bool) (SetupChang
 	action := "unchanged"
 	if changed {
 		action = "updated"
-		if os.IsNotExist(err) {
+		if configMissing {
 			action = "created"
 		}
 	}

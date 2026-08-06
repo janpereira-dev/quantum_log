@@ -731,6 +731,80 @@ func TestCanonicalIngestionIdentityDoesNotPersistUpstreamValue(t *testing.T) {
 	}
 }
 
+func TestModelCallMetricObservationsPreserveReportedZeroAndOmission(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	zero := int64(0)
+	callID, err := store.RecordModelCall(ctx, ModelCallInput{
+		Provider: "anthropic",
+		ModelID:  "claude-sonnet",
+		Metrics: []MetricInput{
+			{Name: "input_tokens", Value: &zero, Source: "otel", RawKey: "input_tokens", Confidence: "reported"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RecordModelCall() error = %v", err)
+	}
+	rows, err := store.db.QueryContext(ctx, `SELECT metric_name, metric_value, source, raw_key, confidence FROM model_call_metrics WHERE model_call_id = ?`, callID)
+	if err != nil {
+		t.Fatalf("query metric observations: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	if !rows.Next() {
+		t.Fatal("reported zero metric was not persisted")
+	}
+	var name, source, rawKey, confidence string
+	var value int64
+	if err := rows.Scan(&name, &value, &source, &rawKey, &confidence); err != nil {
+		t.Fatalf("scan metric observation: %v", err)
+	}
+	if name != "input_tokens" || value != 0 || source != "otel" || rawKey != "input_tokens" || confidence != "reported" {
+		t.Fatalf("metric observation = %q %d %q %q %q", name, value, source, rawKey, confidence)
+	}
+	if rows.Next() {
+		t.Fatal("omitted metrics must not be persisted as zero observations")
+	}
+}
+
+func TestVerifiedGitContextRequiresOneExactRootAndRemoteMatch(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	root := filepath.Join(t.TempDir(), "repo")
+	first, firstLocation, err := store.RegisterProject(ctx, "First", "first", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetVerifiedGitContext(ctx, first.ID, firstLocation.ID, root, "https://github.com/example/repo.git"); err != nil {
+		t.Fatal(err)
+	}
+	project, location, found, err := store.ProjectByVerifiedGitContext(ctx, root, "git@github.com:example/repo.git")
+	if err != nil || !found || project.ID != first.ID || location.ID != firstLocation.ID {
+		t.Fatalf("exact context = %#v %#v found=%t err=%v", project, location, found, err)
+	}
+	if _, _, found, err := store.ProjectByVerifiedGitContext(ctx, root, "https://github.com/example/other.git"); err != nil || found {
+		t.Fatalf("remote mismatch found=%t err=%v", found, err)
+	}
+	second, secondLocation, err := store.RegisterProject(ctx, "Second", "second", filepath.Join(t.TempDir(), "other"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetVerifiedGitContext(ctx, second.ID, secondLocation.ID, root, "https://github.com/example/repo.git"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, found, err := store.ProjectByVerifiedGitContext(ctx, root, "https://github.com/example/repo.git"); err != nil || found {
+		t.Fatalf("collision found=%t err=%v", found, err)
+	}
+}
+
 func assertTableCount(t *testing.T, store *Store, table string, want int) {
 	t.Helper()
 	var got int

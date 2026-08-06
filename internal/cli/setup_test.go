@@ -32,6 +32,35 @@ func TestSetupYesBootstrapsCollectorBeforeAdapterFiles(t *testing.T) {
 	}
 }
 
+func TestPollCollectorReadinessWaitsForManagedStartup(t *testing.T) {
+	attempts := 0
+	status, err := pollCollectorReadiness(context.Background(), func(context.Context) (CollectorStatus, error) {
+		attempts++
+		if attempts < 3 {
+			return CollectorStatus{Installed: true, Running: true, Message: "connect: connection refused"}, nil
+		}
+		return CollectorStatus{Installed: true, Running: true, Reachable: true, Message: "ok"}, nil
+	})
+	if err != nil {
+		t.Fatalf("poll readiness: %v", err)
+	}
+	if attempts != 3 || !status.Reachable {
+		t.Fatalf("readiness attempts=%d status=%#v", attempts, status)
+	}
+}
+
+func TestCollectorStartupStatusReportsReadyAfterBoundedProbe(t *testing.T) {
+	status, err := collectorStartupStatus(context.Background(), CollectorStatus{Installed: true, Running: true}, func(context.Context) (CollectorStatus, error) {
+		return CollectorStatus{Installed: true, Running: true, Reachable: true, Message: "ok"}, nil
+	})
+	if err != nil {
+		t.Fatalf("collectorStartupStatus() error = %v", err)
+	}
+	if !status.Reachable || status.Message != "collector started and ready" {
+		t.Fatalf("collector startup status = %#v", status)
+	}
+}
+
 func TestSetupWithoutConsentOnlyPrintsPlan(t *testing.T) {
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
 	manager := &fakeCollectorManager{}
