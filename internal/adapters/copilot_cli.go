@@ -82,22 +82,35 @@ func (a copilotCLIAdapter) Test(ctx context.Context) (TestResult, error) {
 }
 
 func (a copilotCLIAdapter) Uninstall(_ context.Context, options InstallOptions) (InstallResult, error) {
-	path := a.hooksPath()
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		change := SetupChange{Path: path, Action: "unchanged", Description: "Copilot CLI qlog hook config already absent"}
-		return InstallResult{Actions: []string{formatChange(change)}, Changes: []SetupChange{change}}, nil
-	} else if err != nil {
-		return InstallResult{}, fmt.Errorf("stat Copilot CLI hook config: %w", err)
+	changes := make([]SetupChange, 0, 2)
+	for _, item := range []struct{ path, description string }{
+		{a.hooksPath(), "Copilot CLI qlog hook config"},
+		{a.otelPath(), "Copilot CLI qlog OTel environment"},
+	} {
+		change := SetupChange{Path: item.path, Action: "unchanged", Description: item.description + " already absent"}
+		if _, err := os.Stat(item.path); err == nil {
+			change.Action = "removed"
+			change.Description = "removed qlog-owned " + item.description
+			if !options.DryRun {
+				if err := os.Remove(item.path); err != nil {
+					return InstallResult{}, fmt.Errorf("remove %s: %w", item.description, err)
+				}
+			}
+		} else if !os.IsNotExist(err) {
+			return InstallResult{}, fmt.Errorf("stat %s: %w", item.description, err)
+		}
+		if options.DryRun && change.Action == "removed" {
+			change.Description = "dry run: " + change.Description
+		}
+		changes = append(changes, change)
 	}
-	change := SetupChange{Path: path, Action: "removed", Description: "removed qlog-owned Copilot CLI hook config"}
-	if options.DryRun {
-		change.Description = "dry run: " + change.Description
-		return InstallResult{Actions: []string{formatChange(change)}, Changes: []SetupChange{change}}, nil
+	actions := make([]string, 0, len(changes))
+	changed := false
+	for _, change := range changes {
+		actions = append(actions, formatChange(change))
+		changed = changed || change.Action == "removed"
 	}
-	if err := os.Remove(path); err != nil {
-		return InstallResult{}, fmt.Errorf("remove Copilot CLI hook config: %w", err)
-	}
-	return InstallResult{Changed: true, Actions: []string{formatChange(change)}, Changes: []SetupChange{change}}, nil
+	return InstallResult{Changed: changed && !options.DryRun, Actions: actions, Changes: changes}, nil
 }
 
 func (a copilotCLIAdapter) Ingest(context.Context, io.Reader) ([]RawRecord, error) {

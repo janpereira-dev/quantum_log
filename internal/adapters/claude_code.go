@@ -157,7 +157,7 @@ func (a claudeCodeAdapter) removeSettings(dryRun bool) (SetupChange, error) {
 		return change, nil
 	}
 	change.Action = "removed"
-	change.Description = "removed qlog-owned Claude Code lifecycle hooks"
+	change.Description = "removed qlog-owned Claude Code lifecycle hooks and OTel environment"
 	if dryRun {
 		return change, nil
 	}
@@ -251,40 +251,49 @@ func claudeSettingsWithoutQlogHooks(current []byte) ([]byte, error) {
 	if err := json.Unmarshal(current, &settings); err != nil {
 		return nil, err
 	}
-	hooks, ok := settings["hooks"].(map[string]any)
-	if !ok {
-		return current, nil
-	}
 	changed := false
-	for event, entries := range hooks {
-		currentEntries, ok := entries.([]any)
-		if !ok {
-			continue
-		}
-		nextEntries := make([]any, 0, len(currentEntries))
-		for _, entry := range currentEntries {
-			cleaned, keep := claudeHookEntryWithoutQlog(entry)
-			if !keep {
+	if hooks, ok := settings["hooks"].(map[string]any); ok {
+		for event, entries := range hooks {
+			currentEntries, ok := entries.([]any)
+			if !ok {
+				continue
+			}
+			nextEntries := make([]any, 0, len(currentEntries))
+			for _, entry := range currentEntries {
+				cleaned, keep := claudeHookEntryWithoutQlog(entry)
+				if !keep {
+					changed = true
+					continue
+				}
+				if !reflect.DeepEqual(cleaned, entry) {
+					changed = true
+				}
+				nextEntries = append(nextEntries, cleaned)
+			}
+			if len(nextEntries) == 0 {
+				delete(hooks, event)
 				changed = true
 				continue
 			}
-			if !reflect.DeepEqual(cleaned, entry) {
+			hooks[event] = nextEntries
+		}
+		if len(hooks) == 0 {
+			delete(settings, "hooks")
+		}
+	}
+	if env, ok := settings["env"].(map[string]any); ok {
+		for key, value := range claudeCodeOTELEnvironment() {
+			if env[key] == value {
+				delete(env, key)
 				changed = true
 			}
-			nextEntries = append(nextEntries, cleaned)
 		}
-		if len(nextEntries) == 0 {
-			delete(hooks, event)
-			changed = true
-			continue
+		if len(env) == 0 {
+			delete(settings, "env")
 		}
-		hooks[event] = nextEntries
 	}
 	if !changed {
 		return current, nil
-	}
-	if len(hooks) == 0 {
-		delete(settings, "hooks")
 	}
 	return json.MarshalIndent(settings, "", "  ")
 }

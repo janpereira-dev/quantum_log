@@ -752,6 +752,45 @@ func TestUsageJSONLabelsEstimatedCostsAndCaptureQuality(t *testing.T) {
 	}
 }
 
+func TestLegacyTopLevelSummaryRetainsUsageJSONFlags(t *testing.T) {
+	home := t.TempDir()
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatal(err)
+	}
+	output, err := runQLog(t, home, "summary", "--from", "2026-01-01", "--to", "2026-02-01", "--group-by", "project,provider,model", "--json")
+	if err != nil {
+		t.Fatalf("summary: %v\n%s", err, output)
+	}
+	var report map[string]any
+	if err := json.Unmarshal([]byte(output), &report); err != nil {
+		t.Fatalf("decode summary: %v\n%s", err, output)
+	}
+	if _, found := report["rows"]; !found {
+		t.Fatalf("legacy summary output = %#v", report)
+	}
+}
+
+func TestCapabilityReportJSONOmitsUnsetTimeBounds(t *testing.T) {
+	home := t.TempDir()
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatal(err)
+	}
+	output, err := runQLog(t, home, "report", "--json")
+	if err != nil {
+		t.Fatalf("report: %v\n%s", err, output)
+	}
+	var encoded map[string]any
+	if err := json.Unmarshal([]byte(output), &encoded); err != nil {
+		t.Fatal(err)
+	}
+	if _, found := encoded["from"]; found {
+		t.Fatalf("unset from bound exported: %s", output)
+	}
+	if _, found := encoded["to"]; found {
+		t.Fatalf("unset to bound exported: %s", output)
+	}
+}
+
 func TestReportTodayJSONKeepsLifecycleEvidenceAndNullableMetricCoverage(t *testing.T) {
 	home := t.TempDir()
 	worktree := filepath.Join(t.TempDir(), "project")

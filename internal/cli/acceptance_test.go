@@ -100,3 +100,40 @@ func TestAcceptanceOwnedPathRejectsCollectorLogOutsideHome(t *testing.T) {
 		t.Fatalf("owned path check accepted outside collector log")
 	}
 }
+
+func TestAcceptancePackageHashesUserControlledIdentifiers(t *testing.T) {
+	home := t.TempDir()
+	fixture := filepath.Join(t.TempDir(), "events.ndjson")
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fixture, []byte(`{"source":"fixture","session_id":"session-secret-123","event_type":"model.call","payload":{"provider":"provider-secret","model":"model-secret","agent_name":"agent-secret","input_tokens":1,"capture_quality":"agent_reported"}}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runQLog(t, home, "ingest", "file", fixture); err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(t.TempDir(), "acceptance.zip")
+	if _, err := runQLog(t, home, "acceptance", "run", "--output", output); err != nil {
+		t.Fatal(err)
+	}
+	archive, err := zip.OpenReader(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = archive.Close() }()
+	for _, file := range archive.File {
+		reader, err := file.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		data := new(bytes.Buffer)
+		_, _ = data.ReadFrom(reader)
+		_ = reader.Close()
+		for _, identifier := range []string{"session-secret-123", "agent-secret", "provider-secret", "model-secret"} {
+			if strings.Contains(data.String(), identifier) {
+				t.Fatalf("acceptance entry %s leaked identifier %q: %s", file.Name, identifier, data.String())
+			}
+		}
+	}
+}

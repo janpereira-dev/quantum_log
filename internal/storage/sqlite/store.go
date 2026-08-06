@@ -223,6 +223,34 @@ type CapabilityReport struct {
 	Sources                []SourceCoverage `json:"sources"`
 }
 
+func (report CapabilityReport) MarshalJSON() ([]byte, error) {
+	type encodedReport struct {
+		From                   *time.Time       `json:"from,omitempty"`
+		To                     *time.Time       `json:"to,omitempty"`
+		ProjectSlug            string           `json:"project_slug,omitempty"`
+		AgentName              string           `json:"agent_name,omitempty"`
+		SessionID              string           `json:"session_id,omitempty"`
+		ModelCalls             int64            `json:"model_calls"`
+		Tokens                 int64            `json:"tokens"`
+		LifecycleEvents        int64            `json:"lifecycle_events"`
+		ToolCalls              int64            `json:"tool_calls"`
+		MCPCalls               int64            `json:"mcp_calls"`
+		Errors                 int64            `json:"errors"`
+		UnattributedModelCalls int64            `json:"unattributed_model_calls"`
+		UnattributedTokens     int64            `json:"unattributed_tokens"`
+		MetricCoverage         []MetricCoverage `json:"metric_coverage"`
+		Sources                []SourceCoverage `json:"sources"`
+	}
+	encoded := encodedReport{ProjectSlug: report.ProjectSlug, AgentName: report.AgentName, SessionID: report.SessionID, ModelCalls: report.ModelCalls, Tokens: report.Tokens, LifecycleEvents: report.LifecycleEvents, ToolCalls: report.ToolCalls, MCPCalls: report.MCPCalls, Errors: report.Errors, UnattributedModelCalls: report.UnattributedModelCalls, UnattributedTokens: report.UnattributedTokens, MetricCoverage: report.MetricCoverage, Sources: report.Sources}
+	if !report.From.IsZero() {
+		encoded.From = &report.From
+	}
+	if !report.To.IsZero() {
+		encoded.To = &report.To
+	}
+	return json.Marshal(encoded)
+}
+
 type TaskInput struct {
 	ProjectID string
 	Title     string

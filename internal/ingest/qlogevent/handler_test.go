@@ -107,6 +107,36 @@ func TestHandlerKeepsOpenCodeStepFinishAsCorroborationWithoutDoubleCounting(t *t
 	}
 }
 
+func TestHandlerPersistsOpenCodeMetricObservationProvenance(t *testing.T) {
+	ctx := context.Background()
+	service, err := app.Initialize(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	repo := filepath.Join(t.TempDir(), "repo")
+	if _, _, err := service.Store.RegisterProject(ctx, "Repo", "repo", repo); err != nil {
+		t.Fatal(err)
+	}
+	event := Event{Source: "opencode-plugin", SessionID: "session-1", EventType: "model.call", UpstreamEventID: "message:final", OccurredAt: time.Now().UTC(), ProjectHint: ProjectHint{CWD: repo}, Payload: json.RawMessage(`{"provider":"anthropic","model":"claude","agent_name":"opencode","input_tokens":0,"output_tokens":3,"capture_quality":"agent_reported","metric_observations":[{"name":"input_tokens","value":0,"source":"opencode","raw_key":"tokens.input","confidence":"reported"},{"name":"output_tokens","value":3,"source":"opencode","raw_key":"tokens.output","confidence":"reported"}]}`)}
+	if count, err := Ingest(ctx, service, event); err != nil || count != 1 {
+		t.Fatalf("ingest = %d, %v", count, err)
+	}
+	report, err := service.Store.CapabilityReport(ctx, storepkg.CapabilityQuery{ProjectSlug: "repo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, metric := range report.MetricCoverage {
+		if metric.Name == "input_tokens" {
+			if metric.State != "reported" || metric.Value == nil || *metric.Value != 0 || len(metric.Provenance) != 1 || metric.Provenance[0].Source != "opencode" || metric.Provenance[0].RawKey != "tokens.input" {
+				t.Fatalf("input metric = %#v", metric)
+			}
+			return
+		}
+	}
+	t.Fatal("input token metric coverage missing")
+}
+
 func TestHandlerKeepsCopilotCLIHookEventsLifecycleOnly(t *testing.T) {
 	ctx := context.Background()
 	service, err := app.Initialize(ctx, t.TempDir())

@@ -56,7 +56,7 @@ func New(version Version) *cobra.Command {
 	}
 	root.PersistentFlags().StringVar(&home, "home", "", "override the local QUANTUM_LOG data directory")
 	root.SetVersionTemplate("{{.Version}}\n")
-	root.AddCommand(newInitCommand(&home), newDoctorCommand(&home), newVerifyCommand(&home), newMaintenanceCommand(&home), newProjectCommand(&home), newIngestCommand(&home), newUsageCommand(&home), newReportCommand(&home), newAllocationCommand(&home), newPricingCommand(&home), newTaskCommand(&home), newSessionCommand(&home), newExportCommand(&home), newTUICommand(&home), newAdapterCommand(&home), newSetupCommand(&home), newCollectorCommand(&home), newHookCommand(&home), newRunCommand(&home), newMCPCommand(&home, version), newUnattributedCommand(&home), newBudgetCommand(&home), newAnchorCommand(&home), newAcceptanceCommand(&home, version))
+	root.AddCommand(newInitCommand(&home), newDoctorCommand(&home), newVerifyCommand(&home), newMaintenanceCommand(&home), newProjectCommand(&home), newIngestCommand(&home), newUsageCommand(&home), newReportCommand(&home), newLegacySummaryCommand(&home), newAllocationCommand(&home), newPricingCommand(&home), newTaskCommand(&home), newSessionCommand(&home), newExportCommand(&home), newTUICommand(&home), newAdapterCommand(&home), newSetupCommand(&home), newCollectorCommand(&home), newHookCommand(&home), newRunCommand(&home), newMCPCommand(&home, version), newUnattributedCommand(&home), newBudgetCommand(&home), newAnchorCommand(&home), newAcceptanceCommand(&home, version))
 	return root
 }
 
@@ -449,7 +449,7 @@ func storeUsageQuery(from, to time.Time, groupBy string) sqlite.UsageQuery {
 func newReportCommand(home *string) *cobra.Command {
 	var from, to, groupBy string
 	var jsonOutput, csvOutput bool
-	report := &cobra.Command{Use: "report", Aliases: []string{"summary"}, Short: "Summarize observed usage and allocated cost", RunE: func(command *cobra.Command, _ []string) error {
+	report := &cobra.Command{Use: "report", Short: "Summarize observed usage and allocated cost", RunE: func(command *cobra.Command, _ []string) error {
 		parsedFrom, err := parseDate(from)
 		if err != nil {
 			return err
@@ -498,6 +498,19 @@ func newReportCommand(home *string) *cobra.Command {
 	usage.Flags().BoolVar(&usageJSON, "json", false, "output JSON")
 	report.AddCommand(usage)
 	return report
+}
+
+func newLegacySummaryCommand(home *string) *cobra.Command {
+	var from, to, groupBy string
+	var jsonOutput bool
+	command := &cobra.Command{Use: "summary", Short: "Summarize observed usage and allocated cost", RunE: func(command *cobra.Command, _ []string) error {
+		return runReportSummary(command, home, from, to, groupBy, jsonOutput)
+	}}
+	command.Flags().StringVar(&from, "from", "", "inclusive RFC3339 or YYYY-MM-DD start")
+	command.Flags().StringVar(&to, "to", "", "exclusive RFC3339 or YYYY-MM-DD end")
+	command.Flags().StringVar(&groupBy, "group-by", "project,provider,model", "comma-separated dimensions")
+	command.Flags().BoolVar(&jsonOutput, "json", false, "output JSON")
+	return command
 }
 
 func newCapabilityReportCommand(use, short string, home *string, scope func(*sqlite.CapabilityQuery, []string)) *cobra.Command {

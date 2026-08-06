@@ -215,6 +215,28 @@ func sanitizeOpenCodePayload(payload json.RawMessage) json.RawMessage {
 			allowed[key] = value
 		}
 	}
+	if observations, ok := object["metric_observations"].([]any); ok {
+		allowedObservations := make([]map[string]any, 0, len(observations))
+		for _, observation := range observations {
+			item, ok := observation.(map[string]any)
+			if !ok {
+				continue
+			}
+			name, nameOK := item["name"].(string)
+			rawKey, rawKeyOK := item["raw_key"].(string)
+			value, valueOK := nonNegativeInteger(item["value"])
+			if !nameOK || !rawKeyOK || !valueOK {
+				continue
+			}
+			if name != "input_tokens" && name != "output_tokens" && name != "reasoning_tokens" && name != "cached_input_tokens" && name != "cache_write_tokens" {
+				continue
+			}
+			allowedObservations = append(allowedObservations, map[string]any{"name": name, "value": value, "source": "opencode", "raw_key": rawKey, "confidence": "reported"})
+		}
+		if len(allowedObservations) > 0 {
+			allowed["metric_observations"] = allowedObservations
+		}
+	}
 	next, err := json.Marshal(allowed)
 	if err != nil {
 		return json.RawMessage("{}")

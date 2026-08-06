@@ -510,6 +510,15 @@ func TestCodexEvidenceContractUsesDocumentedOTLPLogs(t *testing.T) {
 	}
 }
 
+func TestClaudeAndCopilotVerificationContractsSeparateSetupAndEvidenceQuality(t *testing.T) {
+	for _, adapterID := range []string{"claude-code", "copilot"} {
+		contract := evidenceContract(adapterID)
+		if contract.Quality != adapters.CaptureOTELReported || contract.EvidenceQuality != adapters.CaptureLifecycleOnly {
+			t.Fatalf("%s contract = %#v", adapterID, contract)
+		}
+	}
+}
+
 func TestCollectorLifecycleCommandsExist(t *testing.T) {
 	command := New(Version{})
 	collector, _, err := command.Find([]string{"collector"})

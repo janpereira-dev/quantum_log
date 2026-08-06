@@ -541,6 +541,27 @@ func TestOpenCodePluginUsesAuditedUsageFieldsWithoutRawContent(t *testing.T) {
 	}
 }
 
+func TestOpenCodePluginUsesPluginWorkspaceAndEmitsFinalMetricObservations(t *testing.T) {
+	source := openCodePluginSource()
+	for _, want := range []string{
+		"ctx.directory || ctx.worktree || context.directory",
+		"metric_observations",
+		"raw_key: rawKey",
+		"source: \"opencode\"",
+		"confidence: \"reported\"",
+		"if (numberValue(info.time && info.time.completed) === undefined) return",
+	} {
+		if !strings.Contains(source, want) {
+			t.Fatalf("plugin missing %q:\n%s", want, source)
+		}
+	}
+	for _, eventType := range []string{"session.created", "session.idle", "session.error"} {
+		if !strings.Contains(source, eventType) {
+			t.Fatalf("plugin dropped allowlisted lifecycle type %q:\n%s", eventType, source)
+		}
+	}
+}
+
 func TestClaudeCodeInstallPreservesExistingHooksAndAddsHome(t *testing.T) {
 	configHome := t.TempDir()
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
@@ -676,6 +697,66 @@ func TestClaudeCodeUninstallRemovesOnlyQlogHooks(t *testing.T) {
 	commands := collectHookCommands(after)
 	if !containsAdapterString(commands, "user-stop-hook") || !containsAdapterString(commands, "user-qlog hook claude-code-notify") || containsAdapterString(commands, "qlog hook claude-code") || containsAdapterString(commands, "qlog --home \"C:/qlog\" hook claude-code") {
 		t.Fatalf("hooks after uninstall = %#v", commands)
+	}
+}
+
+func TestClaudeCodeUninstallRemovesOnlyQlogOwnedOTELEnvironment(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	settingsPath := filepath.Join(configHome, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	settings := map[string]any{"env": map[string]any{
+		"CLAUDE_CODE_ENABLE_TELEMETRY":                       "1",
+		"OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "false",
+		"OTEL_RESOURCE_ATTRIBUTES":                           "service.name=user-owned",
+		"USER_SETTING":                                       "preserve",
+	}}
+	writeSettingsMap(t, settingsPath, settings)
+
+	result, err := newClaudeCodeAdapter().Uninstall(context.Background(), InstallOptions{})
+	if err != nil || !result.Changed {
+		t.Fatalf("uninstall = %#v, %v", result, err)
+	}
+	after := readSettingsMap(t, settingsPath)
+	env := after["env"].(map[string]any)
+	if _, found := env["CLAUDE_CODE_ENABLE_TELEMETRY"]; found {
+		t.Fatalf("qlog telemetry setting remains: %#v", env)
+	}
+	if _, found := env["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"]; found {
+		t.Fatalf("qlog content setting remains: %#v", env)
+	}
+	if env["OTEL_RESOURCE_ATTRIBUTES"] != "service.name=user-owned" || env["USER_SETTING"] != "preserve" {
+		t.Fatalf("unrelated environment changed: %#v", env)
+	}
+}
+
+func TestCopilotCLIUninstallRemovesOTelWhenHookIsMissingAndHonorsDryRun(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	adapter := newCopilotCLIAdapter()
+	if _, err := adapter.Install(context.Background(), InstallOptions{}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if err := os.Remove(adapter.hooksPath()); err != nil {
+		t.Fatalf("remove hook: %v", err)
+	}
+
+	dryRun, err := adapter.Uninstall(context.Background(), InstallOptions{DryRun: true})
+	if err != nil || dryRun.Changed {
+		t.Fatalf("dry-run uninstall = %#v, %v", dryRun, err)
+	}
+	if _, err := os.Stat(adapter.otelPath()); err != nil {
+		t.Fatalf("dry run removed OTel file: %v", err)
+	}
+
+	result, err := adapter.Uninstall(context.Background(), InstallOptions{})
+	if err != nil || !result.Changed {
+		t.Fatalf("uninstall = %#v, %v", result, err)
+	}
+	if _, err := os.Stat(adapter.otelPath()); !os.IsNotExist(err) {
+		t.Fatalf("qlog OTel config remains: %v", err)
 	}
 }
 

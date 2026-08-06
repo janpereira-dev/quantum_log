@@ -141,7 +141,7 @@ function envelope(type, ctx, event, payload, upstreamEventID) {
     upstream_event_id: upstreamEventID || body.id || "",
     project_hint: {
       project: "",
-      cwd: context.directory || "",
+      cwd: ctx.directory || ctx.worktree || context.directory || context.worktree || "",
     },
     payload,
   }
@@ -165,6 +165,21 @@ function setNumber(target, key, value) {
   if (next !== undefined) target[key] = next
 }
 
+function metricObservations(tokens, cache) {
+  const observations = []
+  for (const [name, rawKey, value] of [
+    ["input_tokens", "tokens.input", tokens.input],
+    ["output_tokens", "tokens.output", tokens.output],
+    ["reasoning_tokens", "tokens.reasoning", tokens.reasoning],
+    ["cached_input_tokens", "tokens.cache.read", cache.read],
+    ["cache_write_tokens", "tokens.cache.write", cache.write],
+  ]) {
+    const number = numberValue(value)
+    if (number !== undefined) observations.push({ name, value: number, source: "opencode", raw_key: rawKey, confidence: "reported" })
+  }
+  return observations
+}
+
 function lifecyclePayload() {
   return { agent_name: "opencode", capture_quality: "lifecycle_only" }
 }
@@ -173,6 +188,7 @@ function assistantUsage(ctx, event) {
   const properties = (event || {}).properties || {}
   const info = properties.info
   if (!info || info.role !== "assistant") return
+  if (numberValue(info.time && info.time.completed) === undefined) return
 
   const tokens = info.tokens || {}
   const cache = tokens.cache || {}
@@ -191,6 +207,7 @@ function assistantUsage(ctx, event) {
   setNumber(payload, "cache_write_tokens", cache.write)
   setNumber(payload, "created_at", info.time && info.time.created)
   setNumber(payload, "completed_at", info.time && info.time.completed)
+  payload.metric_observations = metricObservations(tokens, cache)
 
   const messageID = stringValue(info.id)
   if (!messageID) return

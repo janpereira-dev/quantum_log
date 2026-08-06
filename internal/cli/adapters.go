@@ -276,7 +276,7 @@ func (localAdapterStatusAccess) HasRecentEvidence(ctx context.Context, home stri
 		Source:                        contract.Source,
 		From:                          now.Add(-time.Hour),
 		To:                            now,
-		RequiredQuality:               string(contract.Quality),
+		RequiredQuality:               string(contract.requiredEvidenceQuality()),
 		RequiredProvider:              contract.RequiredProvider,
 		RequireCodexResponseCompleted: contract.RequireCodexResponseCompleted,
 	})
@@ -297,6 +297,7 @@ func (e adapterVerificationError) Error() string {
 type adapterEvidenceContract struct {
 	Source                        string
 	Quality                       adapters.CaptureQuality
+	EvidenceQuality               adapters.CaptureQuality
 	AllowedAgentNames             []string
 	RequiredProvider              string
 	RequireCodexResponseCompleted bool
@@ -307,18 +308,25 @@ type adapterEvidenceContract struct {
 func evidenceContract(adapterID string) adapterEvidenceContract {
 	switch adapterID {
 	case "claude-code":
-		return adapterEvidenceContract{Source: "claude-code-hook", Quality: adapters.CaptureLifecycleOnly, SourceEvidence: true, SourceEvidenceMessage: "Claude Code hooks emit lifecycle evidence only"}
+		return adapterEvidenceContract{Source: "claude-code-hook", Quality: adapters.CaptureOTELReported, EvidenceQuality: adapters.CaptureLifecycleOnly, SourceEvidence: true, SourceEvidenceMessage: "Claude Code hooks emit lifecycle evidence while installed OTel reports model usage"}
 	case "opencode":
 		return adapterEvidenceContract{Source: "opencode-plugin", Quality: adapters.CaptureAgentReported, SourceEvidence: true, SourceEvidenceMessage: "OpenCode 1.18.x plugin source contract records allowlisted assistant-reported usage"}
 	case "codex":
 		return adapterEvidenceContract{Source: "otlp-http", Quality: adapters.CaptureOTELReported, RequireCodexResponseCompleted: true, SourceEvidence: true, SourceEvidenceMessage: "Codex 0.145.0 documents OTLP response.completed logs with source-reported tokens"}
 	case "copilot":
-		return adapterEvidenceContract{Source: "copilot-cli-hook", Quality: adapters.CaptureLifecycleOnly, SourceEvidence: true, SourceEvidenceMessage: "GitHub Copilot CLI documents local lifecycle and tool hooks; qlog records only sanitized lifecycle metadata"}
+		return adapterEvidenceContract{Source: "copilot-cli-hook", Quality: adapters.CaptureOTELReported, EvidenceQuality: adapters.CaptureLifecycleOnly, SourceEvidence: true, SourceEvidenceMessage: "GitHub Copilot CLI hooks retain lifecycle evidence while qlog-owned OTel reports model usage"}
 	case "copilot-vscode":
 		return adapterEvidenceContract{Source: "otlp-http", Quality: adapters.CaptureOTELReported, AllowedAgentNames: []string{"GitHub Copilot Chat"}, RequiredProvider: "github", SourceEvidence: true, SourceEvidenceMessage: "VS Code documents Copilot OTel trace/span identity and gen_ai usage fields"}
 	default:
 		return adapterEvidenceContract{SourceEvidenceMessage: "adapter is outside stable verification scope"}
 	}
+}
+
+func (contract adapterEvidenceContract) requiredEvidenceQuality() adapters.CaptureQuality {
+	if contract.EvidenceQuality != "" {
+		return contract.EvidenceQuality
+	}
+	return contract.Quality
 }
 
 func requiredStagesPassed(stages []adapterVerifyStage) bool {
@@ -356,13 +364,13 @@ func verifyAdapter(ctx context.Context, home string, adapter adapters.Adapter, p
 	}
 	defer func() { _ = service.Close() }()
 	now := time.Now().UTC()
-	foundEvidence, err := service.Store.HasRecentAdapterEvidence(ctx, sqlite.AdapterEvidenceQuery{AdapterID: adapter.Descriptor().ID, AllowedAgentNames: contract.AllowedAgentNames, Source: contract.Source, From: now.Add(-duration), To: now, ProjectSlug: projectSlug, RequiredQuality: string(contract.Quality), RequiredProvider: contract.RequiredProvider, RequireCodexResponseCompleted: contract.RequireCodexResponseCompleted})
+	foundEvidence, err := service.Store.HasRecentAdapterEvidence(ctx, sqlite.AdapterEvidenceQuery{AdapterID: adapter.Descriptor().ID, AllowedAgentNames: contract.AllowedAgentNames, Source: contract.Source, From: now.Add(-duration), To: now, ProjectSlug: projectSlug, RequiredQuality: string(contract.requiredEvidenceQuality()), RequiredProvider: contract.RequiredProvider, RequireCodexResponseCompleted: contract.RequireCodexResponseCompleted})
 	if err != nil {
 		stages = append(stages, adapterVerifyStage{Name: "raw_evidence", Passed: false, Required: true, Message: err.Error()})
 		return adapterVerifyResult{AdapterID: adapter.Descriptor().ID, Stages: stages, Message: "evidence query failed"}
 	}
-	evidenceMessage := fmt.Sprintf("requires recent %s evidence from %s with %s quality", adapter.Descriptor().ID, contract.Source, contract.Quality)
-	if contract.Quality != adapters.CaptureLifecycleOnly {
+	evidenceMessage := fmt.Sprintf("requires recent %s evidence from %s with %s quality", adapter.Descriptor().ID, contract.Source, contract.requiredEvidenceQuality())
+	if contract.requiredEvidenceQuality() != adapters.CaptureLifecycleOnly {
 		evidenceMessage += " and one linked normalized model call with source-reported tokens"
 	}
 	stages = append(stages,

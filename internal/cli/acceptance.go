@@ -97,6 +97,8 @@ func writeAcceptancePackage(ctx context.Context, home string, version Version, o
 	if err != nil {
 		return fmt.Errorf("build session summary: %w", err)
 	}
+	report = acceptanceSafeReport(report)
+	sessions = acceptanceSafeSessions(sessions)
 	collector, err := collectorStatus(ctx, home, "127.0.0.1:4318", true, false, newCollectorManager())
 	if err != nil {
 		return fmt.Errorf("read collector status: %w", err)
@@ -187,6 +189,29 @@ func writeAcceptancePackage(ctx context.Context, home string, version Version, o
 	files["manifest.json"] = append(manifestJSON, '\n')
 	files["SHA256SUMS"] = acceptanceChecksumFile(files)
 	return writeAcceptanceZIP(output, files)
+}
+
+func acceptanceSafeReport(report sqlite.CapabilityReport) sqlite.CapabilityReport {
+	report.ProjectSlug = acceptanceOpaqueID(report.ProjectSlug)
+	report.AgentName = acceptanceOpaqueID(report.AgentName)
+	report.SessionID = acceptanceOpaqueID(report.SessionID)
+	return report
+}
+
+func acceptanceSafeSessions(sessions []sqlite.SessionSnapshot) []sqlite.SessionSnapshot {
+	for index := range sessions {
+		sessions[index].SessionID = acceptanceOpaqueID(sessions[index].SessionID)
+		sessions[index].AgentName = acceptanceOpaqueID(sessions[index].AgentName)
+	}
+	return sessions
+}
+
+func acceptanceOpaqueID(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(value))
+	return "sha256:" + hex.EncodeToString(sum[:12])
 }
 
 func acceptanceAgents(ctx context.Context, service *app.Service, collectorReachable bool) ([]acceptanceAgentResult, error) {
