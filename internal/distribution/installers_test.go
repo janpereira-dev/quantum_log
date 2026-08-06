@@ -191,7 +191,7 @@ func TestPowerShellInstallDryRunPinsRequestedCandidateWithoutWrites(t *testing.T
 		t.Skip("pwsh is unavailable")
 	}
 	installDir := filepath.Join(t.TempDir(), "bin")
-	command := exec.Command(pwsh, "-NoProfile", "-File", filepath.Join("..", "..", "installers", "install.ps1"), "--dry-run", "--version", "v0.3.2-rc.2", "--install-dir", installDir, "--no-modify-path", "--no-bootstrap")
+	command := exec.Command(pwsh, "-NoProfile", "-File", filepath.Join("..", "..", "installers", "install.ps1"), "--dry-run", "--version", "v0.3.2-rc.3", "--install-dir", installDir, "--no-modify-path", "--no-bootstrap")
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("dry-run failed: %v\n%s", err, output)
@@ -200,8 +200,8 @@ func TestPowerShellInstallDryRunPinsRequestedCandidateWithoutWrites(t *testing.T
 		t.Fatalf("dry-run created install directory: %v", err)
 	}
 	for _, want := range []string{
-		"release: v0.3.2-rc.2",
-		"qlog_0.3.2-rc.2_windows_",
+		"release: v0.3.2-rc.3",
+		"qlog_0.3.2-rc.3_windows_",
 		"dry-run: no files downloaded or changed",
 	} {
 		if !strings.Contains(string(output), want) {
