@@ -25,6 +25,7 @@ var runLinuxSystemctl = func(args ...string) error {
 	return exec.Command("systemctl", args...).Run()
 }
 
+var linuxCollectorUnitExists = fileExists
 var removeLinuxCollectorUnit = os.Remove
 var removeLinuxCollectorTree = os.RemoveAll
 var removeLinuxCollectorState = os.Remove
@@ -133,27 +134,30 @@ func (manager linuxCollectorManager) Uninstall() (CollectorStatus, error) {
 	if _, err := stopLinuxCollector(); err != nil {
 		return CollectorStatus{}, err
 	}
-	installed := fileExists(linuxCollectorUnitPath())
+	unitPath := linuxCollectorUnitPath()
+	statePath := linuxCollectorStatePath()
+	state := readManagedLinuxCollectorState(statePath)
+	installed := linuxCollectorUnitExists(unitPath)
 	if installed {
 		if err := runLinuxSystemctl("--user", "disable", linuxCollectorUnitName); err != nil {
 			return CollectorStatus{}, err
 		}
 	}
-	if err := removeLinuxCollectorUnit(linuxCollectorUnitPath()); err != nil && !os.IsNotExist(err) {
+	if err := removeLinuxCollectorUnit(unitPath); err != nil && !os.IsNotExist(err) {
 		return CollectorStatus{}, err
 	}
-	if installed {
+	if installed || state.Home != "" {
 		if err := runLinuxSystemctl("--user", "daemon-reload"); err != nil {
 			return CollectorStatus{}, err
 		}
 	}
-	home := readManagedLinuxCollectorState(linuxCollectorStatePath()).Home
+	home := state.Home
 	if home != "" {
 		if err := removeLinuxCollectorTree(filepath.Join(home, "collector")); err != nil {
 			return CollectorStatus{}, err
 		}
 	}
-	if err := removeLinuxCollectorState(linuxCollectorStatePath()); err != nil && !os.IsNotExist(err) {
+	if err := removeLinuxCollectorState(statePath); err != nil && !os.IsNotExist(err) {
 		return CollectorStatus{}, err
 	}
 	return CollectorStatus{ServiceID: linuxCollectorUnitName, StatePath: filepath.Join(home, "collector"), LogPath: filepath.Join(home, "collector", "collector.log"), Message: "collector user service uninstalled"}, nil
