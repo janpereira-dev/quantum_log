@@ -56,6 +56,7 @@ type WorkContextInput struct {
 type RawEventInput struct {
 	IngestionIdentity          string
 	Source                     string
+	SourceVersion              string
 	SessionID                  string
 	EventType                  string
 	Payload                    []byte
@@ -666,6 +667,16 @@ func (s *Store) SetVerifiedGitContext(ctx context.Context, projectID, locationID
 	if projectID == "" || locationID == "" || root == "" || remote == "" {
 		return errors.New("verified git context requires project, location, root, and remote")
 	}
+	var existingRoot, existingRemote sql.NullString
+	if err := s.db.QueryRowContext(ctx, `SELECT l.vcs_root, p.repository_url_normalized FROM project_locations l JOIN projects p ON p.id = l.project_id WHERE l.id = ? AND l.project_id = ?`, locationID, projectID).Scan(&existingRoot, &existingRemote); err != nil {
+		return fmt.Errorf("read existing verified git context: %w", err)
+	}
+	if existingRoot.Valid && existingRoot.String != "" && normalizeLocationPath(existingRoot.String) != root {
+		return errors.New("verified git root conflicts with existing project location")
+	}
+	if existingRemote.Valid && existingRemote.String != "" && normalizeGitRemote(existingRemote.String) != remote {
+		return errors.New("verified git remote conflicts with existing project")
+	}
 	now := timestamp(time.Now())
 	if _, err := s.db.ExecContext(ctx, `UPDATE projects SET repository_url_normalized = ?, updated_at = ? WHERE id = ?`, remote, now, projectID); err != nil {
 		return fmt.Errorf("store verified git remote: %w", err)
@@ -808,7 +819,7 @@ func (s *Store) AppendRawEvent(ctx context.Context, input RawEventInput) (RawEve
 	}
 	canonical := canonicalEvent(input, payload)
 	event := audit.NewRecord(chainKey(input.Source, input.SessionID), canonical, previousHash)
-	_, err = tx.ExecContext(ctx, `INSERT INTO raw_events (id, source, event_type, occurred_at, received_at, project_id, project_location_id, work_context_id, session_id, project_resolution_method, project_resolution_confidence, project_resolution_evidence_json, payload_json_sanitized, previous_event_hash, event_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, input.Source, input.EventType, timestamp(input.OccurredAt), now, nullable(input.ProjectID), nullable(input.ProjectLocationID), nullable(input.WorkContextID), nullable(input.SessionID), input.ResolutionMethod, input.ResolutionConfidence, input.EvidenceJSON, string(payload), previousHash, event.Hash, now)
+	_, err = tx.ExecContext(ctx, `INSERT INTO raw_events (id, source, source_version, event_type, occurred_at, received_at, project_id, project_location_id, work_context_id, session_id, project_resolution_method, project_resolution_confidence, project_resolution_evidence_json, payload_json_sanitized, previous_event_hash, event_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, input.Source, strings.TrimSpace(input.SourceVersion), input.EventType, timestamp(input.OccurredAt), now, nullable(input.ProjectID), nullable(input.ProjectLocationID), nullable(input.WorkContextID), nullable(input.SessionID), input.ResolutionMethod, input.ResolutionConfidence, input.EvidenceJSON, string(payload), previousHash, event.Hash, now)
 	if err != nil {
 		return RawEventAppendResult{}, fmt.Errorf("insert raw event: %w", err)
 	}
@@ -834,7 +845,7 @@ func (s *Store) HasModelCallForRawEvent(ctx context.Context, rawEventID string) 
 }
 
 func (s *Store) VerifyLedger(ctx context.Context, sessionID string) error {
-	query := `SELECT source, COALESCE(session_id, ''), event_type, occurred_at, project_id, project_location_id, work_context_id, project_resolution_method, project_resolution_confidence, project_resolution_evidence_json, payload_json_sanitized, previous_event_hash, event_hash FROM raw_events`
+	query := `SELECT source, source_version, COALESCE(session_id, ''), event_type, occurred_at, project_id, project_location_id, work_context_id, project_resolution_method, project_resolution_confidence, project_resolution_evidence_json, payload_json_sanitized, previous_event_hash, event_hash FROM raw_events`
 	args := []any{}
 	if sessionID != "" {
 		query += " WHERE session_id = ?"
@@ -848,16 +859,16 @@ func (s *Store) VerifyLedger(ctx context.Context, sessionID string) error {
 	defer func() { _ = rows.Close() }()
 	previous := make(map[string]string)
 	for rows.Next() {
-		var source, session, eventType, occurredAt, resolutionMethod, resolutionConfidence, evidence, payload, previousHash, eventHash string
+		var source, sourceVersion, session, eventType, occurredAt, resolutionMethod, resolutionConfidence, evidence, payload, previousHash, eventHash string
 		var projectID, locationID, contextID sql.NullString
-		if err := rows.Scan(&source, &session, &eventType, &occurredAt, &projectID, &locationID, &contextID, &resolutionMethod, &resolutionConfidence, &evidence, &payload, &previousHash, &eventHash); err != nil {
+		if err := rows.Scan(&source, &sourceVersion, &session, &eventType, &occurredAt, &projectID, &locationID, &contextID, &resolutionMethod, &resolutionConfidence, &evidence, &payload, &previousHash, &eventHash); err != nil {
 			return fmt.Errorf("scan ledger event: %w", err)
 		}
 		key := chainKey(source, session)
 		if previousHash != previous[key] {
 			return errors.New("ledger previous hash does not match")
 		}
-		canonical := canonicalEvent(RawEventInput{Source: source, SessionID: session, EventType: eventType, OccurredAt: parseTimestamp(occurredAt), ProjectID: projectID.String, ProjectLocationID: locationID.String, WorkContextID: contextID.String, ResolutionMethod: resolutionMethod, ResolutionConfidence: resolutionConfidence, EvidenceJSON: evidence}, []byte(payload))
+		canonical := canonicalEvent(RawEventInput{Source: source, SourceVersion: sourceVersion, SessionID: session, EventType: eventType, OccurredAt: parseTimestamp(occurredAt), ProjectID: projectID.String, ProjectLocationID: locationID.String, WorkContextID: contextID.String, ResolutionMethod: resolutionMethod, ResolutionConfidence: resolutionConfidence, EvidenceJSON: evidence}, []byte(payload))
 		if audit.Hash(key, canonical, previousHash) != eventHash {
 			return errors.New("ledger event hash does not match")
 		}
@@ -1383,6 +1394,16 @@ func (s *Store) LinkMatchingLegacyModelCall(ctx context.Context, input ModelCall
 	if err != nil {
 		return false, fmt.Errorf("confirm legacy model call linkage: %w", err)
 	}
+	if affected == 1 {
+		for _, metric := range input.Metrics {
+			if metric.Value == nil || !validMetricName(metric.Name) || strings.TrimSpace(metric.Source) == "" || strings.TrimSpace(metric.RawKey) == "" || strings.TrimSpace(metric.Confidence) == "" || *metric.Value < 0 {
+				return false, errors.New("metric observations require a supported non-negative value, source, raw key, and confidence")
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO model_call_metrics (model_call_id, metric_name, metric_value, source, raw_key, confidence, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, candidates[0], metric.Name, *metric.Value, metric.Source, metric.RawKey, metric.Confidence, timestamp(time.Now())); err != nil {
+				return false, fmt.Errorf("insert linked metric observation: %w", err)
+			}
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("commit legacy model call linkage: %w", err)
 	}
@@ -1772,7 +1793,7 @@ func (s *Store) CapabilityReport(ctx context.Context, query CapabilityQuery) (Ca
 			_ = rows.Close()
 			return CapabilityReport{}, fmt.Errorf("scan capability raw event: %w", err)
 		}
-		if strings.Contains(eventType, "lifecycle") || strings.Contains(eventType, "session") || eventType == "stop" {
+		if isLifecycleEventType(eventType) {
 			report.LifecycleEvents += count
 		}
 		if strings.Contains(eventType, "mcp") {
@@ -1796,6 +1817,14 @@ func (s *Store) CapabilityReport(ctx context.Context, query CapabilityQuery) (Ca
 		return CapabilityReport{}, err
 	}
 	return report, nil
+}
+
+func isLifecycleEventType(eventType string) bool {
+	switch strings.ToLower(eventType) {
+	case "sessionstart", "sessionend", "agentstop", "userpromptsubmit", "subagentstop", "stop", "claudecodehook":
+		return true
+	}
+	return strings.Contains(eventType, "lifecycle") || strings.Contains(eventType, "session") || strings.HasSuffix(eventType, "stop")
 }
 
 func capabilityModelWhere(query CapabilityQuery) (string, []any) {
@@ -1851,24 +1880,25 @@ func capabilityRawWhere(query CapabilityQuery) (string, []any) {
 }
 
 func (s *Store) capabilityMetrics(ctx context.Context, where string, args []any, modelCalls int64, report *CapabilityReport) error {
-	type aggregate struct{ reported, total, zero int64 }
+	type aggregate struct{ reported, total, zero, disagreements int64 }
 	values := make(map[string]aggregate)
 	provenance := make(map[string][]MetricProvenance)
-	rows, err := s.db.QueryContext(ctx, `SELECT m.metric_name, COUNT(*), COALESCE(SUM(m.metric_value), 0), COALESCE(SUM(CASE WHEN m.metric_value = 0 THEN 1 ELSE 0 END), 0), m.source, m.raw_key, m.confidence, COUNT(*) FROM model_call_metrics m JOIN model_calls c ON c.id = m.model_call_id LEFT JOIN projects p ON p.id = c.primary_project_id`+where+` GROUP BY m.metric_name, m.source, m.raw_key, m.confidence ORDER BY m.metric_name, m.source, m.raw_key, m.confidence`, args...)
+	rows, err := s.db.QueryContext(ctx, `SELECT m.metric_name, COUNT(*), COALESCE(SUM(m.metric_value), 0), COALESCE(SUM(CASE WHEN m.metric_value = 0 THEN 1 ELSE 0 END), 0), COALESCE(SUM(CASE m.metric_name WHEN 'input_tokens' THEN m.metric_value != c.input_tokens WHEN 'output_tokens' THEN m.metric_value != c.output_tokens WHEN 'reasoning_tokens' THEN m.metric_value != c.reasoning_tokens WHEN 'cached_input_tokens' THEN m.metric_value != c.cached_input_tokens WHEN 'cache_write_tokens' THEN m.metric_value != c.cache_write_tokens WHEN 'total_tokens' THEN m.metric_value != c.total_tokens ELSE 0 END), 0), m.source, m.raw_key, m.confidence, COUNT(*) FROM model_call_metrics m JOIN model_calls c ON c.id = m.model_call_id LEFT JOIN projects p ON p.id = c.primary_project_id`+where+` GROUP BY m.metric_name, m.source, m.raw_key, m.confidence ORDER BY m.metric_name, m.source, m.raw_key, m.confidence`, args...)
 	if err != nil {
 		return fmt.Errorf("read metric coverage: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var name, source, rawKey, confidence string
-		var count, sum, zero, provenanceCount int64
-		if err := rows.Scan(&name, &count, &sum, &zero, &source, &rawKey, &confidence, &provenanceCount); err != nil {
+		var count, sum, zero, disagreements, provenanceCount int64
+		if err := rows.Scan(&name, &count, &sum, &zero, &disagreements, &source, &rawKey, &confidence, &provenanceCount); err != nil {
 			return fmt.Errorf("scan metric coverage: %w", err)
 		}
 		current := values[name]
 		current.reported += count
 		current.total += sum
 		current.zero += zero
+		current.disagreements += disagreements
 		values[name] = current
 		provenance[name] = append(provenance[name], MetricProvenance{Source: source, RawKey: rawKey, Confidence: confidence, Count: provenanceCount})
 	}
@@ -1881,7 +1911,7 @@ func (s *Store) capabilityMetrics(ctx context.Context, where string, args []any,
 		switch {
 		case current.reported == 0:
 			coverage.State = "not_emitted"
-		case current.reported != modelCalls:
+		case current.reported != modelCalls || current.disagreements != 0:
 			coverage.State = "unreconciled"
 		default:
 			coverage.State = "reported"
@@ -2386,8 +2416,8 @@ func projectBySlug(ctx context.Context, tx *sql.Tx, slug string) (domain.Project
 
 func canonicalEvent(input RawEventInput, payload []byte) string {
 	value := struct {
-		Source, SessionID, EventType, OccurredAt, ProjectID, ProjectLocationID, WorkContextID, ResolutionMethod, ResolutionConfidence, EvidenceJSON, Payload string
-	}{input.Source, input.SessionID, input.EventType, timestamp(input.OccurredAt), input.ProjectID, input.ProjectLocationID, input.WorkContextID, input.ResolutionMethod, input.ResolutionConfidence, input.EvidenceJSON, string(payload)}
+		Source, SourceVersion, SessionID, EventType, OccurredAt, ProjectID, ProjectLocationID, WorkContextID, ResolutionMethod, ResolutionConfidence, EvidenceJSON, Payload string
+	}{input.Source, input.SourceVersion, input.SessionID, input.EventType, timestamp(input.OccurredAt), input.ProjectID, input.ProjectLocationID, input.WorkContextID, input.ResolutionMethod, input.ResolutionConfidence, input.EvidenceJSON, string(payload)}
 	encoded, _ := json.Marshal(value)
 	return string(encoded)
 }
@@ -2403,8 +2433,8 @@ func CanonicalIngestionIdentity(input RawEventInput, sanitizedPayload []byte) (s
 		return "upstream-sha256:" + hex.EncodeToString(hash[:]), nil
 	}
 	value := struct {
-		Source, SessionID, EventType, OccurredAt, ProjectID, ProjectLocationID, WorkContextID, ResolutionMethod, ResolutionConfidence, EvidenceJSON, Payload string
-	}{input.Source, input.SessionID, input.EventType, identityOccurredAt(input), input.ProjectID, input.ProjectLocationID, input.WorkContextID, input.ResolutionMethod, input.ResolutionConfidence, input.EvidenceJSON, string(sanitizedPayload)}
+		Source, SourceVersion, SessionID, EventType, OccurredAt, ProjectID, ProjectLocationID, WorkContextID, ResolutionMethod, ResolutionConfidence, EvidenceJSON, Payload string
+	}{input.Source, input.SourceVersion, input.SessionID, input.EventType, identityOccurredAt(input), input.ProjectID, input.ProjectLocationID, input.WorkContextID, input.ResolutionMethod, input.ResolutionConfidence, input.EvidenceJSON, string(sanitizedPayload)}
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return "", err

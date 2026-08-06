@@ -197,6 +197,7 @@ func acceptanceSafeReport(report sqlite.CapabilityReport) sqlite.CapabilityRepor
 	report.SessionID = acceptanceOpaqueID(report.SessionID)
 	for index := range report.Sources {
 		report.Sources[index].Source = acceptanceSafeVocabulary(report.Sources[index].Source, acceptanceKnownSources)
+		report.Sources[index].Quality = acceptanceSafeVocabulary(report.Sources[index].Quality, acceptanceKnownCaptureQuality)
 	}
 	for index := range report.MetricCoverage {
 		for provenanceIndex := range report.MetricCoverage[index].Provenance {
@@ -211,8 +212,9 @@ func acceptanceSafeReport(report sqlite.CapabilityReport) sqlite.CapabilityRepor
 
 var acceptanceKnownSources = map[string]bool{"claude-code-hook": true, "codex-app-server": true, "copilot-cli-hook": true, "opencode-plugin": true, "otlp-http": true, "qlog-plugin": true}
 var acceptanceKnownProvenanceSources = map[string]bool{"otel": true, "opencode": true}
-var acceptanceKnownRawKeys = map[string]bool{"input_tokens": true, "output_tokens": true, "reasoning_output_tokens": true, "cache_read_input_tokens": true, "cache_creation_input_tokens": true, "gen_ai.usage.input_tokens": true, "gen_ai.usage.output_tokens": true, "gen_ai.usage.prompt_tokens": true, "gen_ai.usage.completion_tokens": true, "gen_ai.usage.reasoning.output_tokens": true, "gen_ai.usage.reasoning_tokens": true, "gen_ai.usage.cache_read.input_tokens": true, "gen_ai.usage.cache_creation.input_tokens": true, "gen_ai.usage.total_tokens": true, "tokens.input": true, "tokens.output": true, "tokens.cache.read": true}
+var acceptanceKnownRawKeys = map[string]bool{"input_tokens": true, "output_tokens": true, "reasoning_output_tokens": true, "cache_read_input_tokens": true, "cache_creation_input_tokens": true, "gen_ai.usage.input_tokens": true, "gen_ai.usage.output_tokens": true, "gen_ai.usage.prompt_tokens": true, "gen_ai.usage.completion_tokens": true, "gen_ai.usage.reasoning.output_tokens": true, "gen_ai.usage.reasoning_tokens": true, "gen_ai.usage.cache_read.input_tokens": true, "gen_ai.usage.cache_creation.input_tokens": true, "gen_ai.usage.total_tokens": true, "tokens.input": true, "tokens.output": true, "tokens.reasoning": true, "tokens.cache.read": true, "tokens.cache.write": true}
 var acceptanceKnownConfidence = map[string]bool{"reported": true}
+var acceptanceKnownCaptureQuality = map[string]bool{"agent_reported": true, "estimated": true, "lifecycle_only": true, "otel_reported": true, "unavailable": true, "unknown": true}
 
 func acceptanceSafeVocabulary(value string, allowed map[string]bool) string {
 	if value == "" || allowed[value] {

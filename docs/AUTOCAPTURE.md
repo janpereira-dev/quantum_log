@@ -46,9 +46,9 @@ Foreground service is not managed. Stop it with `Ctrl+C`; start it again after a
 | Codex | user-level OTLP log exporter with `log_user_prompt = false` | `otel_reported` | **BLOCKED_EXTERNAL**: authenticated real action sent no request to healthy foreground collector. |
 | Copilot CLI | qlog-owned user hook file | `lifecycle_only` | **BLOCKED_EXTERNAL**: authenticated real action produced no delivered hook event. |
 | Copilot VS Code | qlog-managed OTel settings with `captureContent=false` | `otel_reported` | **BLOCKED_EXTERNAL**: host lacks GitHub Copilot extension/login; no real action attempted. |
-| OpenCode | qlog-managed plugin lifecycle events | `lifecycle_only` | Guided validation only; no documented token schema or clean-device real event. |
+| OpenCode | qlog-managed plugin usage, lifecycle, and tool events | `agent_reported` for allowlisted assistant counters; `lifecycle_only` otherwise | Guided validation only; clean-device real event pending. |
 
-`lifecycle_only` means sanitized lifecycle evidence, not token counters. `otel_reported` means qlog accepts documented source counters only when source event reaches collector. qlog never invents token counts.
+`lifecycle_only` means sanitized lifecycle evidence, not token counters. `otel_reported` and `agent_reported` mean qlog accepts documented source counters only when source event reaches collector. qlog never invents token counts.
 
 ## Privacy
 

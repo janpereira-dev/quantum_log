@@ -130,12 +130,14 @@ async function post(event) {
 }
 
 function envelope(type, ctx, event, payload, upstreamEventID) {
-  const body = event || {}
-  const properties = body.properties || {}
-  const context = body.context || {}
-  return {
-    source: "opencode-plugin",
-    session_id: properties.sessionID || "",
+	const body = event || {}
+	const properties = body.properties || {}
+	const context = body.context || {}
+	const info = properties.info || {}
+	const part = properties.part || {}
+	return {
+	  source: "opencode-plugin",
+	  session_id: properties.sessionID || info.sessionID || part.sessionID || "",
     event_type: type,
     occurred_at: new Date(body.time || Date.now()).toISOString(),
     upstream_event_id: upstreamEventID || body.id || "",
@@ -193,7 +195,7 @@ function assistantUsage(ctx, event) {
   const tokens = info.tokens || {}
   const cache = tokens.cache || {}
   const payload = { agent_name: "opencode", capture_quality: "agent_reported" }
-  setString(payload, "session_id", properties.sessionID)
+	setString(payload, "session_id", properties.sessionID || info.sessionID)
   setString(payload, "message_id", info.id)
   setString(payload, "parent_message_id", info.parentID)
   setString(payload, "provider", info.providerID)

@@ -529,7 +529,7 @@ func TestOpenCodeInstallWritesGlobalPluginPostingLocalEvents(t *testing.T) {
 
 func TestOpenCodePluginUsesAuditedUsageFieldsWithoutRawContent(t *testing.T) {
 	source := openCodePluginSource()
-	for _, want := range []string{"properties.sessionID", "properties.info", "properties.part", "context.directory", "info.providerID", "info.modelID", "info.cost", "tokens.input", "tokens.output", "tokens.reasoning", "cache.read", "cache.write", "info.time.created", "info.time.completed", "info.finish", "capture_quality: \"agent_reported\""} {
+	for _, want := range []string{"properties.sessionID", "properties.info", "properties.part", "info.sessionID", "part.sessionID", "context.directory", "info.providerID", "info.modelID", "info.cost", "tokens.input", "tokens.output", "tokens.reasoning", "cache.read", "cache.write", "info.time.created", "info.time.completed", "info.finish", "capture_quality: \"agent_reported\""} {
 		if !strings.Contains(source, want) {
 			t.Fatalf("plugin missing %q:\n%s", want, source)
 		}
@@ -658,6 +658,23 @@ func TestClaudeCodeInstallConfiguresTraceOnlyOTelWithoutContentCapture(t *testin
 		if env[key] != want {
 			t.Fatalf("env[%q] = %#v, want %q", key, env[key], want)
 		}
+	}
+}
+
+func TestClaudeCodeStatusRequiresExactManagedOTELEnvironment(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	settingsPath := filepath.Join(configHome, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeSettingsMap(t, settingsPath, map[string]any{"env": map[string]any{"CLAUDE_CODE_ENABLE_TELEMETRY": "1", "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "true"}})
+	status, err := newClaudeCodeAdapter().Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.CaptureQuality != CaptureLifecycleOnly {
+		t.Fatalf("status accepted partial or unsafe OTel configuration: %#v", status)
 	}
 }
 

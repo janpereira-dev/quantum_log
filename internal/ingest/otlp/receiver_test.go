@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -684,6 +685,19 @@ func TestReceiverImportsDocumentedClaudeTraceTokenAttributes(t *testing.T) {
 	row := report.Rows[0]
 	if row.ProjectSlug != project.Slug || row.AgentName != "claude-code" || row.Provider != "anthropic" || row.Model != "claude-sonnet-4-6" || row.InputTokens != 0 || row.OutputTokens != 13 || row.CachedInputTokens != 7 || row.CaptureQuality != "otel_reported" {
 		t.Fatalf("usage row = %#v", row)
+	}
+}
+
+func TestReceiverPreservesClaudeSpecificOTLPRejection(t *testing.T) {
+	service, err := app.Initialize(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+
+	_, _, err = Receiver{service: service}.ingest(context.Background(), exportTraceServiceRequest{ResourceSpans: []resourceSpans{{Resource: resource{Attributes: []keyValue{{Key: "service.name", Value: attributeValue{StringValue: "claude-code"}}}}, ScopeSpans: []scopeSpans{{Spans: []span{{TraceID: "trace", SpanID: "span"}}}}}}})
+	if !errors.Is(err, errUnsupportedClaudeSpan) {
+		t.Fatalf("Claude rejection = %v, want %v", err, errUnsupportedClaudeSpan)
 	}
 }
 

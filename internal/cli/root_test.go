@@ -822,8 +822,10 @@ func TestReportTodayJSONKeepsLifecycleEvidenceAndNullableMetricCoverage(t *testi
 		t.Fatalf("report today: %v\n%s", err, output)
 	}
 	var report struct {
-		ModelCalls      int64 `json:"model_calls"`
-		LifecycleEvents int64 `json:"lifecycle_events"`
+		ModelCalls      int64      `json:"model_calls"`
+		LifecycleEvents int64      `json:"lifecycle_events"`
+		From            *time.Time `json:"from"`
+		To              *time.Time `json:"to"`
 		MetricCoverage  []struct {
 			Name  string `json:"name"`
 			State string `json:"state"`
@@ -833,7 +835,7 @@ func TestReportTodayJSONKeepsLifecycleEvidenceAndNullableMetricCoverage(t *testi
 	if err := json.Unmarshal([]byte(output), &report); err != nil {
 		t.Fatalf("decode report: %v\n%s", err, output)
 	}
-	if report.ModelCalls != 0 || report.LifecycleEvents != 1 || len(report.MetricCoverage) == 0 {
+	if report.ModelCalls != 0 || report.LifecycleEvents != 1 || len(report.MetricCoverage) == 0 || report.From == nil || report.To == nil || !report.To.After(*report.From) {
 		t.Fatalf("report = %#v", report)
 	}
 	for _, metric := range report.MetricCoverage {
@@ -856,7 +858,7 @@ func TestReportProjectCSVUsesNotEmittedMarkerForAbsentMetric(t *testing.T) {
 	if err != nil {
 		t.Fatalf("report project csv: %v\n%s", err, output)
 	}
-	if !strings.Contains(output, "metric,state,value") || !strings.Contains(output, "input_tokens,not_emitted,—") {
+	if !strings.Contains(output, "metric,state,value,reported_count,missing_count,reported_zero_count,source,raw_key,confidence,provenance_count") || !strings.Contains(output, "input_tokens,not_emitted,—") {
 		t.Fatalf("csv output = %q", output)
 	}
 }
@@ -900,6 +902,7 @@ func TestReportProjectJSONPreservesReportedZeroMetricProvenance(t *testing.T) {
 			Provenance []struct {
 				Source string `json:"source"`
 				RawKey string `json:"raw_key"`
+				Count  int64  `json:"count"`
 			} `json:"provenance"`
 		} `json:"metric_coverage"`
 	}
@@ -908,7 +911,7 @@ func TestReportProjectJSONPreservesReportedZeroMetricProvenance(t *testing.T) {
 	}
 	for _, metric := range report.MetricCoverage {
 		if metric.Name == "input_tokens" {
-			if metric.State != "reported" || metric.Value == nil || *metric.Value != 0 || len(metric.Provenance) != 1 || metric.Provenance[0].Source != "otel" || metric.Provenance[0].RawKey != "input_tokens" {
+			if metric.State != "reported" || metric.Value == nil || *metric.Value != 0 || len(metric.Provenance) != 1 || metric.Provenance[0].Source != "otel" || metric.Provenance[0].RawKey != "input_tokens" || metric.Provenance[0].Count != 1 {
 				t.Fatalf("input metric = %#v", metric)
 			}
 			return

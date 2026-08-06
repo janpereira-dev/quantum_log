@@ -142,8 +142,15 @@ func TestAcceptancePackageHashesUserControlledIdentifiers(t *testing.T) {
 
 func TestAcceptanceSanitizesUnknownNestedVocabulary(t *testing.T) {
 	report := acceptanceSafeReport(sqlite.CapabilityReport{
-		Sources:        []sqlite.SourceCoverage{{Source: "source-secret", Quality: "quality-secret"}},
-		MetricCoverage: []sqlite.MetricCoverage{{Name: "input_tokens", Provenance: []sqlite.MetricProvenance{{Source: "source-secret", RawKey: "raw-key-secret", Confidence: "confidence-secret"}}}},
+		Sources: []sqlite.SourceCoverage{
+			{Source: "opencode-plugin", Quality: "agent_reported"},
+			{Source: "source-secret", Quality: "quality-secret"},
+		},
+		MetricCoverage: []sqlite.MetricCoverage{{Name: "input_tokens", Provenance: []sqlite.MetricProvenance{
+			{Source: "opencode", RawKey: "tokens.reasoning", Confidence: "reported"},
+			{Source: "opencode", RawKey: "tokens.cache.write", Confidence: "reported"},
+			{Source: "source-secret", RawKey: "raw-key-secret", Confidence: "confidence-secret"},
+		}}},
 	})
 	jsonData, err := json.Marshal(report)
 	if err != nil {
@@ -158,10 +165,16 @@ func TestAcceptanceSanitizesUnknownNestedVocabulary(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, data := range [][]byte{jsonData, csvData.Bytes(), textData.Bytes()} {
-		for _, secret := range []string{"source-secret", "raw-key-secret", "confidence-secret"} {
+		for _, secret := range []string{"source-secret", "quality-secret", "raw-key-secret", "confidence-secret"} {
 			if strings.Contains(string(data), secret) {
 				t.Fatalf("acceptance export leaked %q: %s", secret, data)
 			}
 		}
+	}
+	if report.Sources[0].Quality != "agent_reported" || report.MetricCoverage[0].Provenance[0].RawKey != "tokens.reasoning" || report.MetricCoverage[0].Provenance[1].RawKey != "tokens.cache.write" {
+		t.Fatalf("allowlisted acceptance vocabulary changed: %#v", report)
+	}
+	if !strings.HasPrefix(report.Sources[1].Quality, "sha256:") {
+		t.Fatalf("unknown capture quality was not opaque: %#v", report.Sources[1])
 	}
 }

@@ -16,6 +16,7 @@ import (
 type event struct {
 	IngestionIdentity    string          `json:"upstream_event_id"`
 	Source               string          `json:"source"`
+	SourceVersion        string          `json:"source_version"`
 	SessionID            string          `json:"session_id"`
 	EventType            string          `json:"event_type"`
 	OccurredAt           time.Time       `json:"occurred_at"`
@@ -48,7 +49,7 @@ type modelCallPayload struct {
 
 type metricObservation struct {
 	Name       string `json:"name"`
-	Value      int64  `json:"value"`
+	Value      *int64 `json:"value"`
 	Source     string `json:"source"`
 	RawKey     string `json:"raw_key"`
 	Confidence string `json:"confidence"`
@@ -88,7 +89,7 @@ func importWithTrust(ctx context.Context, store *storepkg.Store, reader io.Reade
 		if parsed.EvidenceJSON != nil {
 			evidence = string(parsed.EvidenceJSON)
 		}
-		appendResult, err := store.AppendRawEvent(ctx, storepkg.RawEventInput{IngestionIdentity: parsed.IngestionIdentity, Source: parsed.Source, SessionID: parsed.SessionID, EventType: parsed.EventType, Payload: parsed.Payload, OccurredAt: parsed.OccurredAt, ProjectID: parsed.ProjectID, ProjectLocationID: parsed.ProjectLocationID, WorkContextID: parsed.WorkContextID, ResolutionMethod: parsed.ResolutionMethod, ResolutionConfidence: parsed.ResolutionConfidence, EvidenceJSON: evidence})
+		appendResult, err := store.AppendRawEvent(ctx, storepkg.RawEventInput{IngestionIdentity: parsed.IngestionIdentity, Source: parsed.Source, SourceVersion: parsed.SourceVersion, SessionID: parsed.SessionID, EventType: parsed.EventType, Payload: parsed.Payload, OccurredAt: parsed.OccurredAt, ProjectID: parsed.ProjectID, ProjectLocationID: parsed.ProjectLocationID, WorkContextID: parsed.WorkContextID, ResolutionMethod: parsed.ResolutionMethod, ResolutionConfidence: parsed.ResolutionConfidence, EvidenceJSON: evidence})
 		if err != nil {
 			return count, fmt.Errorf("import NDJSON line %d: %w", line, err)
 		}
@@ -153,8 +154,9 @@ func normalizeModelCall(ctx context.Context, store *storepkg.Store, parsed event
 		CaptureQuality:         payload.CaptureQuality,
 	}
 	for _, metric := range payload.MetricObservations {
-		value := metric.Value
-		input.Metrics = append(input.Metrics, storepkg.MetricInput{Name: metric.Name, Value: &value, Source: metric.Source, RawKey: metric.RawKey, Confidence: metric.Confidence})
+		if metric.Value != nil {
+			input.Metrics = append(input.Metrics, storepkg.MetricInput{Name: metric.Name, Value: metric.Value, Source: metric.Source, RawKey: metric.RawKey, Confidence: metric.Confidence})
+		}
 	}
 	linked, err = store.LinkMatchingLegacyModelCall(ctx, input)
 	if err != nil || linked {

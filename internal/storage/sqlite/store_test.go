@@ -834,6 +834,30 @@ func TestVerifiedGitContextRequiresOneExactRootAndRemoteMatch(t *testing.T) {
 	}
 }
 
+func TestSetVerifiedGitContextBackfillsButDoesNotOverwriteVerifiedContext(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	root := filepath.Join(t.TempDir(), "repo")
+	project, location, err := store.RegisterProject(ctx, "Project", "project", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetVerifiedGitContext(ctx, project.ID, location.ID, root, "https://github.com/example/repo.git"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetVerifiedGitContext(ctx, project.ID, location.ID, filepath.Join(t.TempDir(), "other"), "https://github.com/example/other.git"); err == nil {
+		t.Fatal("SetVerifiedGitContext() overwrote existing verified context")
+	}
+	gotProject, gotLocation, found, err := store.ProjectByVerifiedGitContext(ctx, root, "https://github.com/example/repo.git")
+	if err != nil || !found || gotProject.ID != project.ID || gotLocation.ID != location.ID {
+		t.Fatalf("verified context after rejected overwrite = %#v %#v found=%t err=%v", gotProject, gotLocation, found, err)
+	}
+}
+
 func assertTableCount(t *testing.T, store *Store, table string, want int) {
 	t.Helper()
 	var got int

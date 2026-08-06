@@ -269,7 +269,7 @@ func TestCapabilityReportCountsRecognizedRawEvidenceWithoutInventingUsage(t *tes
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	for _, eventType := range []string{"lifecycle.stop", "tool.execute.failed", "mcp.call"} {
+	for _, eventType := range []string{"Stop", "UserPromptSubmit", "SubagentStop", "SessionStart", "sessionStart", "sessionEnd", "agentStop", "tool.execute.failed", "mcp.call"} {
 		if _, err := store.AppendRawEvent(ctx, RawEventInput{Source: "fixture", SessionID: "session-1", EventType: eventType, ProjectID: project.ID, OccurredAt: now, Payload: []byte(`{"agent_name":"fixture","capture_quality":"lifecycle_only"}`)}); err != nil {
 			t.Fatalf("append %s: %v", eventType, err)
 		}
@@ -278,7 +278,7 @@ func TestCapabilityReportCountsRecognizedRawEvidenceWithoutInventingUsage(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.ModelCalls != 0 || report.Tokens != 0 || report.LifecycleEvents != 1 || report.ToolCalls != 1 || report.MCPCalls != 1 || report.Errors != 1 {
+	if report.ModelCalls != 0 || report.Tokens != 0 || report.LifecycleEvents != 7 || report.ToolCalls != 1 || report.MCPCalls != 1 || report.Errors != 1 {
 		t.Fatalf("capability report = %#v", report)
 	}
 }

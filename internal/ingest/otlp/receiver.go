@@ -157,14 +157,14 @@ func decodeLogRequest(request *http.Request, writer http.ResponseWriter) (export
 func (r Receiver) ingest(ctx context.Context, request exportTraceServiceRequest) (int, int, error) {
 	var lines bytes.Buffer
 	count := 0
-	unsupportedAgentSpan := false
+	var unsupportedAgentSpan error
 	for _, resourceSpan := range request.ResourceSpans {
 		resource := attributes(resourceSpan.Resource.Attributes)
 		for _, scopeSpan := range resourceSpan.ScopeSpans {
 			for _, span := range scopeSpan.Spans {
 				line, err := r.event(ctx, resource, attributes(span.Attributes), span)
 				if errors.Is(err, errUnsupportedCopilotSpan) || errors.Is(err, errUnsupportedClaudeSpan) {
-					unsupportedAgentSpan = true
+					unsupportedAgentSpan = err
 					continue
 				}
 				if err != nil {
@@ -178,8 +178,8 @@ func (r Receiver) ingest(ctx context.Context, request exportTraceServiceRequest)
 		}
 	}
 	if count == 0 {
-		if unsupportedAgentSpan {
-			return 0, 0, errUnsupportedCopilotSpan
+		if unsupportedAgentSpan != nil {
+			return 0, 0, unsupportedAgentSpan
 		}
 		return 0, 0, nil
 	}
@@ -273,6 +273,7 @@ func (r Receiver) event(ctx context.Context, resource, span map[string]string, i
 	}
 	line := map[string]any{
 		"source":                        "otlp-http",
+		"source_version":                first(resource, span, "service.version"),
 		"session_id":                    sessionID,
 		"event_type":                    eventType,
 		"occurred_at":                   occurredAt,
@@ -324,7 +325,7 @@ func (r Receiver) claudeSpanEvent(ctx context.Context, resource, attributes map[
 		sessionID = input.TraceID
 	}
 	return map[string]any{
-		"source": "otlp-http", "session_id": sessionID, "event_type": "model.call", "occurred_at": occurredAt,
+		"source": "otlp-http", "source_version": first(resource, attributes, "service.version"), "session_id": sessionID, "event_type": "model.call", "occurred_at": occurredAt,
 		"project_id": resolved.ProjectID, "project_location_id": resolved.LocationID,
 		"project_resolution_method": string(resolved.Resolution.Method), "project_resolution_confidence": string(resolved.Resolution.Confidence),
 		"project_resolution_evidence": map[string]string{"source": "central-project-resolver"},
@@ -386,6 +387,7 @@ func (r Receiver) copilotSpanEvent(ctx context.Context, resource, attributes map
 	}
 	return map[string]any{
 		"source":                        "otlp-http",
+		"source_version":                first(resource, attributes, "service.version"),
 		"session_id":                    sessionID,
 		"event_type":                    "model.call",
 		"occurred_at":                   occurredAt,
@@ -477,6 +479,7 @@ func (r Receiver) codexLogEvent(ctx context.Context, resource, record map[string
 	}
 	return map[string]any{
 		"source":                        "otlp-http",
+		"source_version":                first(resource, record, "service.version"),
 		"session_id":                    sessionID,
 		"event_type":                    "model.call",
 		"occurred_at":                   occurredAt,

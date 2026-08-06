@@ -186,7 +186,21 @@ func claudeSettingsHasQlog(path string) bool {
 
 func claudeSettingsHasOTEL(path string) bool {
 	contents, err := os.ReadFile(path)
-	return err == nil && bytesContains(contents, []byte("CLAUDE_CODE_ENABLE_TELEMETRY")) && bytesContains(contents, []byte("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"))
+	if err != nil {
+		return false
+	}
+	var settings struct {
+		Env map[string]string `json:"env"`
+	}
+	if json.Unmarshal(contents, &settings) != nil {
+		return false
+	}
+	for key, value := range claudeCodeOTELEnvironment() {
+		if settings.Env[key] != value {
+			return false
+		}
+	}
+	return true
 }
 
 func claudeCodeHookCommand(home, executablePath string) string {

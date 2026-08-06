@@ -467,7 +467,9 @@ func newReportCommand(home *string) *cobra.Command {
 	report.Flags().BoolVar(&csvOutput, "csv", false, "output CSV metric coverage")
 	report.AddCommand(newCapabilityReportCommand("today", "Report capability-aware evidence from last 24 hours", home, func(query *sqlite.CapabilityQuery, _ []string) {
 		if query.From.IsZero() {
-			query.From = time.Now().UTC().Add(-24 * time.Hour)
+			now := time.Now().UTC()
+			query.From = now.Add(-24 * time.Hour)
+			query.To = now
 		}
 	}), newCapabilityReportCommand("project <project>", "Report capability-aware evidence for one project", home, func(query *sqlite.CapabilityQuery, args []string) {
 		query.ProjectSlug = args[0]
@@ -584,7 +586,7 @@ func writeCapabilityReport(writer io.Writer, report sqlite.CapabilityReport) err
 
 func writeCapabilityCSV(writer io.Writer, report sqlite.CapabilityReport) error {
 	csvWriter := csv.NewWriter(writer)
-	if err := csvWriter.Write([]string{"metric", "state", "value", "reported_count", "missing_count", "reported_zero_count", "source", "raw_key", "confidence"}); err != nil {
+	if err := csvWriter.Write([]string{"metric", "state", "value", "reported_count", "missing_count", "reported_zero_count", "source", "raw_key", "confidence", "provenance_count"}); err != nil {
 		return err
 	}
 	for _, metric := range report.MetricCoverage {
@@ -593,7 +595,7 @@ func writeCapabilityCSV(writer io.Writer, report sqlite.CapabilityReport) error 
 			provenance = []sqlite.MetricProvenance{{Source: "—", RawKey: "—", Confidence: "—"}}
 		}
 		for _, item := range provenance {
-			if err := csvWriter.Write([]string{metric.Name, metric.State, displayMetric(metric), strconv.FormatInt(metric.ReportedCount, 10), strconv.FormatInt(metric.MissingCount, 10), strconv.FormatInt(metric.ReportedZeroCount, 10), item.Source, item.RawKey, item.Confidence}); err != nil {
+			if err := csvWriter.Write([]string{metric.Name, metric.State, displayMetric(metric), strconv.FormatInt(metric.ReportedCount, 10), strconv.FormatInt(metric.MissingCount, 10), strconv.FormatInt(metric.ReportedZeroCount, 10), item.Source, item.RawKey, item.Confidence, strconv.FormatInt(item.Count, 10)}); err != nil {
 				return err
 			}
 		}

@@ -79,6 +79,7 @@ func Ingest(ctx context.Context, service *app.Service, event Event) (int, error)
 	}
 	line := map[string]any{
 		"source":                        event.Source,
+		"source_version":                event.SourceVersion,
 		"session_id":                    event.SessionID,
 		"event_type":                    event.EventType,
 		"occurred_at":                   event.OccurredAt,
@@ -144,6 +145,7 @@ func normalizeCodexRawResponse(event Event) Event {
 
 type Event struct {
 	Source          string          `json:"source"`
+	SourceVersion   string          `json:"source_version"`
 	SessionID       string          `json:"session_id"`
 	EventType       string          `json:"event_type"`
 	OccurredAt      time.Time       `json:"occurred_at"`
