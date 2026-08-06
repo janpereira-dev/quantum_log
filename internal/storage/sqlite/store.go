@@ -1271,6 +1271,11 @@ func (s *Store) RecordModelCall(ctx context.Context, input ModelCallInput) (stri
 	id := newID()
 	now := timestamp(time.Now())
 	total := input.InputTokens + input.OutputTokens + input.ReasoningTokens + input.CachedInputTokens + input.CacheWriteTokens
+	for _, metric := range input.Metrics {
+		if metric.Name == "total_tokens" && metric.Value != nil {
+			total = *metric.Value
+		}
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", err
@@ -1805,7 +1810,7 @@ func capabilityModelWhere(query CapabilityQuery) (string, []any) {
 		args = append(args, timestamp(query.To))
 	}
 	if query.ProjectSlug != "" {
-		where += " AND p.slug = ?"
+		where += " AND EXISTS (SELECT 1 FROM usage_allocations a JOIN projects allocated ON allocated.id = a.project_id WHERE a.subject_type = 'model_call' AND a.subject_id = c.id AND allocated.slug = ?)"
 		args = append(args, normalizeSlug(query.ProjectSlug))
 	}
 	if query.AgentName != "" {

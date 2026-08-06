@@ -54,6 +54,42 @@ func TestReceiverImportsStandardOTLPJSONThroughCentralResolver(t *testing.T) {
 	}
 }
 
+func TestReceiverGenericTokenCountersPersistOTLPProvenance(t *testing.T) {
+	service, err := app.Initialize(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	line, err := Receiver{service: service}.event(context.Background(), nil, map[string]string{
+		"gen_ai.provider.name": "example", "gen_ai.request.model": "model", "gen_ai.usage.input_tokens": "7",
+	}, span{TraceID: "trace", SpanID: "span"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := line["payload"].(map[string]any)
+	observations, ok := payload["metric_observations"].([]map[string]any)
+	if !ok || len(observations) != 1 || observations[0]["source"] != "otel" || observations[0]["raw_key"] != "gen_ai.usage.input_tokens" {
+		t.Fatalf("metric observations = %#v", payload["metric_observations"])
+	}
+}
+
+func TestReceiverDefaultsEveryAcceptedCopilotIdentityToGitHub(t *testing.T) {
+	service, err := app.Initialize(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	line, err := Receiver{service: service}.copilotSpanEvent(context.Background(), map[string]string{"service.name": "copilot-chat"}, map[string]string{
+		"gen_ai.agent.name": "GitHub Copilot Chat", "gen_ai.request.model": "gpt-5", "gen_ai.usage.total_tokens": "3",
+	}, span{TraceID: "trace", SpanID: "span"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider := line["payload"].(map[string]any)["provider"]; provider != "github" {
+		t.Fatalf("provider = %v, want github", provider)
+	}
+}
+
 func TestReceiverReportsDuplicateTrace(t *testing.T) {
 	ctx := context.Background()
 	service, err := app.Initialize(ctx, t.TempDir())

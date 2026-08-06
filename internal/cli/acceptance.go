@@ -195,7 +195,30 @@ func acceptanceSafeReport(report sqlite.CapabilityReport) sqlite.CapabilityRepor
 	report.ProjectSlug = acceptanceOpaqueID(report.ProjectSlug)
 	report.AgentName = acceptanceOpaqueID(report.AgentName)
 	report.SessionID = acceptanceOpaqueID(report.SessionID)
+	for index := range report.Sources {
+		report.Sources[index].Source = acceptanceSafeVocabulary(report.Sources[index].Source, acceptanceKnownSources)
+	}
+	for index := range report.MetricCoverage {
+		for provenanceIndex := range report.MetricCoverage[index].Provenance {
+			provenance := &report.MetricCoverage[index].Provenance[provenanceIndex]
+			provenance.Source = acceptanceSafeVocabulary(provenance.Source, acceptanceKnownProvenanceSources)
+			provenance.RawKey = acceptanceSafeVocabulary(provenance.RawKey, acceptanceKnownRawKeys)
+			provenance.Confidence = acceptanceSafeVocabulary(provenance.Confidence, acceptanceKnownConfidence)
+		}
+	}
 	return report
+}
+
+var acceptanceKnownSources = map[string]bool{"claude-code-hook": true, "codex-app-server": true, "copilot-cli-hook": true, "opencode-plugin": true, "otlp-http": true, "qlog-plugin": true}
+var acceptanceKnownProvenanceSources = map[string]bool{"otel": true, "opencode": true}
+var acceptanceKnownRawKeys = map[string]bool{"input_tokens": true, "output_tokens": true, "reasoning_output_tokens": true, "cache_read_input_tokens": true, "cache_creation_input_tokens": true, "gen_ai.usage.input_tokens": true, "gen_ai.usage.output_tokens": true, "gen_ai.usage.prompt_tokens": true, "gen_ai.usage.completion_tokens": true, "gen_ai.usage.reasoning.output_tokens": true, "gen_ai.usage.reasoning_tokens": true, "gen_ai.usage.cache_read.input_tokens": true, "gen_ai.usage.cache_creation.input_tokens": true, "gen_ai.usage.total_tokens": true, "tokens.input": true, "tokens.output": true, "tokens.cache.read": true}
+var acceptanceKnownConfidence = map[string]bool{"reported": true}
+
+func acceptanceSafeVocabulary(value string, allowed map[string]bool) string {
+	if value == "" || allowed[value] {
+		return value
+	}
+	return acceptanceOpaqueID(value)
 }
 
 func acceptanceSafeSessions(sessions []sqlite.SessionSnapshot) []sqlite.SessionSnapshot {
@@ -224,11 +247,8 @@ func acceptanceAgents(ctx context.Context, service *app.Service, collectorReacha
 			return nil, fmt.Errorf("read adapter %s status: %w", adapter.Descriptor().ID, err)
 		}
 		contract := evidenceContract(adapter.Descriptor().ID)
-		recentEvidence, err := service.Store.HasRecentAdapterEvidence(ctx, sqlite.AdapterEvidenceQuery{
-			AdapterID: adapter.Descriptor().ID, AllowedAgentNames: contract.AllowedAgentNames, Source: contract.Source,
-			From: time.Now().UTC().Add(-time.Hour), To: time.Now().UTC(), RequiredQuality: string(contract.Quality),
-			RequiredProvider: contract.RequiredProvider, RequireCodexResponseCompleted: contract.RequireCodexResponseCompleted,
-		})
+		now := time.Now().UTC()
+		recentEvidence, err := hasAdapterEvidence(ctx, service.Store, adapter.Descriptor().ID, "", now.Add(-time.Hour), now, contract)
 		if err != nil {
 			return nil, fmt.Errorf("read adapter %s evidence: %w", adapter.Descriptor().ID, err)
 		}

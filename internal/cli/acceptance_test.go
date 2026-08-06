@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/janpereira-dev/quantum_log/internal/storage/sqlite"
 )
 
 func TestAcceptanceRunWritesSanitizedEvidencePackage(t *testing.T) {
@@ -133,6 +135,32 @@ func TestAcceptancePackageHashesUserControlledIdentifiers(t *testing.T) {
 		for _, identifier := range []string{"session-secret-123", "agent-secret", "provider-secret", "model-secret"} {
 			if strings.Contains(data.String(), identifier) {
 				t.Fatalf("acceptance entry %s leaked identifier %q: %s", file.Name, identifier, data.String())
+			}
+		}
+	}
+}
+
+func TestAcceptanceSanitizesUnknownNestedVocabulary(t *testing.T) {
+	report := acceptanceSafeReport(sqlite.CapabilityReport{
+		Sources:        []sqlite.SourceCoverage{{Source: "source-secret", Quality: "quality-secret"}},
+		MetricCoverage: []sqlite.MetricCoverage{{Name: "input_tokens", Provenance: []sqlite.MetricProvenance{{Source: "source-secret", RawKey: "raw-key-secret", Confidence: "confidence-secret"}}}},
+	})
+	jsonData, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	csvData := new(bytes.Buffer)
+	if err := writeCapabilityCSV(csvData, report); err != nil {
+		t.Fatal(err)
+	}
+	textData := new(bytes.Buffer)
+	if err := writeCapabilityReport(textData, report); err != nil {
+		t.Fatal(err)
+	}
+	for _, data := range [][]byte{jsonData, csvData.Bytes(), textData.Bytes()} {
+		for _, secret := range []string{"source-secret", "raw-key-secret", "confidence-secret"} {
+			if strings.Contains(string(data), secret) {
+				t.Fatalf("acceptance export leaked %q: %s", secret, data)
 			}
 		}
 	}

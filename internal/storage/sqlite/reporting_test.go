@@ -283,6 +283,34 @@ func TestCapabilityReportCountsRecognizedRawEvidenceWithoutInventingUsage(t *tes
 	}
 }
 
+func TestCapabilityReportIncludesExplicitlyAllocatedCallsWithoutDuplicates(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	primary, _, err := store.RegisterProject(ctx, "Primary", "primary", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	allocated, _, err := store.RegisterProject(ctx, "Allocated", "allocated", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	callID, err := store.RecordModelCall(ctx, ModelCallInput{ProjectID: primary.ID, Provider: "example", ModelID: "model", InputTokens: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReplaceAllocations(ctx, "model_call", callID, []AllocationInput{{ProjectID: primary.ID, BasisPoints: 5000}, {ProjectID: allocated.ID, BasisPoints: 5000}}); err != nil {
+		t.Fatal(err)
+	}
+	report, err := store.CapabilityReport(ctx, CapabilityQuery{ProjectSlug: allocated.Slug})
+	if err != nil || report.ModelCalls != 1 || report.Tokens != 5 {
+		t.Fatalf("allocated capability report = %#v, %v", report, err)
+	}
+}
+
 func measurement(measurements []MeasurementSummary, quality string) MeasurementSummary {
 	for _, summary := range measurements {
 		if summary.Quality == quality {

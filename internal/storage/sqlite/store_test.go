@@ -721,6 +721,35 @@ func TestAdapterEvidenceAcceptsClaudeLifecycleRawEventWithoutModelCall(t *testin
 	}
 }
 
+func TestAdapterEvidenceAcceptsReportedTotalWithoutComponents(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	now := time.Now().UTC()
+	if err := store.EnsureSession(ctx, "session", "GitHub Copilot CLI", now); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := store.AppendRawEvent(ctx, RawEventInput{Source: "otlp-http", SessionID: "session", EventType: "model.call", OccurredAt: now, Payload: []byte(`{"agent_name":"GitHub Copilot CLI","provider":"github","capture_quality":"otel_reported"}`)})
+	if err != nil || !raw.Accepted {
+		t.Fatalf("append raw = %#v, %v", raw, err)
+	}
+	total := int64(3)
+	if _, err := store.RecordModelCall(ctx, ModelCallInput{RawEventID: raw.ID, SessionID: "session", AgentName: "GitHub Copilot CLI", Provider: "github", ModelID: "gpt-5", CaptureQuality: "otel_reported", Metrics: []MetricInput{{Name: "total_tokens", Value: &total, Source: "otel", RawKey: "gen_ai.usage.total_tokens", Confidence: "reported"}}}); err != nil {
+		t.Fatal(err)
+	}
+	found, err := store.HasRecentAdapterEvidence(ctx, AdapterEvidenceQuery{AdapterID: "copilot", AllowedAgentNames: []string{"GitHub Copilot CLI"}, Source: "otlp-http", RequiredQuality: "otel_reported", RequiredProvider: "github", From: now.Add(-time.Minute), To: now.Add(time.Minute)})
+	if err != nil || !found {
+		t.Fatalf("total-only evidence = %t, %v", found, err)
+	}
+	report, err := store.CapabilityReport(ctx, CapabilityQuery{})
+	if err != nil || report.Tokens != total || report.MetricCoverage[5].State != "reported" || report.MetricCoverage[5].Value == nil || *report.MetricCoverage[5].Value != total {
+		t.Fatalf("total-only report = %#v, %v", report, err)
+	}
+}
+
 func TestCanonicalIngestionIdentityDoesNotPersistUpstreamValue(t *testing.T) {
 	identity, err := CanonicalIngestionIdentity(RawEventInput{Source: "fixture", IngestionIdentity: "event-secret-value"}, []byte(`{}`))
 	if err != nil {

@@ -253,19 +253,19 @@ func (r Receiver) event(ctx context.Context, resource, span map[string]string, i
 		"agent_name":      first(span, resource, "gen_ai.agent.name", "service.name"),
 		"capture_quality": "otel_reported",
 	}
-	for _, item := range []struct {
-		name  string
-		value int64
-	}{
-		{"input_tokens", number(span, "gen_ai.usage.input_tokens", "gen_ai.usage.prompt_tokens")},
-		{"output_tokens", number(span, "gen_ai.usage.output_tokens", "gen_ai.usage.completion_tokens")},
-		{"reasoning_tokens", number(span, "gen_ai.usage.reasoning.output_tokens", "gen_ai.usage.reasoning_tokens")},
-		{"cached_input_tokens", number(span, "gen_ai.usage.cache_read.input_tokens")},
-		{"cache_write_tokens", number(span, "gen_ai.usage.cache_creation.input_tokens")},
-	} {
-		if item.value >= 0 {
-			payload[item.name] = item.value
-		}
+	observations := metricObservations(span, "otel", []metricKeySet{
+		{name: "input_tokens", keys: []string{"gen_ai.usage.input_tokens", "gen_ai.usage.prompt_tokens"}},
+		{name: "output_tokens", keys: []string{"gen_ai.usage.output_tokens", "gen_ai.usage.completion_tokens"}},
+		{name: "reasoning_tokens", keys: []string{"gen_ai.usage.reasoning.output_tokens", "gen_ai.usage.reasoning_tokens"}},
+		{name: "cached_input_tokens", keys: []string{"gen_ai.usage.cache_read.input_tokens"}},
+		{name: "cache_write_tokens", keys: []string{"gen_ai.usage.cache_creation.input_tokens"}},
+		{name: "total_tokens", keys: []string{"gen_ai.usage.total_tokens"}},
+	})
+	for _, observation := range observations {
+		payload[observation["name"].(string)] = observation["value"]
+	}
+	if len(observations) > 0 {
+		payload["metric_observations"] = observations
 	}
 	sessionID := first(span, resource, "session.id", "gen_ai.conversation.id")
 	if sessionID == "" {
@@ -351,7 +351,7 @@ func (r Receiver) copilotSpanEvent(ctx context.Context, resource, attributes map
 		"agent_name":      agentName,
 		"capture_quality": "otel_reported",
 	}
-	if payload["provider"] == "" && serviceName == "github-copilot" {
+	if payload["provider"] == "" {
 		payload["provider"] = "github"
 	}
 	observations := metricObservations(attributes, "otel", []metricKeySet{
