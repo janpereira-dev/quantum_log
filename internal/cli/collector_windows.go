@@ -102,12 +102,7 @@ func windowsCollectorStatus(ctx context.Context, listen string) (CollectorStatus
 		status.Running = windowsCollectorFallbackRunning(fallback)
 	}
 	health := probeCollectorHealth(ctx, status.Listen)
-	status.Reachable = health.Reachable
-	if health.Reachable && status.Mode == windowsCollectorSchedulerMode {
-		status.Running = true
-	}
-	status.Message = health.Health
-	return status, nil
+	return collectorStatusWithHealth(status, health), nil
 }
 
 func (windowsCollectorManager) InstallFallback(home, listen string) (CollectorStatus, error) {
@@ -117,11 +112,8 @@ func (windowsCollectorManager) InstallFallback(home, listen string) (CollectorSt
 	if err := os.MkdirAll(collectorStateDir(), 0o700); err != nil {
 		return CollectorStatus{}, err
 	}
-	executable, err := os.Executable()
+	executable, err := durableExecutablePath("")
 	if err != nil {
-		return CollectorStatus{}, fmt.Errorf("resolve qlog executable: %w", err)
-	}
-	if err := validateCollectorExecutable(executable); err != nil {
 		return CollectorStatus{}, err
 	}
 	state := windowsCollectorFallbackState{Mode: windowsCollectorFallbackMode, Executable: executable, Home: home, Listen: listen, LogPath: collectorLogPath()}
@@ -253,11 +245,8 @@ func (windowsCollectorManager) Install(home, listen string) (CollectorStatus, er
 	if err := os.MkdirAll(collectorStateDir(), 0o700); err != nil {
 		return CollectorStatus{}, err
 	}
-	executable, err := os.Executable()
+	executable, err := durableExecutablePath("")
 	if err != nil {
-		return CollectorStatus{}, err
-	}
-	if err := validateCollectorExecutable(executable); err != nil {
 		return CollectorStatus{}, err
 	}
 	userID, err := currentWindowsTokenIdentity()
@@ -342,6 +331,9 @@ func (windowsCollectorManager) Start(home, listen string) (CollectorStatus, erro
 		return CollectorStatus{}, err
 	}
 	if status.Mode == windowsCollectorFallbackMode {
+		if status.Running {
+			return windowsCollectorStartupStatus(status, status.Listen)
+		}
 		state, err := readWindowsCollectorFallbackState()
 		if err != nil {
 			return CollectorStatus{}, err
@@ -359,8 +351,7 @@ func (windowsCollectorManager) Start(home, listen string) (CollectorStatus, erro
 		status.Listen = state.Listen
 		status.LogPath = state.LogPath
 		status.ServiceID = windowsCollectorRunValue
-		status.Message = "user fallback collector started"
-		return status, nil
+		return windowsCollectorStartupStatus(status, state.Listen)
 	}
 	if _, err := (windowsCollectorManager{}).Install(home, listen); err != nil {
 		return CollectorStatus{}, err
@@ -372,8 +363,13 @@ func (windowsCollectorManager) Start(home, listen string) (CollectorStatus, erro
 	if err != nil {
 		return CollectorStatus{}, err
 	}
-	status.Message = "collector task start requested; health=" + status.Message
-	return status, nil
+	return windowsCollectorStartupStatus(status, listen)
+}
+
+func windowsCollectorStartupStatus(status CollectorStatus, listen string) (CollectorStatus, error) {
+	return collectorStartupStatus(context.Background(), status, func(ctx context.Context) (CollectorStatus, error) {
+		return windowsCollectorStatusFn(ctx, listen)
+	})
 }
 
 func (windowsCollectorManager) Stop() (CollectorStatus, error) {

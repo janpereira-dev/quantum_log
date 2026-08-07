@@ -234,6 +234,44 @@ func TestWindowsCollectorStartRestartsUserFallbackWithoutScheduler(t *testing.T)
 	}
 }
 
+func TestWindowsCollectorStartDoesNotDuplicateRunningFallback(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	state := windowsCollectorFallbackState{
+		Mode:       windowsCollectorFallbackMode,
+		Executable: `C:\Program Files\QUANTUM_LOG\qlog.exe`,
+		Home:       `C:\Users\alice\AppData\Local\QUANTUM_LOG`,
+		Listen:     "127.0.0.1:4318",
+		LogPath:    filepath.Join(collectorStateDir(), "collector.log"),
+	}
+	state.Command = windowsCollectorRunCommand(state)
+	if err := os.MkdirAll(collectorStateDir(), 0o700); err != nil {
+		t.Fatalf("create state directory: %v", err)
+	}
+	if err := writeWindowsCollectorFallbackState(state); err != nil {
+		t.Fatalf("write fallback state: %v", err)
+	}
+	originalStatus := windowsCollectorStatusFn
+	originalStart := startWindowsFallbackCollector
+	t.Cleanup(func() {
+		windowsCollectorStatusFn = originalStatus
+		startWindowsFallbackCollector = originalStart
+	})
+	windowsCollectorStatusFn = func(context.Context, string) (CollectorStatus, error) {
+		return CollectorStatus{Installed: true, Running: true, Reachable: true, Mode: windowsCollectorFallbackMode, Listen: state.Listen, ServiceID: windowsCollectorRunValue, Message: "ok"}, nil
+	}
+	startWindowsFallbackCollector = func(string, string, string, string) (int, int64, error) {
+		return 0, 0, errors.New("running fallback must not be started again")
+	}
+
+	status, err := (windowsCollectorManager{}).Start(state.Home, state.Listen)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if !status.Running || !status.Reachable || status.Message != "collector started and ready" {
+		t.Fatalf("Start() status = %#v", status)
+	}
+}
+
 func TestWindowsCollectorUninstallStopsAndUnregistersFallbackWhenSchedulerWins(t *testing.T) {
 	t.Setenv("LOCALAPPDATA", t.TempDir())
 	state := windowsCollectorFallbackState{

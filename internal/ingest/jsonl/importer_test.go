@@ -68,6 +68,47 @@ func TestImportNormalizesModelCallPayload(t *testing.T) {
 	}
 }
 
+func TestImportSkipsMetricObservationWithoutValue(t *testing.T) {
+	ctx := context.Background()
+	store, err := storepkg.Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	input := strings.NewReader(`{"source":"fixture","session_id":"session-a","event_type":"model.call","occurred_at":"2026-07-16T12:00:00Z","payload":{"provider":"example","model":"model","agent_name":"fixture","metric_observations":[{"name":"input_tokens","source":"otel","raw_key":"gen_ai.usage.input_tokens","confidence":"reported"}]}}` + "\n")
+	if _, err := Import(ctx, store, input); err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+	report, err := store.CapabilityReport(ctx, storepkg.CapabilityQuery{})
+	if err != nil {
+		t.Fatalf("CapabilityReport() error = %v", err)
+	}
+	for _, metric := range report.MetricCoverage {
+		if metric.Name == "input_tokens" && (metric.ReportedCount != 0 || metric.ReportedZeroCount != 0) {
+			t.Fatalf("absent metric observation was fabricated as zero: %#v", metric)
+		}
+	}
+}
+
+func TestImportCarriesSourceVersionIntoCapabilityReport(t *testing.T) {
+	ctx := context.Background()
+	store, err := storepkg.Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	input := strings.NewReader(`{"source":"fixture","source_version":"1.2.3","session_id":"session-a","event_type":"model.call","occurred_at":"2026-07-16T12:00:00Z","payload":{"provider":"example","model":"model","agent_name":"fixture"}}` + "\n")
+	if _, err := Import(ctx, store, input); err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+	report, err := store.CapabilityReport(ctx, storepkg.CapabilityQuery{})
+	if err != nil || len(report.Sources) != 1 || report.Sources[0].Version == nil || *report.Sources[0].Version != "1.2.3" {
+		t.Fatalf("capability source version = %#v, %v", report.Sources, err)
+	}
+}
+
 func TestImportReplayNormalizesOnlyAcceptedRawEvent(t *testing.T) {
 	ctx := context.Background()
 	store, err := storepkg.Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))
@@ -125,7 +166,7 @@ func TestImportReplayLinksMatchingLegacyNormalizedModelCall(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 
 	occurredAt := mustParseTime(t, "2026-07-30T12:00:00Z")
-	payload := []byte(`{"provider":"example","model":"model","input_tokens":12,"output_tokens":8,"agent_name":"fixture"}`)
+	payload := []byte(`{"provider":"example","model":"model","input_tokens":12,"output_tokens":8,"agent_name":"fixture","metric_observations":[{"name":"input_tokens","value":12,"source":"otel","raw_key":"gen_ai.usage.input_tokens","confidence":"reported"}]}`)
 	raw, err := store.AppendRawEvent(ctx, storepkg.RawEventInput{Source: "fixture", SessionID: "session-a", EventType: "model.call", OccurredAt: occurredAt, Payload: payload})
 	if err != nil || !raw.Accepted {
 		t.Fatalf("AppendRawEvent() = %#v, %v", raw, err)
@@ -138,7 +179,7 @@ func TestImportReplayLinksMatchingLegacyNormalizedModelCall(t *testing.T) {
 		t.Fatalf("RecordModelCall() error = %v", err)
 	}
 
-	input := strings.NewReader(`{"source":"fixture","session_id":"session-a","event_type":"model.call","occurred_at":"2026-07-30T12:00:00Z","payload":{"provider":"example","model":"model","input_tokens":12,"output_tokens":8,"agent_name":"fixture"}}` + "\n")
+	input := strings.NewReader(`{"source":"fixture","session_id":"session-a","event_type":"model.call","occurred_at":"2026-07-30T12:00:00Z","payload":{"provider":"example","model":"model","input_tokens":12,"output_tokens":8,"agent_name":"fixture","metric_observations":[{"name":"input_tokens","value":12,"source":"otel","raw_key":"gen_ai.usage.input_tokens","confidence":"reported"}]}}` + "\n")
 	if count, err := Import(ctx, store, input); err != nil || count != 0 {
 		t.Fatalf("replay Import() = %d, %v", count, err)
 	}
@@ -146,6 +187,19 @@ func TestImportReplayLinksMatchingLegacyNormalizedModelCall(t *testing.T) {
 	if err != nil || report.TotalTokens != 20 {
 		t.Fatalf("replayed usage = %#v, %v", report, err)
 	}
+	capability, err := store.CapabilityReport(ctx, storepkg.CapabilityQuery{})
+	if err != nil {
+		t.Fatalf("CapabilityReport() error = %v", err)
+	}
+	for _, metric := range capability.MetricCoverage {
+		if metric.Name == "input_tokens" {
+			if len(metric.Provenance) != 1 || metric.Provenance[0].RawKey != "gen_ai.usage.input_tokens" {
+				t.Fatalf("linked metric provenance = %#v", metric)
+			}
+			return
+		}
+	}
+	t.Fatal("linked metric observation missing")
 }
 
 func TestImportWithoutOccurredAtSuppressesReplayButKeepsDistinctPayloads(t *testing.T) {

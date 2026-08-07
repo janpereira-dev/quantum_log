@@ -68,11 +68,18 @@ func Ingest(ctx context.Context, service *app.Service, event Event) (int, error)
 	}
 	event = normalizeCodexRawResponse(event)
 	payload := sanitizePluginPayload(event.Payload)
-	if event.Source == "opencode-plugin" || event.Source == "copilot-cli-hook" {
+	if event.Source == "opencode-plugin" {
+		payload = sanitizeOpenCodePayload(event.Payload)
+		if event.EventType != "model.call" {
+			payload = lifecycleOnlyPayload(payload)
+		}
+	}
+	if event.Source == "copilot-cli-hook" {
 		payload = lifecycleOnlyPayload(payload)
 	}
 	line := map[string]any{
 		"source":                        event.Source,
+		"source_version":                event.SourceVersion,
 		"session_id":                    event.SessionID,
 		"event_type":                    event.EventType,
 		"occurred_at":                   event.OccurredAt,
@@ -138,6 +145,7 @@ func normalizeCodexRawResponse(event Event) Event {
 
 type Event struct {
 	Source          string          `json:"source"`
+	SourceVersion   string          `json:"source_version"`
 	SessionID       string          `json:"session_id"`
 	EventType       string          `json:"event_type"`
 	OccurredAt      time.Time       `json:"occurred_at"`
@@ -165,7 +173,7 @@ func sanitizePluginPayload(payload json.RawMessage) json.RawMessage {
 			allowed[key] = value
 		}
 	}
-	for _, key := range []string{"input_tokens", "output_tokens", "reasoning_tokens", "cached_input_tokens", "cache_write_tokens"} {
+	for _, key := range []string{"input_tokens", "output_tokens", "reasoning_tokens", "cached_input_tokens", "cache_write_tokens", "estimated_cost_usd_micros", "created_at", "completed_at"} {
 		if value, ok := nonNegativeInteger(object[key]); ok {
 			allowed[key] = value
 		}
@@ -189,6 +197,51 @@ func lifecycleOnlyPayload(payload json.RawMessage) json.RawMessage {
 	next, err := json.Marshal(object)
 	if err != nil {
 		return json.RawMessage(`{"capture_quality":"lifecycle_only"}`)
+	}
+	return next
+}
+
+func sanitizeOpenCodePayload(payload json.RawMessage) json.RawMessage {
+	var object map[string]any
+	if err := json.Unmarshal(payload, &object); err != nil {
+		return json.RawMessage("{}")
+	}
+	allowed := make(map[string]any, 17)
+	for _, key := range []string{"provider", "model", "agent_name", "capture_quality", "session_id", "message_id", "parent_message_id", "part_id", "finish"} {
+		if value, ok := object[key].(string); ok {
+			allowed[key] = value
+		}
+	}
+	for _, key := range []string{"input_tokens", "output_tokens", "reasoning_tokens", "cached_input_tokens", "cache_write_tokens", "total_tokens", "estimated_cost_usd_micros", "created_at", "completed_at"} {
+		if value, ok := nonNegativeInteger(object[key]); ok {
+			allowed[key] = value
+		}
+	}
+	if observations, ok := object["metric_observations"].([]any); ok {
+		allowedObservations := make([]map[string]any, 0, len(observations))
+		for _, observation := range observations {
+			item, ok := observation.(map[string]any)
+			if !ok {
+				continue
+			}
+			name, nameOK := item["name"].(string)
+			rawKey, rawKeyOK := item["raw_key"].(string)
+			value, valueOK := nonNegativeInteger(item["value"])
+			if !nameOK || !rawKeyOK || !valueOK {
+				continue
+			}
+			if name != "input_tokens" && name != "output_tokens" && name != "reasoning_tokens" && name != "cached_input_tokens" && name != "cache_write_tokens" {
+				continue
+			}
+			allowedObservations = append(allowedObservations, map[string]any{"name": name, "value": value, "source": "opencode", "raw_key": rawKey, "confidence": "reported"})
+		}
+		if len(allowedObservations) > 0 {
+			allowed["metric_observations"] = allowedObservations
+		}
+	}
+	next, err := json.Marshal(allowed)
+	if err != nil {
+		return json.RawMessage("{}")
 	}
 	return next
 }

@@ -16,6 +16,7 @@ import (
 type event struct {
 	IngestionIdentity    string          `json:"upstream_event_id"`
 	Source               string          `json:"source"`
+	SourceVersion        string          `json:"source_version"`
 	SessionID            string          `json:"session_id"`
 	EventType            string          `json:"event_type"`
 	OccurredAt           time.Time       `json:"occurred_at"`
@@ -29,20 +30,29 @@ type event struct {
 }
 
 type modelCallPayload struct {
-	Provider               string `json:"provider"`
-	Model                  string `json:"model"`
-	ModelID                string `json:"model_id"`
-	AgentName              string `json:"agent_name"`
-	TaskID                 string `json:"task_id"`
-	TurnID                 string `json:"turn_id"`
-	InputTokens            int64  `json:"input_tokens"`
-	OutputTokens           int64  `json:"output_tokens"`
-	ReasoningTokens        int64  `json:"reasoning_tokens"`
-	CachedInputTokens      int64  `json:"cached_input_tokens"`
-	CacheWriteTokens       int64  `json:"cache_write_tokens"`
-	EstimatedCostUSDMicros int64  `json:"estimated_cost_usd_micros"`
-	EstimatedCostEURMicros int64  `json:"estimated_cost_eur_micros"`
-	CaptureQuality         string `json:"capture_quality"`
+	Provider               string              `json:"provider"`
+	Model                  string              `json:"model"`
+	ModelID                string              `json:"model_id"`
+	AgentName              string              `json:"agent_name"`
+	TaskID                 string              `json:"task_id"`
+	TurnID                 string              `json:"turn_id"`
+	InputTokens            int64               `json:"input_tokens"`
+	OutputTokens           int64               `json:"output_tokens"`
+	ReasoningTokens        int64               `json:"reasoning_tokens"`
+	CachedInputTokens      int64               `json:"cached_input_tokens"`
+	CacheWriteTokens       int64               `json:"cache_write_tokens"`
+	EstimatedCostUSDMicros int64               `json:"estimated_cost_usd_micros"`
+	EstimatedCostEURMicros int64               `json:"estimated_cost_eur_micros"`
+	CaptureQuality         string              `json:"capture_quality"`
+	MetricObservations     []metricObservation `json:"metric_observations"`
+}
+
+type metricObservation struct {
+	Name       string `json:"name"`
+	Value      *int64 `json:"value"`
+	Source     string `json:"source"`
+	RawKey     string `json:"raw_key"`
+	Confidence string `json:"confidence"`
 }
 
 func Import(ctx context.Context, store *storepkg.Store, reader io.Reader) (int, error) {
@@ -79,7 +89,7 @@ func importWithTrust(ctx context.Context, store *storepkg.Store, reader io.Reade
 		if parsed.EvidenceJSON != nil {
 			evidence = string(parsed.EvidenceJSON)
 		}
-		appendResult, err := store.AppendRawEvent(ctx, storepkg.RawEventInput{IngestionIdentity: parsed.IngestionIdentity, Source: parsed.Source, SessionID: parsed.SessionID, EventType: parsed.EventType, Payload: parsed.Payload, OccurredAt: parsed.OccurredAt, ProjectID: parsed.ProjectID, ProjectLocationID: parsed.ProjectLocationID, WorkContextID: parsed.WorkContextID, ResolutionMethod: parsed.ResolutionMethod, ResolutionConfidence: parsed.ResolutionConfidence, EvidenceJSON: evidence})
+		appendResult, err := store.AppendRawEvent(ctx, storepkg.RawEventInput{IngestionIdentity: parsed.IngestionIdentity, Source: parsed.Source, SourceVersion: parsed.SourceVersion, SessionID: parsed.SessionID, EventType: parsed.EventType, Payload: parsed.Payload, OccurredAt: parsed.OccurredAt, ProjectID: parsed.ProjectID, ProjectLocationID: parsed.ProjectLocationID, WorkContextID: parsed.WorkContextID, ResolutionMethod: parsed.ResolutionMethod, ResolutionConfidence: parsed.ResolutionConfidence, EvidenceJSON: evidence})
 		if err != nil {
 			return count, fmt.Errorf("import NDJSON line %d: %w", line, err)
 		}
@@ -142,6 +152,11 @@ func normalizeModelCall(ctx context.Context, store *storepkg.Store, parsed event
 		EstimatedCostEURMicros: payload.EstimatedCostEURMicros,
 		OccurredAt:             parsed.OccurredAt,
 		CaptureQuality:         payload.CaptureQuality,
+	}
+	for _, metric := range payload.MetricObservations {
+		if metric.Value != nil {
+			input.Metrics = append(input.Metrics, storepkg.MetricInput{Name: metric.Name, Value: metric.Value, Source: metric.Source, RawKey: metric.RawKey, Confidence: metric.Confidence})
+		}
 	}
 	linked, err = store.LinkMatchingLegacyModelCall(ctx, input)
 	if err != nil || linked {

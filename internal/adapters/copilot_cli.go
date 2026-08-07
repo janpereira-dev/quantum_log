@@ -20,7 +20,7 @@ func newCopilotCLIAdapter() copilotCLIAdapter {
 }
 
 func (a copilotCLIAdapter) Descriptor() Descriptor {
-	return Descriptor{ID: a.id, Name: a.name, Version: "hooks-v1", Stable: true, Capabilities: Capabilities{ToolCalls: true, SessionLifecycle: true, ProjectIdentity: true, WorkingDirectory: true, StructuredEvents: true}}
+	return Descriptor{ID: a.id, Name: a.name, Version: "hooks-otel-v1", Stable: true, Capabilities: Capabilities{ModelIdentity: true, InputTokens: true, OutputTokens: true, CacheTokens: true, ToolCalls: true, SessionLifecycle: true, ProjectIdentity: true, WorkingDirectory: true, StructuredEvents: true}}
 }
 
 func (a copilotCLIAdapter) Install(_ context.Context, options InstallOptions) (InstallResult, error) {
@@ -28,7 +28,14 @@ func (a copilotCLIAdapter) Install(_ context.Context, options InstallOptions) (I
 	if err != nil {
 		return InstallResult{}, err
 	}
-	return InstallResult{Changed: !options.DryRun && (change.Action == "created" || change.Action == "updated"), Actions: []string{formatChange(change)}, Changes: []SetupChange{change}}, nil
+	otelChange, err := applyManagedFile(a.otelPath(), copilotCLIOTELConfig("http://127.0.0.1:4318"), options.DryRun)
+	if err != nil {
+		return InstallResult{}, err
+	}
+	changes := []SetupChange{change, otelChange}
+	actions := []string{formatChange(change), formatChange(otelChange)}
+	changed := !options.DryRun && (change.Action == "created" || change.Action == "updated" || otelChange.Action == "created" || otelChange.Action == "updated")
+	return InstallResult{Changed: changed, Actions: actions, Changes: changes}, nil
 }
 
 func (a copilotCLIAdapter) PlanInstall(_ context.Context, options SetupOptions) (SetupPlan, error) {
@@ -39,7 +46,11 @@ func (a copilotCLIAdapter) PlanInstall(_ context.Context, options SetupOptions) 
 	if options.DryRun {
 		change.Description = "dry run: " + change.Description
 	}
-	return SetupPlan{AdapterID: a.id, State: SetupAvailable, CaptureQuality: CaptureLifecycleOnly, Changes: []SetupChange{change}, Notes: []string{"installs an isolated Copilot CLI user hook config for sanitized local lifecycle events; token usage is unavailable"}}, nil
+	otelChange, err := applyManagedFile(a.otelPath(), copilotCLIOTELConfig("http://127.0.0.1:4318"), true)
+	if err != nil {
+		return SetupPlan{}, err
+	}
+	return SetupPlan{AdapterID: a.id, State: SetupAvailable, CaptureQuality: CaptureOTELReported, Changes: []SetupChange{change, otelChange}, Notes: []string{"installs lifecycle hooks plus a qlog-owned Copilot CLI OTel environment file; source it before launching copilot", "OTel content capture remains disabled; clean-device source evidence is still required"}}, nil
 }
 
 func (a copilotCLIAdapter) Status(ctx context.Context) (SetupStatus, error) {
@@ -55,7 +66,11 @@ func (a copilotCLIAdapter) Status(ctx context.Context) (SetupStatus, error) {
 	if installed {
 		state = SetupInstalled
 	}
-	return SetupStatus{AdapterID: a.id, Available: detection.Available, Installed: installed, State: state, InstallationState: state, CaptureQuality: CaptureLifecycleOnly, Evidence: detection.Evidence, Notes: []string{"Copilot CLI hook capture records lifecycle evidence only; prompts, responses, tool arguments, results, secrets, authorization, and tokens are excluded"}}, nil
+	quality := CaptureLifecycleOnly
+	if fileContains(a.otelPath(), "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false") {
+		quality = CaptureOTELReported
+	}
+	return SetupStatus{AdapterID: a.id, Available: detection.Available, Installed: installed, State: state, InstallationState: state, CaptureQuality: quality, Evidence: detection.Evidence, Notes: []string{"Copilot CLI hooks retain lifecycle and CWD evidence; qlog-owned OTel configuration disables message content capture", "No source E2E evidence is claimed by setup"}}, nil
 }
 
 func (a copilotCLIAdapter) Test(ctx context.Context) (TestResult, error) {
@@ -67,22 +82,35 @@ func (a copilotCLIAdapter) Test(ctx context.Context) (TestResult, error) {
 }
 
 func (a copilotCLIAdapter) Uninstall(_ context.Context, options InstallOptions) (InstallResult, error) {
-	path := a.hooksPath()
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		change := SetupChange{Path: path, Action: "unchanged", Description: "Copilot CLI qlog hook config already absent"}
-		return InstallResult{Actions: []string{formatChange(change)}, Changes: []SetupChange{change}}, nil
-	} else if err != nil {
-		return InstallResult{}, fmt.Errorf("stat Copilot CLI hook config: %w", err)
+	changes := make([]SetupChange, 0, 2)
+	for _, item := range []struct{ path, description string }{
+		{a.hooksPath(), "Copilot CLI qlog hook config"},
+		{a.otelPath(), "Copilot CLI qlog OTel environment"},
+	} {
+		change := SetupChange{Path: item.path, Action: "unchanged", Description: item.description + " already absent"}
+		if _, err := os.Stat(item.path); err == nil {
+			change.Action = "removed"
+			change.Description = "removed qlog-owned " + item.description
+			if !options.DryRun {
+				if err := os.Remove(item.path); err != nil {
+					return InstallResult{}, fmt.Errorf("remove %s: %w", item.description, err)
+				}
+			}
+		} else if !os.IsNotExist(err) {
+			return InstallResult{}, fmt.Errorf("stat %s: %w", item.description, err)
+		}
+		if options.DryRun && change.Action == "removed" {
+			change.Description = "dry run: " + change.Description
+		}
+		changes = append(changes, change)
 	}
-	change := SetupChange{Path: path, Action: "removed", Description: "removed qlog-owned Copilot CLI hook config"}
-	if options.DryRun {
-		change.Description = "dry run: " + change.Description
-		return InstallResult{Actions: []string{formatChange(change)}, Changes: []SetupChange{change}}, nil
+	actions := make([]string, 0, len(changes))
+	changed := false
+	for _, change := range changes {
+		actions = append(actions, formatChange(change))
+		changed = changed || change.Action == "removed"
 	}
-	if err := os.Remove(path); err != nil {
-		return InstallResult{}, fmt.Errorf("remove Copilot CLI hook config: %w", err)
-	}
-	return InstallResult{Changed: true, Actions: []string{formatChange(change)}, Changes: []SetupChange{change}}, nil
+	return InstallResult{Changed: changed && !options.DryRun, Actions: actions, Changes: changes}, nil
 }
 
 func (a copilotCLIAdapter) Ingest(context.Context, io.Reader) ([]RawRecord, error) {
@@ -104,6 +132,21 @@ func (a copilotCLIAdapter) hooksPath() string {
 		return filepath.Join(home, ".copilot", "hooks", "qlog.json")
 	}
 	return filepath.Join(".copilot", "hooks", "qlog.json")
+}
+
+func (a copilotCLIAdapter) otelPath() string {
+	return filepath.Join(filepath.Dir(a.hooksPath()), "qlog-otel.env")
+}
+
+func copilotCLIOTELConfig(endpoint string) string {
+	return "COPILOT_OTEL_ENABLED=true\n" +
+		"COPILOT_OTEL_EXPORTER_TYPE=otlp-http\n" +
+		"OTEL_EXPORTER_OTLP_ENDPOINT=" + endpoint + "\n" +
+		"OTEL_EXPORTER_OTLP_PROTOCOL=http/json\n" +
+		"OTEL_METRICS_EXPORTER=none\n" +
+		"OTEL_LOGS_EXPORTER=none\n" +
+		"OTEL_SERVICE_NAME=github-copilot\n" +
+		"OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false\n"
 }
 
 func copilotCLIHooksConfig(home, executablePath string) string {

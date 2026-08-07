@@ -56,7 +56,7 @@ func New(version Version) *cobra.Command {
 	}
 	root.PersistentFlags().StringVar(&home, "home", "", "override the local QUANTUM_LOG data directory")
 	root.SetVersionTemplate("{{.Version}}\n")
-	root.AddCommand(newInitCommand(&home), newDoctorCommand(&home), newVerifyCommand(&home), newMaintenanceCommand(&home), newProjectCommand(&home), newIngestCommand(&home), newUsageCommand(&home), newReportCommand(&home), newAllocationCommand(&home), newPricingCommand(&home), newTaskCommand(&home), newSessionCommand(&home), newExportCommand(&home), newTUICommand(&home), newAdapterCommand(&home), newSetupCommand(&home), newCollectorCommand(&home), newHookCommand(&home), newRunCommand(&home), newMCPCommand(&home, version), newUnattributedCommand(&home), newBudgetCommand(&home), newAnchorCommand(&home))
+	root.AddCommand(newInitCommand(&home), newDoctorCommand(&home), newVerifyCommand(&home), newMaintenanceCommand(&home), newProjectCommand(&home), newIngestCommand(&home), newUsageCommand(&home), newReportCommand(&home), newLegacySummaryCommand(&home), newAllocationCommand(&home), newPricingCommand(&home), newTaskCommand(&home), newSessionCommand(&home), newExportCommand(&home), newTUICommand(&home), newAdapterCommand(&home), newSetupCommand(&home), newCollectorCommand(&home), newHookCommand(&home), newRunCommand(&home), newMCPCommand(&home, version), newUnattributedCommand(&home), newBudgetCommand(&home), newAnchorCommand(&home), newAcceptanceCommand(&home, version))
 	return root
 }
 
@@ -448,14 +448,36 @@ func storeUsageQuery(from, to time.Time, groupBy string) sqlite.UsageQuery {
 
 func newReportCommand(home *string) *cobra.Command {
 	var from, to, groupBy string
-	var jsonOutput bool
-	report := &cobra.Command{Use: "report", Aliases: []string{"summary"}, Short: "Summarize observed usage and allocated cost", RunE: func(command *cobra.Command, _ []string) error {
-		return runReportSummary(command, home, from, to, groupBy, jsonOutput)
+	var jsonOutput, csvOutput bool
+	report := &cobra.Command{Use: "report", Short: "Summarize observed usage and allocated cost", RunE: func(command *cobra.Command, _ []string) error {
+		parsedFrom, err := parseDate(from)
+		if err != nil {
+			return err
+		}
+		parsedTo, err := parseDate(to)
+		if err != nil {
+			return err
+		}
+		return runCapabilityReport(command, home, sqlite.CapabilityQuery{From: parsedFrom, To: parsedTo}, jsonOutput, csvOutput)
 	}}
 	report.Flags().StringVar(&from, "from", "", "inclusive RFC3339 or YYYY-MM-DD start")
 	report.Flags().StringVar(&to, "to", "", "exclusive RFC3339 or YYYY-MM-DD end")
 	report.Flags().StringVar(&groupBy, "group-by", "project,provider,model", "comma-separated dimensions")
 	report.Flags().BoolVar(&jsonOutput, "json", false, "output JSON")
+	report.Flags().BoolVar(&csvOutput, "csv", false, "output CSV metric coverage")
+	report.AddCommand(newCapabilityReportCommand("today", "Report capability-aware evidence from last 24 hours", home, func(query *sqlite.CapabilityQuery, _ []string) {
+		if query.From.IsZero() {
+			now := time.Now().UTC()
+			query.From = now.Add(-24 * time.Hour)
+			query.To = now
+		}
+	}), newCapabilityReportCommand("project <project>", "Report capability-aware evidence for one project", home, func(query *sqlite.CapabilityQuery, args []string) {
+		query.ProjectSlug = args[0]
+	}), newCapabilityReportCommand("agent <agent>", "Report capability-aware evidence for one agent", home, func(query *sqlite.CapabilityQuery, args []string) {
+		query.AgentName = args[0]
+	}), newCapabilityReportCommand("session <session>", "Report capability-aware evidence for one session", home, func(query *sqlite.CapabilityQuery, args []string) {
+		query.SessionID = args[0]
+	}))
 
 	var summaryFrom, summaryTo, summaryGroupBy string
 	var summaryJSON bool
@@ -478,6 +500,118 @@ func newReportCommand(home *string) *cobra.Command {
 	usage.Flags().BoolVar(&usageJSON, "json", false, "output JSON")
 	report.AddCommand(usage)
 	return report
+}
+
+func newLegacySummaryCommand(home *string) *cobra.Command {
+	var from, to, groupBy string
+	var jsonOutput bool
+	command := &cobra.Command{Use: "summary", Short: "Summarize observed usage and allocated cost", RunE: func(command *cobra.Command, _ []string) error {
+		return runReportSummary(command, home, from, to, groupBy, jsonOutput)
+	}}
+	command.Flags().StringVar(&from, "from", "", "inclusive RFC3339 or YYYY-MM-DD start")
+	command.Flags().StringVar(&to, "to", "", "exclusive RFC3339 or YYYY-MM-DD end")
+	command.Flags().StringVar(&groupBy, "group-by", "project,provider,model", "comma-separated dimensions")
+	command.Flags().BoolVar(&jsonOutput, "json", false, "output JSON")
+	return command
+}
+
+func newCapabilityReportCommand(use, short string, home *string, scope func(*sqlite.CapabilityQuery, []string)) *cobra.Command {
+	var from, to string
+	var jsonOutput, csvOutput bool
+	command := &cobra.Command{Use: use, Short: short, Args: cobra.ExactArgs(1), RunE: func(command *cobra.Command, args []string) error {
+		parsedFrom, err := parseDate(from)
+		if err != nil {
+			return err
+		}
+		parsedTo, err := parseDate(to)
+		if err != nil {
+			return err
+		}
+		query := sqlite.CapabilityQuery{From: parsedFrom, To: parsedTo}
+		scope(&query, args)
+		return runCapabilityReport(command, home, query, jsonOutput, csvOutput)
+	}}
+	if strings.HasPrefix(use, "today") {
+		command.Args = cobra.NoArgs
+	}
+	command.Flags().StringVar(&from, "from", "", "inclusive RFC3339 or YYYY-MM-DD start")
+	command.Flags().StringVar(&to, "to", "", "exclusive RFC3339 or YYYY-MM-DD end")
+	command.Flags().BoolVar(&jsonOutput, "json", false, "output JSON")
+	command.Flags().BoolVar(&csvOutput, "csv", false, "output CSV metric coverage")
+	return command
+}
+
+func runCapabilityReport(command *cobra.Command, home *string, query sqlite.CapabilityQuery, jsonOutput, csvOutput bool) error {
+	if jsonOutput && csvOutput {
+		return errors.New("--json and --csv cannot be used together")
+	}
+	service, err := app.Open(command.Context(), *home)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = service.Close() }()
+	report, err := service.Store.CapabilityReport(command.Context(), query)
+	if err != nil {
+		return err
+	}
+	if jsonOutput {
+		return writeJSON(command.Root().OutOrStdout(), report)
+	}
+	if csvOutput {
+		return writeCapabilityCSV(command.Root().OutOrStdout(), report)
+	}
+	return writeCapabilityReport(command.Root().OutOrStdout(), report)
+}
+
+func writeCapabilityReport(writer io.Writer, report sqlite.CapabilityReport) error {
+	if _, err := fmt.Fprintf(writer, "MODEL CALLS %d | TOKENS %d | LIFECYCLE %d | TOOL %d | MCP %d | ERRORS %d | UNATTRIBUTED %d/%d\n", report.ModelCalls, report.Tokens, report.LifecycleEvents, report.ToolCalls, report.MCPCalls, report.Errors, report.UnattributedModelCalls, report.UnattributedTokens); err != nil {
+		return err
+	}
+	for _, source := range report.Sources {
+		version := "—"
+		if source.Version != nil {
+			version = *source.Version
+		}
+		if _, err := fmt.Fprintf(writer, "SOURCE %-16s QUALITY %-16s VERSION %-12s CALLS %d\n", source.Source, source.Quality, version, source.ModelCalls); err != nil {
+			return err
+		}
+	}
+	for _, metric := range report.MetricCoverage {
+		if _, err := fmt.Fprintf(writer, "METRIC %-20s %s | %d/%d emitted | zero=%d\n", metric.Name, displayMetric(metric), metric.ReportedCount, metric.ReportedCount+metric.MissingCount, metric.ReportedZeroCount); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeCapabilityCSV(writer io.Writer, report sqlite.CapabilityReport) error {
+	csvWriter := csv.NewWriter(writer)
+	if err := csvWriter.Write([]string{"metric", "state", "value", "reported_count", "missing_count", "reported_zero_count", "source", "raw_key", "confidence", "provenance_count"}); err != nil {
+		return err
+	}
+	for _, metric := range report.MetricCoverage {
+		provenance := metric.Provenance
+		if len(provenance) == 0 {
+			provenance = []sqlite.MetricProvenance{{Source: "—", RawKey: "—", Confidence: "—"}}
+		}
+		for _, item := range provenance {
+			if err := csvWriter.Write([]string{metric.Name, metric.State, displayMetric(metric), strconv.FormatInt(metric.ReportedCount, 10), strconv.FormatInt(metric.MissingCount, 10), strconv.FormatInt(metric.ReportedZeroCount, 10), item.Source, item.RawKey, item.Confidence, strconv.FormatInt(item.Count, 10)}); err != nil {
+				return err
+			}
+		}
+	}
+	csvWriter.Flush()
+	return csvWriter.Error()
+}
+
+func displayMetric(metric sqlite.MetricCoverage) string {
+	if metric.Value != nil {
+		return strconv.FormatInt(*metric.Value, 10)
+	}
+	if metric.State == "not_emitted" {
+		return "—"
+	}
+	return "?"
 }
 
 func runReportSummary(command *cobra.Command, home *string, fromValue, toValue, groupBy string, jsonOutput bool) error {

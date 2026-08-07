@@ -97,3 +97,28 @@ func TestProbeCollectorHealthRejectsUnhealthyHTTPStatus(t *testing.T) {
 		t.Fatalf("health = %#v, want unreachable and not running", health)
 	}
 }
+
+func TestCollectorStatusHealthMessageGuidesRecovery(t *testing.T) {
+	tests := []struct {
+		name   string
+		status CollectorStatus
+		want   string
+	}{
+		{
+			name: "not installed",
+			want: "collector is not installed; run qlog collector install or qlog setup --yes",
+		},
+		{
+			name:   "installed but unreachable",
+			status: CollectorStatus{Installed: true},
+			want:   "collector is installed but not reachable; run qlog collector restart or qlog collector logs",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := collectorStatusWithHealth(tt.status, collectorHealth{Health: "connection refused"}).Message; got != tt.want {
+				t.Fatalf("recovery message = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

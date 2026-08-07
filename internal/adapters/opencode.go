@@ -18,7 +18,7 @@ func newOpenCodeAdapter() openCodeAdapter {
 }
 
 func (a openCodeAdapter) Descriptor() Descriptor {
-	return Descriptor{ID: a.id, Name: a.name, Version: "plugin", Stable: true, Capabilities: Capabilities{ToolCalls: true, SessionLifecycle: true, ProjectIdentity: true, WorkingDirectory: true, VCSContext: true, WorkspaceContext: true, StructuredEvents: true}}
+	return Descriptor{ID: a.id, Name: a.name, Version: "plugin", Stable: true, Capabilities: Capabilities{ModelIdentity: true, InputTokens: true, OutputTokens: true, ReasoningTokens: true, CacheTokens: true, Costs: true, ToolCalls: true, SessionLifecycle: true, ProjectIdentity: true, WorkingDirectory: true, VCSContext: true, WorkspaceContext: true, StructuredEvents: true}}
 }
 
 func (a openCodeAdapter) Install(_ context.Context, options InstallOptions) (InstallResult, error) {
@@ -37,7 +37,7 @@ func (a openCodeAdapter) PlanInstall(_ context.Context, options SetupOptions) (S
 	if options.DryRun {
 		change.Description = "dry run: " + change.Description
 	}
-	return SetupPlan{AdapterID: a.id, State: SetupAvailable, CaptureQuality: CaptureLifecycleOnly, Changes: []SetupChange{change}, Notes: []string{"installs a global OpenCode TypeScript plugin that posts sanitized session/message/tool lifecycle events to qlog localhost collector"}}, nil
+	return SetupPlan{AdapterID: a.id, State: SetupAvailable, CaptureQuality: CaptureAgentReported, Changes: []SetupChange{change}, Notes: []string{"installs a global OpenCode TypeScript plugin that posts allowlisted assistant usage plus sanitized lifecycle/tool events to qlog localhost collector"}}, nil
 }
 
 func (a openCodeAdapter) Status(ctx context.Context) (SetupStatus, error) {
@@ -53,7 +53,7 @@ func (a openCodeAdapter) Status(ctx context.Context) (SetupStatus, error) {
 	if installed {
 		state = SetupInstalled
 	}
-	return SetupStatus{AdapterID: a.id, Available: detection.Available, Installed: installed, State: state, InstallationState: state, CaptureQuality: CaptureLifecycleOnly, Evidence: detection.Evidence, Notes: []string{"OpenCode plugin captures lifecycle/tool events; token usage is unavailable until a documented event schema is recorded"}}, nil
+	return SetupStatus{AdapterID: a.id, Available: detection.Available, Installed: installed, State: state, InstallationState: state, CaptureQuality: CaptureAgentReported, Evidence: detection.Evidence, Notes: []string{"OpenCode 1.18.x plugin captures allowlisted assistant-reported usage; step-finish events corroborate completion without creating a second model call"}}, nil
 }
 
 func (a openCodeAdapter) Test(ctx context.Context) (TestResult, error) {
@@ -61,7 +61,7 @@ func (a openCodeAdapter) Test(ctx context.Context) (TestResult, error) {
 	if err != nil {
 		return TestResult{}, err
 	}
-	return TestResult{AdapterID: a.id, Passed: status.Installed, CaptureQuality: CaptureLifecycleOnly, Message: status.Evidence, TestedAt: time.Now().UTC()}, nil
+	return TestResult{AdapterID: a.id, Passed: status.Installed, CaptureQuality: CaptureAgentReported, Message: status.Evidence, TestedAt: time.Now().UTC()}, nil
 }
 
 func (a openCodeAdapter) pluginPath() string {
@@ -113,7 +113,7 @@ func fileContains(path, needle string) bool {
 
 func openCodePluginSource() string {
 	return `// QUANTUM_LOG OpenCode passive capture
-// Managed by qlog setup opencode. Do not store prompts, responses, tool args, or tool results.
+// Managed by qlog setup opencode. Do not store prompts, responses, reasoning, tool args, or tool results.
 
 const endpoint = process.env.QLOG_COLLECTOR_URL || "http://127.0.0.1:4318/v1/events"
 
@@ -129,36 +129,129 @@ async function post(event) {
   }
 }
 
-function base(type, ctx, event) {
-  const body = event || {}
-  const session = body.session || body.properties || body
-  return {
-    source: "opencode-plugin",
-    session_id: session.id || body.sessionID || body.sessionId || "",
+function envelope(type, ctx, event, payload, upstreamEventID) {
+	const body = event || {}
+	const properties = body.properties || {}
+	const context = body.context || {}
+	const info = properties.info || {}
+	const part = properties.part || {}
+	return {
+	  source: "opencode-plugin",
+	  session_id: properties.sessionID || info.sessionID || part.sessionID || "",
     event_type: type,
-    occurred_at: new Date().toISOString(),
+    occurred_at: new Date(body.time || Date.now()).toISOString(),
+    upstream_event_id: upstreamEventID || body.id || "",
     project_hint: {
-      project: ctx.project?.name || "",
-      cwd: ctx.directory || ctx.worktree || "",
+      project: "",
+      cwd: ctx.directory || ctx.worktree || context.directory || context.worktree || "",
     },
-    payload: {
-      agent_name: "opencode",
-      capture_quality: "lifecycle_only",
-    },
+    payload,
   }
+}
+
+function stringValue(value) {
+  return typeof value === "string" ? value : undefined
+}
+
+function numberValue(value) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined
+}
+
+function setString(target, key, value) {
+  const next = stringValue(value)
+  if (next !== undefined) target[key] = next
+}
+
+function setNumber(target, key, value) {
+  const next = numberValue(value)
+  if (next !== undefined) target[key] = next
+}
+
+function metricObservations(tokens, cache) {
+  const observations = []
+  for (const [name, rawKey, value] of [
+    ["input_tokens", "tokens.input", tokens.input],
+    ["output_tokens", "tokens.output", tokens.output],
+    ["reasoning_tokens", "tokens.reasoning", tokens.reasoning],
+    ["cached_input_tokens", "tokens.cache.read", cache.read],
+    ["cache_write_tokens", "tokens.cache.write", cache.write],
+  ]) {
+    const number = numberValue(value)
+    if (number !== undefined) observations.push({ name, value: number, source: "opencode", raw_key: rawKey, confidence: "reported" })
+  }
+  return observations
+}
+
+function lifecyclePayload() {
+  return { agent_name: "opencode", capture_quality: "lifecycle_only" }
+}
+
+function assistantUsage(ctx, event) {
+  const properties = (event || {}).properties || {}
+  const info = properties.info
+  if (!info || info.role !== "assistant") return
+  if (numberValue(info.time && info.time.completed) === undefined) return
+
+  const tokens = info.tokens || {}
+  const cache = tokens.cache || {}
+  const payload = { agent_name: "opencode", capture_quality: "agent_reported" }
+	setString(payload, "session_id", properties.sessionID || info.sessionID)
+  setString(payload, "message_id", info.id)
+  setString(payload, "parent_message_id", info.parentID)
+  setString(payload, "provider", info.providerID)
+  setString(payload, "model", info.modelID)
+  setString(payload, "finish", info.finish)
+  setNumber(payload, "estimated_cost_usd_micros", numberValue(info.cost) === undefined ? undefined : Math.round(info.cost * 1000000))
+  setNumber(payload, "input_tokens", tokens.input)
+  setNumber(payload, "output_tokens", tokens.output)
+  setNumber(payload, "reasoning_tokens", tokens.reasoning)
+  setNumber(payload, "cached_input_tokens", cache.read)
+  setNumber(payload, "cache_write_tokens", cache.write)
+  setNumber(payload, "created_at", info.time && info.time.created)
+  setNumber(payload, "completed_at", info.time && info.time.completed)
+  payload.metric_observations = metricObservations(tokens, cache)
+
+  const messageID = stringValue(info.id)
+  if (!messageID) return
+  return envelope("model.call", ctx, event, payload, "message:" + messageID)
+}
+
+function stepFinish(ctx, event) {
+  const properties = (event || {}).properties || {}
+  const part = properties.part
+  if (!part || part.type !== "step-finish") return
+
+  const payload = { agent_name: "opencode", capture_quality: "lifecycle_only" }
+  setString(payload, "session_id", properties.sessionID || part.sessionID)
+  setString(payload, "message_id", part.messageID)
+  setString(payload, "part_id", part.id)
+  setString(payload, "finish", part.reason)
+  const partID = stringValue(part.id)
+  if (!partID) return
+  return envelope("agent.event", ctx, event, payload, "part:" + partID)
 }
 
 export const QuantumLogPlugin = async (ctx) => ({
   event: async ({ event }) => {
-    if (["session.created", "message.updated", "session.idle", "session.error"].includes(event.type)) {
-      await post(base(event.type, ctx, event))
+    if (event.type === "message.updated") {
+      const usage = assistantUsage(ctx, event)
+      if (usage) await post(usage)
+      return
+    }
+    if (event.type === "message.part.updated") {
+      const completion = stepFinish(ctx, event)
+      if (completion) await post(completion)
+      return
+    }
+    if (["session.created", "session.idle", "session.error"].includes(event.type)) {
+      await post(envelope("agent.event", ctx, event, lifecyclePayload()))
     }
   },
   "tool.execute.before": async (input) => {
-    await post(base("tool.execute.before", ctx, input))
+    await post(envelope("tool.execute.before", ctx, input, lifecyclePayload()))
   },
   "tool.execute.after": async (input) => {
-    await post(base("tool.execute.after", ctx, input))
+    await post(envelope("tool.execute.after", ctx, input, lifecyclePayload()))
   },
 })
 `

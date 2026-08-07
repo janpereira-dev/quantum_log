@@ -72,6 +72,7 @@ func TestLinuxCollectorUninstallRemovesUnitBeforeDaemonReload(t *testing.T) {
 	var calls []string
 	home := t.TempDir()
 	resetLinuxCollectorUninstallSeams(t)
+	linuxCollectorUnitExists = func(string) bool { return true }
 	stopLinuxCollector = func() (CollectorStatus, error) {
 		calls = append(calls, "stop")
 		return CollectorStatus{}, nil
@@ -110,7 +111,9 @@ func TestLinuxCollectorUninstallRemovesUnitBeforeDaemonReload(t *testing.T) {
 
 func TestLinuxCollectorUninstallKeepsStateWhenReloadFails(t *testing.T) {
 	var calls []string
+	home := t.TempDir()
 	resetLinuxCollectorUninstallSeams(t)
+	linuxCollectorUnitExists = func(string) bool { return true }
 	stopLinuxCollector = func() (CollectorStatus, error) {
 		calls = append(calls, "stop")
 		return CollectorStatus{}, nil
@@ -131,6 +134,7 @@ func TestLinuxCollectorUninstallKeepsStateWhenReloadFails(t *testing.T) {
 		calls = append(calls, "remove-unit")
 		return nil
 	}
+	readManagedLinuxCollectorState = func(string) linuxCollectorState { return linuxCollectorState{Home: home} }
 	removeLinuxCollectorTree = func(string) error {
 		calls = append(calls, "remove-logs")
 		return nil
@@ -149,9 +153,67 @@ func TestLinuxCollectorUninstallKeepsStateWhenReloadFails(t *testing.T) {
 	}
 }
 
+func TestLinuxCollectorUninstallIsIdempotentWithoutUnit(t *testing.T) {
+	var calls []string
+	resetLinuxCollectorUninstallSeams(t)
+	linuxCollectorUnitExists = func(string) bool { return false }
+	stopLinuxCollector = func() (CollectorStatus, error) {
+		calls = append(calls, "stop")
+		return CollectorStatus{}, nil
+	}
+	runLinuxSystemctl = func(args ...string) error {
+		calls = append(calls, strings.Join(args, " "))
+		return nil
+	}
+	removeLinuxCollectorUnit = func(string) error { return os.ErrNotExist }
+	removeLinuxCollectorTree = func(string) error { return nil }
+	removeLinuxCollectorState = func(string) error { return nil }
+	readManagedLinuxCollectorState = func(string) linuxCollectorState { return linuxCollectorState{} }
+
+	if _, err := (linuxCollectorManager{}).Uninstall(); err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	if !slices.Equal(calls, []string{"stop"}) {
+		t.Fatalf("uninstall calls = %q, want only idempotent stop", calls)
+	}
+}
+
+func TestLinuxCollectorUninstallReloadsWhenStateRemainsAfterUnitDeletion(t *testing.T) {
+	var calls []string
+	resetLinuxCollectorUninstallSeams(t)
+	linuxCollectorUnitExists = func(string) bool { return false }
+	stopLinuxCollector = func() (CollectorStatus, error) {
+		calls = append(calls, "stop")
+		return CollectorStatus{}, nil
+	}
+	runLinuxSystemctl = func(args ...string) error {
+		calls = append(calls, args[1])
+		return nil
+	}
+	removeLinuxCollectorUnit = func(string) error { return os.ErrNotExist }
+	readManagedLinuxCollectorState = func(string) linuxCollectorState { return linuxCollectorState{Home: t.TempDir()} }
+	removeLinuxCollectorTree = func(string) error {
+		calls = append(calls, "remove-logs")
+		return nil
+	}
+	removeLinuxCollectorState = func(string) error {
+		calls = append(calls, "remove-state")
+		return nil
+	}
+
+	if _, err := (linuxCollectorManager{}).Uninstall(); err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	want := []string{"stop", "daemon-reload", "remove-logs", "remove-state"}
+	if !slices.Equal(calls, want) {
+		t.Fatalf("uninstall calls = %q, want %q", calls, want)
+	}
+}
+
 func resetLinuxCollectorUninstallSeams(t *testing.T) {
 	t.Helper()
 	previousSystemctl := runLinuxSystemctl
+	previousUnitExists := linuxCollectorUnitExists
 	previousUnitRemove := removeLinuxCollectorUnit
 	previousTreeRemove := removeLinuxCollectorTree
 	previousStateRemove := removeLinuxCollectorState
@@ -159,6 +221,7 @@ func resetLinuxCollectorUninstallSeams(t *testing.T) {
 	previousStateRead := readManagedLinuxCollectorState
 	t.Cleanup(func() {
 		runLinuxSystemctl = previousSystemctl
+		linuxCollectorUnitExists = previousUnitExists
 		removeLinuxCollectorUnit = previousUnitRemove
 		removeLinuxCollectorTree = previousTreeRemove
 		removeLinuxCollectorState = previousStateRemove

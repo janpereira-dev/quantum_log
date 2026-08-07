@@ -25,6 +25,7 @@ var runLinuxSystemctl = func(args ...string) error {
 	return exec.Command("systemctl", args...).Run()
 }
 
+var linuxCollectorUnitExists = fileExists
 var removeLinuxCollectorUnit = os.Remove
 var removeLinuxCollectorTree = os.RemoveAll
 var removeLinuxCollectorState = os.Remove
@@ -55,11 +56,8 @@ func (linuxCollectorManager) Install(home, listen string) (CollectorStatus, erro
 	if !filepath.IsAbs(home) {
 		return CollectorStatus{}, fmt.Errorf("collector home must be an absolute path")
 	}
-	executable, err := os.Executable()
+	executable, err := durableExecutablePath("")
 	if err != nil {
-		return CollectorStatus{}, err
-	}
-	if err := validateCollectorExecutable(executable); err != nil {
 		return CollectorStatus{}, err
 	}
 	if err := os.MkdirAll(filepath.Join(home, "collector"), 0o700); err != nil {
@@ -90,8 +88,9 @@ func (manager linuxCollectorManager) Start(home, listen string) (CollectorStatus
 	if err != nil {
 		return CollectorStatus{}, err
 	}
-	status.Message = "collector user service start requested; health=" + status.Message
-	return status, nil
+	return collectorStartupStatus(context.Background(), status, func(ctx context.Context) (CollectorStatus, error) {
+		return manager.Status(ctx, listen)
+	})
 }
 
 func (linuxCollectorManager) Stop() (CollectorStatus, error) {
@@ -119,12 +118,7 @@ func (linuxCollectorManager) Status(ctx context.Context, listen string) (Collect
 		status.Running = true
 	}
 	health := probeCollectorHealth(ctx, listen)
-	status.Reachable = health.Reachable
-	if health.Reachable {
-		status.Running = true
-	}
-	status.Message = health.Health
-	return status, nil
+	return collectorStatusWithHealth(status, health), nil
 }
 
 func (linuxCollectorManager) Logs() (string, error) {
@@ -140,22 +134,30 @@ func (manager linuxCollectorManager) Uninstall() (CollectorStatus, error) {
 	if _, err := stopLinuxCollector(); err != nil {
 		return CollectorStatus{}, err
 	}
-	if err := runLinuxSystemctl("--user", "disable", linuxCollectorUnitName); err != nil {
+	unitPath := linuxCollectorUnitPath()
+	statePath := linuxCollectorStatePath()
+	state := readManagedLinuxCollectorState(statePath)
+	installed := linuxCollectorUnitExists(unitPath)
+	if installed {
+		if err := runLinuxSystemctl("--user", "disable", linuxCollectorUnitName); err != nil {
+			return CollectorStatus{}, err
+		}
+	}
+	if err := removeLinuxCollectorUnit(unitPath); err != nil && !os.IsNotExist(err) {
 		return CollectorStatus{}, err
 	}
-	if err := removeLinuxCollectorUnit(linuxCollectorUnitPath()); err != nil && !os.IsNotExist(err) {
-		return CollectorStatus{}, err
+	if installed || state.Home != "" {
+		if err := runLinuxSystemctl("--user", "daemon-reload"); err != nil {
+			return CollectorStatus{}, err
+		}
 	}
-	if err := runLinuxSystemctl("--user", "daemon-reload"); err != nil {
-		return CollectorStatus{}, err
-	}
-	home := readManagedLinuxCollectorState(linuxCollectorStatePath()).Home
+	home := state.Home
 	if home != "" {
 		if err := removeLinuxCollectorTree(filepath.Join(home, "collector")); err != nil {
 			return CollectorStatus{}, err
 		}
 	}
-	if err := removeLinuxCollectorState(linuxCollectorStatePath()); err != nil && !os.IsNotExist(err) {
+	if err := removeLinuxCollectorState(statePath); err != nil && !os.IsNotExist(err) {
 		return CollectorStatus{}, err
 	}
 	return CollectorStatus{ServiceID: linuxCollectorUnitName, StatePath: filepath.Join(home, "collector"), LogPath: filepath.Join(home, "collector", "collector.log"), Message: "collector user service uninstalled"}, nil

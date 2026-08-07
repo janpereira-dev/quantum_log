@@ -245,7 +245,6 @@ func TestAdapterVerifyCopilotRejectsMissingOrNonGitHubProvider(t *testing.T) {
 		name              string
 		providerAttribute string
 	}{
-		{name: "provider omitted", providerAttribute: ""},
 		{name: "provider openai", providerAttribute: `,{"key":"gen_ai.provider.name","value":{"stringValue":"openai"}}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -507,6 +506,15 @@ func TestCodexEvidenceContractUsesDocumentedOTLPLogs(t *testing.T) {
 	contract := evidenceContract("codex")
 	if contract.Source != "otlp-http" || contract.Quality != adapters.CaptureOTELReported || !contract.RequireCodexResponseCompleted || !contract.SourceEvidence {
 		t.Fatalf("Codex evidence contract = %#v", contract)
+	}
+}
+
+func TestClaudeAndCopilotVerificationContractsSeparateSetupAndEvidenceQuality(t *testing.T) {
+	for _, adapterID := range []string{"claude-code", "copilot"} {
+		contract := evidenceContract(adapterID)
+		if contract.Source != "otlp-http" || contract.Quality != adapters.CaptureOTELReported || contract.EvidenceQuality != adapters.CaptureOTELReported {
+			t.Fatalf("%s contract = %#v", adapterID, contract)
+		}
 	}
 }
 

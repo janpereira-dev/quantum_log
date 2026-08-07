@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -51,6 +52,42 @@ func TestReceiverImportsStandardOTLPJSONThroughCentralResolver(t *testing.T) {
 	}
 	if err := service.Store.VerifyLedger(ctx, "trace-a"); err != nil {
 		t.Fatalf("verify ledger: %v", err)
+	}
+}
+
+func TestReceiverGenericTokenCountersPersistOTLPProvenance(t *testing.T) {
+	service, err := app.Initialize(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	line, err := Receiver{service: service}.event(context.Background(), nil, map[string]string{
+		"gen_ai.provider.name": "example", "gen_ai.request.model": "model", "gen_ai.usage.input_tokens": "7",
+	}, span{TraceID: "trace", SpanID: "span"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := line["payload"].(map[string]any)
+	observations, ok := payload["metric_observations"].([]map[string]any)
+	if !ok || len(observations) != 1 || observations[0]["source"] != "otel" || observations[0]["raw_key"] != "gen_ai.usage.input_tokens" {
+		t.Fatalf("metric observations = %#v", payload["metric_observations"])
+	}
+}
+
+func TestReceiverDefaultsEveryAcceptedCopilotIdentityToGitHub(t *testing.T) {
+	service, err := app.Initialize(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	line, err := Receiver{service: service}.copilotSpanEvent(context.Background(), map[string]string{"service.name": "copilot-chat"}, map[string]string{
+		"gen_ai.agent.name": "GitHub Copilot Chat", "gen_ai.request.model": "gpt-5", "gen_ai.usage.total_tokens": "3",
+	}, span{TraceID: "trace", SpanID: "span"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider := line["payload"].(map[string]any)["provider"]; provider != "github" {
+		t.Fatalf("provider = %v, want github", provider)
 	}
 }
 
@@ -371,6 +408,42 @@ func TestReceiverImportsValidCopilotOTLPWithReportedTokensAndReplayIdentity(t *t
 	}
 }
 
+func TestCopilotUsesConversationIDBeforeWindowSessionAndVerifiedGitContext(t *testing.T) {
+	ctx := context.Background()
+	service, err := app.Initialize(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	root := filepath.Join(t.TempDir(), "repo")
+	project, location, err := service.Store.RegisterProject(ctx, "Repo", "repo", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Store.SetVerifiedGitContext(ctx, project.ID, location.ID, root, "https://github.com/example/repo.git"); err != nil {
+		t.Fatal(err)
+	}
+	line, err := Receiver{service: service}.copilotSpanEvent(ctx, map[string]string{"service.name": "copilot-chat", "session.id": "window-1"}, map[string]string{
+		"gen_ai.agent.name":             "GitHub Copilot Chat",
+		"gen_ai.provider.name":          "github",
+		"gen_ai.request.model":          "gpt-5",
+		"gen_ai.usage.input_tokens":     "1",
+		"gen_ai.conversation.id":        "conversation-1",
+		"github.copilot.git.root":       filepath.ToSlash(root),
+		"github.copilot.git.repository": "https://github.com/example/repo.git",
+	}, span{TraceID: "trace", SpanID: "span"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if line["session_id"] != "conversation-1" || line["project_id"] != project.ID {
+		t.Fatalf("line = %#v", line)
+	}
+	payload, _ := line["payload"].(map[string]any)
+	if payload["copilot_window_session_id"] != "window-1" {
+		t.Fatalf("payload = %#v", payload)
+	}
+}
+
 func TestReceiverAcceptsOTLPProtobuf(t *testing.T) {
 	ctx := context.Background()
 	service, err := app.Initialize(ctx, t.TempDir())
@@ -573,5 +646,81 @@ func TestCopilotOTLPRejectsTokenEvidenceWithoutTraceAndSpanIdentity(t *testing.T
 	}, span{})
 	if err == nil {
 		t.Fatal("Copilot token evidence without trace/span identity was accepted")
+	}
+}
+
+func TestReceiverImportsDocumentedClaudeTraceTokenAttributes(t *testing.T) {
+	ctx := context.Background()
+	service, err := app.Initialize(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("initialize service: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	worktree := filepath.Join(t.TempDir(), "repo")
+	project, _, err := service.Store.RegisterProject(ctx, "Repo", "repo", worktree)
+	if err != nil {
+		t.Fatalf("register project: %v", err)
+	}
+	payload := `{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"claude-code"}},{"key":"session.id","value":{"stringValue":"session-1"}}]},"scopeSpans":[{"spans":[{"traceId":"claude-trace","spanId":"claude-span","startTimeUnixNano":"1763294400000000000","attributes":[{"key":"model","value":{"stringValue":"claude-sonnet-4-6"}},{"key":"input_tokens","value":{"intValue":"0"}},{"key":"output_tokens","value":{"intValue":"13"}},{"key":"cache_read_input_tokens","value":{"intValue":"7"}},{"key":"qlog.cwd","value":{"stringValue":"` + filepath.ToSlash(worktree) + `"}}]}]}]}]}`
+	for attempt, want := range []map[string]int{{"accepted": 1, "duplicates": 0}, {"accepted": 0, "duplicates": 1}} {
+		request := httptest.NewRequest(http.MethodPost, "/v1/traces", bytes.NewBufferString(payload))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		NewHandler(service).ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("attempt %d status = %d: %s", attempt+1, response.Code, response.Body.String())
+		}
+		got := map[string]int{}
+		if err := json.NewDecoder(response.Body).Decode(&got); err != nil || !responseCountsEqual(got, want) {
+			t.Fatalf("attempt %d response = %#v, %v", attempt+1, got, err)
+		}
+	}
+	report, err := service.Store.Usage(ctx, storepkg.UsageQuery{GroupBy: []string{"project", "agent", "provider", "model", "capture_quality"}})
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	if len(report.Rows) != 1 {
+		t.Fatalf("usage rows = %#v", report.Rows)
+	}
+	row := report.Rows[0]
+	if row.ProjectSlug != project.Slug || row.AgentName != "claude-code" || row.Provider != "anthropic" || row.Model != "claude-sonnet-4-6" || row.InputTokens != 0 || row.OutputTokens != 13 || row.CachedInputTokens != 7 || row.CaptureQuality != "otel_reported" {
+		t.Fatalf("usage row = %#v", row)
+	}
+}
+
+func TestReceiverPreservesClaudeSpecificOTLPRejection(t *testing.T) {
+	service, err := app.Initialize(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+
+	_, _, err = Receiver{service: service}.ingest(context.Background(), exportTraceServiceRequest{ResourceSpans: []resourceSpans{{Resource: resource{Attributes: []keyValue{{Key: "service.name", Value: attributeValue{StringValue: "claude-code"}}}}, ScopeSpans: []scopeSpans{{Spans: []span{{TraceID: "trace", SpanID: "span"}}}}}}})
+	if !errors.Is(err, errUnsupportedClaudeSpan) {
+		t.Fatalf("Claude rejection = %v, want %v", err, errUnsupportedClaudeSpan)
+	}
+}
+
+func TestCodexOTLPMetricProvenanceUsesOnlyEmittedRecordKeys(t *testing.T) {
+	service, err := app.Initialize(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	line, ok, err := Receiver{service: service}.codexLogEvent(context.Background(), map[string]string{"service.name": "codex"}, map[string]string{
+		"event.name":              "codex.sse_event",
+		"event.kind":              "response.completed",
+		"model":                   "gpt-5",
+		"input_tokens":            "0",
+		"output_tokens":           "9",
+		"reasoning_output_tokens": "2",
+	}, logRecord{TraceID: "trace", SpanID: "span"})
+	if err != nil || !ok {
+		t.Fatalf("codex log = %#v ok=%t err=%v", line, ok, err)
+	}
+	payload := line["payload"].(map[string]any)
+	observations := payload["metric_observations"].([]map[string]any)
+	if len(observations) != 3 || observations[0]["raw_key"] != "input_tokens" || observations[0]["value"] != int64(0) || observations[2]["raw_key"] != "reasoning_output_tokens" {
+		t.Fatalf("metric observations = %#v", observations)
 	}
 }

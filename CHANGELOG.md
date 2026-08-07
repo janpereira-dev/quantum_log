@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.2-rc.3 - 2026-08-06
+
+### Release candidate
+
+- Feature freeze for five-agent capture and reporting, acceptance-package preparation, and collector readiness.
+- Pending external end-to-end acceptance.
+
 ## 0.3.2-rc.2 - 2026-08-05
 
 ### Release candidate

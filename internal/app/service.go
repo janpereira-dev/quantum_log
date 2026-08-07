@@ -139,6 +139,22 @@ func (s *Service) ResolveProject(ctx context.Context, explicitProject, adapterPr
 	return resolved, nil
 }
 
+// ResolveProjectFromVerifiedGitContext accepts only a unique Git root and
+// normalized remote already verified during project registration.
+func (s *Service) ResolveProjectFromVerifiedGitContext(ctx context.Context, gitRoot, remote string) (ResolvedProject, error) {
+	project, location, found, err := s.Store.ProjectByVerifiedGitContext(ctx, gitRoot, remote)
+	if err != nil {
+		return ResolvedProject{}, err
+	}
+	if !found {
+		return ResolvedProject{CWD: "", GitRoot: gitRoot, Resolution: resolver.ProjectResolution{Method: resolver.Unresolved, Confidence: resolver.Unknown, Evidence: "no unique verified git context"}}, nil
+	}
+	return ResolvedProject{
+		ProjectID: project.ID, LocationID: location.ID, LocationPath: location.AbsolutePath, GitRoot: gitRoot,
+		Resolution: resolver.ProjectResolution{ProjectSlug: project.Slug, Method: resolver.Adapter, Confidence: resolver.Exact, Evidence: "verified Copilot Git context"},
+	}, nil
+}
+
 func gitRoot(ctx context.Context, cwd string) string {
 	command := exec.CommandContext(ctx, "git", "-C", cwd, "rev-parse", "--show-toplevel")
 	output, err := command.Output()

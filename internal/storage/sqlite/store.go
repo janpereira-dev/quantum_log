@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"sort"
@@ -55,6 +56,7 @@ type WorkContextInput struct {
 type RawEventInput struct {
 	IngestionIdentity          string
 	Source                     string
+	SourceVersion              string
 	SessionID                  string
 	EventType                  string
 	Payload                    []byte
@@ -99,6 +101,17 @@ type ModelCallInput struct {
 	EstimatedCostEURMicros int64
 	OccurredAt             time.Time
 	CaptureQuality         string
+	Metrics                []MetricInput
+}
+
+// MetricInput is one explicitly emitted measurement. Absence is represented
+// by no input, while a zero value remains a reported measurement.
+type MetricInput struct {
+	Name       string
+	Value      *int64
+	Source     string
+	RawKey     string
+	Confidence string
 }
 
 type UsageQuery struct {
@@ -156,6 +169,87 @@ type UsageReport struct {
 	Measurements           []MeasurementSummary `json:"measurements"`
 	TotalTokens            int64                `json:"total_tokens"`
 	AllocatedCostUSDMicros int64                `json:"allocated_cost_usd_micros"`
+}
+
+// CapabilityQuery scopes one auditable report without inferring ownership.
+type CapabilityQuery struct {
+	From        time.Time
+	To          time.Time
+	ProjectSlug string
+	AgentName   string
+	SessionID   string
+}
+
+type MetricProvenance struct {
+	Source     string `json:"source"`
+	RawKey     string `json:"raw_key"`
+	Confidence string `json:"confidence"`
+	Count      int64  `json:"count"`
+}
+
+// MetricCoverage preserves absence independently from zero. Value is only
+// populated when every included model call emitted a reconcilable value.
+type MetricCoverage struct {
+	Name              string             `json:"name"`
+	State             string             `json:"state"`
+	Value             *int64             `json:"value"`
+	ReportedCount     int64              `json:"reported_count"`
+	MissingCount      int64              `json:"missing_count"`
+	ReportedZeroCount int64              `json:"reported_zero_count"`
+	Provenance        []MetricProvenance `json:"provenance"`
+}
+
+type SourceCoverage struct {
+	Source     string  `json:"source"`
+	Quality    string  `json:"capture_quality"`
+	Version    *string `json:"version"`
+	ModelCalls int64   `json:"model_calls"`
+}
+
+type CapabilityReport struct {
+	From                   time.Time        `json:"from,omitempty"`
+	To                     time.Time        `json:"to,omitempty"`
+	ProjectSlug            string           `json:"project_slug,omitempty"`
+	AgentName              string           `json:"agent_name,omitempty"`
+	SessionID              string           `json:"session_id,omitempty"`
+	ModelCalls             int64            `json:"model_calls"`
+	Tokens                 int64            `json:"tokens"`
+	LifecycleEvents        int64            `json:"lifecycle_events"`
+	ToolCalls              int64            `json:"tool_calls"`
+	MCPCalls               int64            `json:"mcp_calls"`
+	Errors                 int64            `json:"errors"`
+	UnattributedModelCalls int64            `json:"unattributed_model_calls"`
+	UnattributedTokens     int64            `json:"unattributed_tokens"`
+	MetricCoverage         []MetricCoverage `json:"metric_coverage"`
+	Sources                []SourceCoverage `json:"sources"`
+}
+
+func (report CapabilityReport) MarshalJSON() ([]byte, error) {
+	type encodedReport struct {
+		From                   *time.Time       `json:"from,omitempty"`
+		To                     *time.Time       `json:"to,omitempty"`
+		ProjectSlug            string           `json:"project_slug,omitempty"`
+		AgentName              string           `json:"agent_name,omitempty"`
+		SessionID              string           `json:"session_id,omitempty"`
+		ModelCalls             int64            `json:"model_calls"`
+		Tokens                 int64            `json:"tokens"`
+		LifecycleEvents        int64            `json:"lifecycle_events"`
+		ToolCalls              int64            `json:"tool_calls"`
+		MCPCalls               int64            `json:"mcp_calls"`
+		Errors                 int64            `json:"errors"`
+		UnattributedModelCalls int64            `json:"unattributed_model_calls"`
+		UnattributedTokens     int64            `json:"unattributed_tokens"`
+		MetricCoverage         []MetricCoverage `json:"metric_coverage"`
+		Sources                []SourceCoverage `json:"sources"`
+	}
+	encoded := encodedReport{ProjectSlug: report.ProjectSlug, AgentName: report.AgentName, SessionID: report.SessionID, ModelCalls: report.ModelCalls, Tokens: report.Tokens, LifecycleEvents: report.LifecycleEvents, ToolCalls: report.ToolCalls, MCPCalls: report.MCPCalls, Errors: report.Errors, UnattributedModelCalls: report.UnattributedModelCalls, UnattributedTokens: report.UnattributedTokens, MetricCoverage: report.MetricCoverage, Sources: report.Sources}
+	if !report.From.IsZero() {
+		encoded.From = &report.From
+	}
+	if !report.To.IsZero() {
+		encoded.To = &report.To
+	}
+	return json.Marshal(encoded)
 }
 
 type TaskInput struct {
@@ -503,6 +597,7 @@ func (s *Store) RegisterProject(ctx context.Context, name, slug, path string) (d
 	if err != nil {
 		return domain.Project{}, domain.ProjectLocation{}, fmt.Errorf("resolve project path: %w", err)
 	}
+	gitRoot, gitRemote := registeredGitContext(ctx, absolutePath)
 	now := timestamp(time.Now())
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -517,6 +612,11 @@ func (s *Store) RegisterProject(ctx context.Context, name, slug, path string) (d
 	if found {
 		if err := tx.Commit(); err != nil {
 			return domain.Project{}, domain.ProjectLocation{}, err
+		}
+		if gitRoot != "" && gitRemote != "" {
+			if err := s.SetVerifiedGitContext(ctx, project.ID, location.ID, gitRoot, gitRemote); err != nil {
+				return domain.Project{}, domain.ProjectLocation{}, err
+			}
 		}
 		return project, location, nil
 	}
@@ -541,7 +641,100 @@ func (s *Store) RegisterProject(ctx context.Context, name, slug, path string) (d
 	if err := tx.Commit(); err != nil {
 		return domain.Project{}, domain.ProjectLocation{}, fmt.Errorf("commit registration: %w", err)
 	}
+	if gitRoot != "" && gitRemote != "" {
+		if err := s.SetVerifiedGitContext(ctx, project.ID, location.ID, gitRoot, gitRemote); err != nil {
+			return domain.Project{}, domain.ProjectLocation{}, err
+		}
+	}
 	return project, location, nil
+}
+
+func registeredGitContext(ctx context.Context, path string) (string, string) {
+	root, err := exec.CommandContext(ctx, "git", "-C", path, "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return "", ""
+	}
+	remote, err := exec.CommandContext(ctx, "git", "-C", path, "config", "--get", "remote.origin.url").Output()
+	if err != nil {
+		return "", ""
+	}
+	return strings.TrimSpace(string(root)), strings.TrimSpace(string(remote))
+}
+
+// SetVerifiedGitContext records local Git evidence for one registered location.
+func (s *Store) SetVerifiedGitContext(ctx context.Context, projectID, locationID, root, remote string) error {
+	root, remote = normalizeLocationPath(root), normalizeGitRemote(remote)
+	if projectID == "" || locationID == "" || root == "" || remote == "" {
+		return errors.New("verified git context requires project, location, root, and remote")
+	}
+	var existingRoot, existingRemote sql.NullString
+	if err := s.db.QueryRowContext(ctx, `SELECT l.vcs_root, p.repository_url_normalized FROM project_locations l JOIN projects p ON p.id = l.project_id WHERE l.id = ? AND l.project_id = ?`, locationID, projectID).Scan(&existingRoot, &existingRemote); err != nil {
+		return fmt.Errorf("read existing verified git context: %w", err)
+	}
+	if existingRoot.Valid && existingRoot.String != "" && normalizeLocationPath(existingRoot.String) != root {
+		return errors.New("verified git root conflicts with existing project location")
+	}
+	if existingRemote.Valid && existingRemote.String != "" && normalizeGitRemote(existingRemote.String) != remote {
+		return errors.New("verified git remote conflicts with existing project")
+	}
+	now := timestamp(time.Now())
+	if _, err := s.db.ExecContext(ctx, `UPDATE projects SET repository_url_normalized = ?, updated_at = ? WHERE id = ?`, remote, now, projectID); err != nil {
+		return fmt.Errorf("store verified git remote: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE project_locations SET vcs_root = ?, updated_at = ? WHERE id = ? AND project_id = ?`, root, now, locationID, projectID); err != nil {
+		return fmt.Errorf("store verified git root: %w", err)
+	}
+	return nil
+}
+
+// ProjectByVerifiedGitContext returns only one exact root-and-remote match.
+func (s *Store) ProjectByVerifiedGitContext(ctx context.Context, root, remote string) (domain.Project, domain.ProjectLocation, bool, error) {
+	root, remote = normalizeLocationPath(root), normalizeGitRemote(remote)
+	if root == "" || remote == "" {
+		return domain.Project{}, domain.ProjectLocation{}, false, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT p.id, p.slug, p.name, p.canonical_key, p.created_at, l.id, l.project_id, l.absolute_path, l.path_hash, l.created_at FROM project_locations l JOIN projects p ON p.id = l.project_id WHERE LOWER(REPLACE(l.vcs_root, '\', '/')) = ? AND p.repository_url_normalized = ? LIMIT 2`, root, remote)
+	if err != nil {
+		return domain.Project{}, domain.ProjectLocation{}, false, fmt.Errorf("query verified git context: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	type match struct {
+		project  domain.Project
+		location domain.ProjectLocation
+	}
+	matches := []match{}
+	for rows.Next() {
+		var projectCreatedAt, locationCreatedAt string
+		var item match
+		if err := rows.Scan(&item.project.ID, &item.project.Slug, &item.project.Name, &item.project.CanonicalKey, &projectCreatedAt, &item.location.ID, &item.location.ProjectID, &item.location.AbsolutePath, &item.location.PathHash, &locationCreatedAt); err != nil {
+			return domain.Project{}, domain.ProjectLocation{}, false, fmt.Errorf("scan verified git context: %w", err)
+		}
+		item.project.CreatedAt, item.location.CreatedAt = parseTimestamp(projectCreatedAt), parseTimestamp(locationCreatedAt)
+		matches = append(matches, item)
+	}
+	if err := rows.Err(); err != nil {
+		return domain.Project{}, domain.ProjectLocation{}, false, err
+	}
+	if len(matches) != 1 {
+		return domain.Project{}, domain.ProjectLocation{}, false, nil
+	}
+	return matches[0].project, matches[0].location, true, nil
+}
+
+func normalizeGitRemote(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	value, _, _ = strings.Cut(value, "?")
+	value, _, _ = strings.Cut(value, "#")
+	if at := strings.LastIndex(value, "@"); at >= 0 {
+		value = value[at+1:]
+	}
+	value = strings.TrimPrefix(value, "https://")
+	value = strings.TrimPrefix(value, "http://")
+	value = strings.TrimPrefix(value, "ssh://")
+	value = strings.Replace(value, ":", "/", 1)
+	value = strings.TrimPrefix(value, "/")
+	value = strings.TrimSuffix(value, ".git")
+	return strings.TrimSuffix(value, "/")
 }
 
 func (s *Store) CreateWorkContext(ctx context.Context, input WorkContextInput) (domain.WorkContext, error) {
@@ -626,7 +819,7 @@ func (s *Store) AppendRawEvent(ctx context.Context, input RawEventInput) (RawEve
 	}
 	canonical := canonicalEvent(input, payload)
 	event := audit.NewRecord(chainKey(input.Source, input.SessionID), canonical, previousHash)
-	_, err = tx.ExecContext(ctx, `INSERT INTO raw_events (id, source, event_type, occurred_at, received_at, project_id, project_location_id, work_context_id, session_id, project_resolution_method, project_resolution_confidence, project_resolution_evidence_json, payload_json_sanitized, previous_event_hash, event_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, input.Source, input.EventType, timestamp(input.OccurredAt), now, nullable(input.ProjectID), nullable(input.ProjectLocationID), nullable(input.WorkContextID), nullable(input.SessionID), input.ResolutionMethod, input.ResolutionConfidence, input.EvidenceJSON, string(payload), previousHash, event.Hash, now)
+	_, err = tx.ExecContext(ctx, `INSERT INTO raw_events (id, source, source_version, event_type, occurred_at, received_at, project_id, project_location_id, work_context_id, session_id, project_resolution_method, project_resolution_confidence, project_resolution_evidence_json, payload_json_sanitized, previous_event_hash, event_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, input.Source, strings.TrimSpace(input.SourceVersion), input.EventType, timestamp(input.OccurredAt), now, nullable(input.ProjectID), nullable(input.ProjectLocationID), nullable(input.WorkContextID), nullable(input.SessionID), input.ResolutionMethod, input.ResolutionConfidence, input.EvidenceJSON, string(payload), previousHash, event.Hash, now)
 	if err != nil {
 		return RawEventAppendResult{}, fmt.Errorf("insert raw event: %w", err)
 	}
@@ -652,7 +845,7 @@ func (s *Store) HasModelCallForRawEvent(ctx context.Context, rawEventID string) 
 }
 
 func (s *Store) VerifyLedger(ctx context.Context, sessionID string) error {
-	query := `SELECT source, COALESCE(session_id, ''), event_type, occurred_at, project_id, project_location_id, work_context_id, project_resolution_method, project_resolution_confidence, project_resolution_evidence_json, payload_json_sanitized, previous_event_hash, event_hash FROM raw_events`
+	query := `SELECT source, source_version, COALESCE(session_id, ''), event_type, occurred_at, project_id, project_location_id, work_context_id, project_resolution_method, project_resolution_confidence, project_resolution_evidence_json, payload_json_sanitized, previous_event_hash, event_hash FROM raw_events`
 	args := []any{}
 	if sessionID != "" {
 		query += " WHERE session_id = ?"
@@ -666,16 +859,16 @@ func (s *Store) VerifyLedger(ctx context.Context, sessionID string) error {
 	defer func() { _ = rows.Close() }()
 	previous := make(map[string]string)
 	for rows.Next() {
-		var source, session, eventType, occurredAt, resolutionMethod, resolutionConfidence, evidence, payload, previousHash, eventHash string
+		var source, sourceVersion, session, eventType, occurredAt, resolutionMethod, resolutionConfidence, evidence, payload, previousHash, eventHash string
 		var projectID, locationID, contextID sql.NullString
-		if err := rows.Scan(&source, &session, &eventType, &occurredAt, &projectID, &locationID, &contextID, &resolutionMethod, &resolutionConfidence, &evidence, &payload, &previousHash, &eventHash); err != nil {
+		if err := rows.Scan(&source, &sourceVersion, &session, &eventType, &occurredAt, &projectID, &locationID, &contextID, &resolutionMethod, &resolutionConfidence, &evidence, &payload, &previousHash, &eventHash); err != nil {
 			return fmt.Errorf("scan ledger event: %w", err)
 		}
 		key := chainKey(source, session)
 		if previousHash != previous[key] {
 			return errors.New("ledger previous hash does not match")
 		}
-		canonical := canonicalEvent(RawEventInput{Source: source, SessionID: session, EventType: eventType, OccurredAt: parseTimestamp(occurredAt), ProjectID: projectID.String, ProjectLocationID: locationID.String, WorkContextID: contextID.String, ResolutionMethod: resolutionMethod, ResolutionConfidence: resolutionConfidence, EvidenceJSON: evidence}, []byte(payload))
+		canonical := canonicalEvent(RawEventInput{Source: source, SourceVersion: sourceVersion, SessionID: session, EventType: eventType, OccurredAt: parseTimestamp(occurredAt), ProjectID: projectID.String, ProjectLocationID: locationID.String, WorkContextID: contextID.String, ResolutionMethod: resolutionMethod, ResolutionConfidence: resolutionConfidence, EvidenceJSON: evidence}, []byte(payload))
 		if audit.Hash(key, canonical, previousHash) != eventHash {
 			return errors.New("ledger event hash does not match")
 		}
@@ -1089,6 +1282,11 @@ func (s *Store) RecordModelCall(ctx context.Context, input ModelCallInput) (stri
 	id := newID()
 	now := timestamp(time.Now())
 	total := input.InputTokens + input.OutputTokens + input.ReasoningTokens + input.CachedInputTokens + input.CacheWriteTokens
+	for _, metric := range input.Metrics {
+		if metric.Name == "total_tokens" && metric.Value != nil {
+			total = *metric.Value
+		}
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", err
@@ -1104,6 +1302,17 @@ func (s *Store) RecordModelCall(ctx context.Context, input ModelCallInput) (stri
 		}
 		return "", fmt.Errorf("insert model call: %w", err)
 	}
+	for _, metric := range input.Metrics {
+		if metric.Value == nil || !validMetricName(metric.Name) || strings.TrimSpace(metric.Source) == "" || strings.TrimSpace(metric.RawKey) == "" || strings.TrimSpace(metric.Confidence) == "" {
+			return "", errors.New("metric observations require a supported name, value, source, raw key, and confidence")
+		}
+		if *metric.Value < 0 {
+			return "", errors.New("metric observation value must not be negative")
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO model_call_metrics (model_call_id, metric_name, metric_value, source, raw_key, confidence, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, id, metric.Name, *metric.Value, metric.Source, metric.RawKey, metric.Confidence, now); err != nil {
+			return "", fmt.Errorf("insert metric observation: %w", err)
+		}
+	}
 	if input.ProjectID != "" {
 		_, err = tx.ExecContext(ctx, `INSERT INTO usage_allocations (id, subject_type, subject_id, project_id, allocation_basis_points, allocation_method, confidence, created_at) VALUES (?, 'model_call', ?, ?, 10000, 'direct', 'high', ?)`, newID(), id, input.ProjectID, now)
 		if err != nil {
@@ -1114,6 +1323,15 @@ func (s *Store) RecordModelCall(ctx context.Context, input ModelCallInput) (stri
 		return "", err
 	}
 	return id, nil
+}
+
+func validMetricName(name string) bool {
+	switch name {
+	case "input_tokens", "output_tokens", "reasoning_tokens", "cached_input_tokens", "cache_write_tokens", "total_tokens":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Store) LinkMatchingLegacyModelCall(ctx context.Context, input ModelCallInput) (bool, error) {
@@ -1175,6 +1393,16 @@ func (s *Store) LinkMatchingLegacyModelCall(ctx context.Context, input ModelCall
 	affected, err := result.RowsAffected()
 	if err != nil {
 		return false, fmt.Errorf("confirm legacy model call linkage: %w", err)
+	}
+	if affected == 1 {
+		for _, metric := range input.Metrics {
+			if metric.Value == nil || !validMetricName(metric.Name) || strings.TrimSpace(metric.Source) == "" || strings.TrimSpace(metric.RawKey) == "" || strings.TrimSpace(metric.Confidence) == "" || *metric.Value < 0 {
+				return false, errors.New("metric observations require a supported non-negative value, source, raw key, and confidence")
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO model_call_metrics (model_call_id, metric_name, metric_value, source, raw_key, confidence, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, candidates[0], metric.Name, *metric.Value, metric.Source, metric.RawKey, metric.Confidence, timestamp(time.Now())); err != nil {
+				return false, fmt.Errorf("insert linked metric observation: %w", err)
+			}
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("commit legacy model call linkage: %w", err)
@@ -1543,6 +1771,181 @@ func (s *Store) Usage(ctx context.Context, query UsageQuery) (UsageReport, error
 	return report, nil
 }
 
+func (s *Store) CapabilityReport(ctx context.Context, query CapabilityQuery) (CapabilityReport, error) {
+	report := CapabilityReport{From: query.From, To: query.To, ProjectSlug: normalizeSlug(query.ProjectSlug), AgentName: query.AgentName, SessionID: query.SessionID, MetricCoverage: make([]MetricCoverage, 0), Sources: make([]SourceCoverage, 0)}
+	modelWhere, modelArgs := capabilityModelWhere(query)
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(c.total_tokens), 0) FROM model_calls c LEFT JOIN projects p ON p.id = c.primary_project_id`+modelWhere, modelArgs...).Scan(&report.ModelCalls, &report.Tokens); err != nil {
+		return CapabilityReport{}, fmt.Errorf("read capability model calls: %w", err)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(c.total_tokens), 0) FROM model_calls c LEFT JOIN projects p ON p.id = c.primary_project_id`+modelWhere+` AND NOT EXISTS (SELECT 1 FROM usage_allocations a WHERE a.subject_type = 'model_call' AND a.subject_id = c.id)`, modelArgs...).Scan(&report.UnattributedModelCalls, &report.UnattributedTokens); err != nil {
+		return CapabilityReport{}, fmt.Errorf("read capability unattributed calls: %w", err)
+	}
+
+	rawWhere, rawArgs := capabilityRawWhere(query)
+	rows, err := s.db.QueryContext(ctx, `SELECT lower(event_type), COUNT(*) FROM raw_events r LEFT JOIN projects p ON p.id = r.project_id`+rawWhere+` GROUP BY lower(event_type)`, rawArgs...)
+	if err != nil {
+		return CapabilityReport{}, fmt.Errorf("read capability raw events: %w", err)
+	}
+	for rows.Next() {
+		var eventType string
+		var count int64
+		if err := rows.Scan(&eventType, &count); err != nil {
+			_ = rows.Close()
+			return CapabilityReport{}, fmt.Errorf("scan capability raw event: %w", err)
+		}
+		if isLifecycleEventType(eventType) {
+			report.LifecycleEvents += count
+		}
+		if strings.Contains(eventType, "mcp") {
+			report.MCPCalls += count
+		}
+		if strings.Contains(eventType, "tool") {
+			report.ToolCalls += count
+		}
+		if strings.Contains(eventType, "error") || strings.Contains(eventType, "failed") {
+			report.Errors += count
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return CapabilityReport{}, err
+	}
+
+	if err := s.capabilityMetrics(ctx, modelWhere, modelArgs, report.ModelCalls, &report); err != nil {
+		return CapabilityReport{}, err
+	}
+	if err := s.capabilitySources(ctx, modelWhere, modelArgs, &report); err != nil {
+		return CapabilityReport{}, err
+	}
+	return report, nil
+}
+
+func isLifecycleEventType(eventType string) bool {
+	switch strings.ToLower(eventType) {
+	case "sessionstart", "sessionend", "agentstop", "userpromptsubmit", "subagentstop", "stop", "claudecodehook":
+		return true
+	}
+	return strings.Contains(eventType, "lifecycle") || strings.Contains(eventType, "session") || strings.HasSuffix(eventType, "stop")
+}
+
+func capabilityModelWhere(query CapabilityQuery) (string, []any) {
+	where := " WHERE 1 = 1"
+	args := []any{}
+	if !query.From.IsZero() {
+		where += " AND c.started_at >= ?"
+		args = append(args, timestamp(query.From))
+	}
+	if !query.To.IsZero() {
+		where += " AND c.started_at < ?"
+		args = append(args, timestamp(query.To))
+	}
+	if query.ProjectSlug != "" {
+		where += " AND EXISTS (SELECT 1 FROM usage_allocations a JOIN projects allocated ON allocated.id = a.project_id WHERE a.subject_type = 'model_call' AND a.subject_id = c.id AND allocated.slug = ?)"
+		args = append(args, normalizeSlug(query.ProjectSlug))
+	}
+	if query.AgentName != "" {
+		where += " AND c.agent_name = ?"
+		args = append(args, query.AgentName)
+	}
+	if query.SessionID != "" {
+		where += " AND c.session_id = ?"
+		args = append(args, query.SessionID)
+	}
+	return where, args
+}
+
+func capabilityRawWhere(query CapabilityQuery) (string, []any) {
+	where := " WHERE 1 = 1"
+	args := []any{}
+	if !query.From.IsZero() {
+		where += " AND r.occurred_at >= ?"
+		args = append(args, timestamp(query.From))
+	}
+	if !query.To.IsZero() {
+		where += " AND r.occurred_at < ?"
+		args = append(args, timestamp(query.To))
+	}
+	if query.ProjectSlug != "" {
+		where += " AND p.slug = ?"
+		args = append(args, normalizeSlug(query.ProjectSlug))
+	}
+	if query.AgentName != "" {
+		where += " AND COALESCE(json_extract(r.payload_json_sanitized, '$.agent_name'), '') = ?"
+		args = append(args, query.AgentName)
+	}
+	if query.SessionID != "" {
+		where += " AND r.session_id = ?"
+		args = append(args, query.SessionID)
+	}
+	return where, args
+}
+
+func (s *Store) capabilityMetrics(ctx context.Context, where string, args []any, modelCalls int64, report *CapabilityReport) error {
+	type aggregate struct{ reported, total, zero, disagreements int64 }
+	values := make(map[string]aggregate)
+	provenance := make(map[string][]MetricProvenance)
+	rows, err := s.db.QueryContext(ctx, `SELECT m.metric_name, COUNT(*), COALESCE(SUM(m.metric_value), 0), COALESCE(SUM(CASE WHEN m.metric_value = 0 THEN 1 ELSE 0 END), 0), COALESCE(SUM(CASE m.metric_name WHEN 'input_tokens' THEN m.metric_value != c.input_tokens WHEN 'output_tokens' THEN m.metric_value != c.output_tokens WHEN 'reasoning_tokens' THEN m.metric_value != c.reasoning_tokens WHEN 'cached_input_tokens' THEN m.metric_value != c.cached_input_tokens WHEN 'cache_write_tokens' THEN m.metric_value != c.cache_write_tokens WHEN 'total_tokens' THEN m.metric_value != c.total_tokens ELSE 0 END), 0), m.source, m.raw_key, m.confidence, COUNT(*) FROM model_call_metrics m JOIN model_calls c ON c.id = m.model_call_id LEFT JOIN projects p ON p.id = c.primary_project_id`+where+` GROUP BY m.metric_name, m.source, m.raw_key, m.confidence ORDER BY m.metric_name, m.source, m.raw_key, m.confidence`, args...)
+	if err != nil {
+		return fmt.Errorf("read metric coverage: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var name, source, rawKey, confidence string
+		var count, sum, zero, disagreements, provenanceCount int64
+		if err := rows.Scan(&name, &count, &sum, &zero, &disagreements, &source, &rawKey, &confidence, &provenanceCount); err != nil {
+			return fmt.Errorf("scan metric coverage: %w", err)
+		}
+		current := values[name]
+		current.reported += count
+		current.total += sum
+		current.zero += zero
+		current.disagreements += disagreements
+		values[name] = current
+		provenance[name] = append(provenance[name], MetricProvenance{Source: source, RawKey: rawKey, Confidence: confidence, Count: provenanceCount})
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, name := range []string{"input_tokens", "output_tokens", "reasoning_tokens", "cached_input_tokens", "cache_write_tokens", "total_tokens"} {
+		current := values[name]
+		coverage := MetricCoverage{Name: name, ReportedCount: current.reported, MissingCount: modelCalls - current.reported, ReportedZeroCount: current.zero, Provenance: provenance[name]}
+		switch {
+		case current.reported == 0:
+			coverage.State = "not_emitted"
+		case current.reported != modelCalls || current.disagreements != 0:
+			coverage.State = "unreconciled"
+		default:
+			coverage.State = "reported"
+			value := current.total
+			coverage.Value = &value
+		}
+		report.MetricCoverage = append(report.MetricCoverage, coverage)
+	}
+	return nil
+}
+
+func (s *Store) capabilitySources(ctx context.Context, where string, args []any, report *CapabilityReport) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT COALESCE(r.source, '—'), c.capture_quality, NULLIF(r.source_version, ''), COUNT(*) FROM model_calls c LEFT JOIN raw_events r ON r.id = c.raw_event_id LEFT JOIN projects p ON p.id = c.primary_project_id`+where+` GROUP BY COALESCE(r.source, '—'), c.capture_quality, NULLIF(r.source_version, '') ORDER BY 1, 2, 3`, args...)
+	if err != nil {
+		return fmt.Errorf("read capability sources: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var source, quality string
+		var version sql.NullString
+		var calls int64
+		if err := rows.Scan(&source, &quality, &version, &calls); err != nil {
+			return fmt.Errorf("scan capability source: %w", err)
+		}
+		item := SourceCoverage{Source: source, Quality: quality, ModelCalls: calls}
+		if version.Valid {
+			value := version.String
+			item.Version = &value
+		}
+		report.Sources = append(report.Sources, item)
+	}
+	return rows.Err()
+}
+
 func (s *Store) modelMeasurements(ctx context.Context, column, value string) ([]MeasurementSummary, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT capture_quality, COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(reasoning_tokens), 0), COALESCE(SUM(cached_input_tokens), 0), COALESCE(SUM(cache_write_tokens), 0), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(estimated_cost_usd_micros), 0) FROM model_calls WHERE `+column+` = ? GROUP BY capture_quality ORDER BY capture_quality`, value)
 	if err != nil {
@@ -1715,6 +2118,45 @@ func (s *Store) SessionSnapshot(ctx context.Context, sessionID string) (SessionS
 		}
 	}
 	return snapshot, nil
+}
+
+// SessionSnapshots returns aggregate evidence only. It does not expose raw
+// event payloads, which may contain user-controlled metadata.
+func (s *Store) SessionSnapshots(ctx context.Context) ([]SessionSnapshot, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT session_id FROM (
+		SELECT id AS session_id FROM sessions
+		UNION
+		SELECT session_id FROM raw_events WHERE session_id IS NOT NULL AND session_id != ''
+		UNION
+		SELECT session_id FROM model_calls WHERE session_id IS NOT NULL AND session_id != ''
+	) ORDER BY session_id`)
+	if err != nil {
+		return nil, fmt.Errorf("list session ids: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	sessionIDs := make([]string, 0)
+	for rows.Next() {
+		var sessionID string
+		if err := rows.Scan(&sessionID); err != nil {
+			return nil, fmt.Errorf("scan session id: %w", err)
+		}
+		sessionIDs = append(sessionIDs, sessionID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate session ids: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close session ids: %w", err)
+	}
+	snapshots := make([]SessionSnapshot, 0, len(sessionIDs))
+	for _, sessionID := range sessionIDs {
+		snapshot, err := s.SessionSnapshot(ctx, sessionID)
+		if err != nil {
+			return nil, err
+		}
+		snapshots = append(snapshots, snapshot)
+	}
+	return snapshots, nil
 }
 
 func (s *Store) HasRecentAdapterEvidence(ctx context.Context, query AdapterEvidenceQuery) (bool, error) {
@@ -1974,8 +2416,8 @@ func projectBySlug(ctx context.Context, tx *sql.Tx, slug string) (domain.Project
 
 func canonicalEvent(input RawEventInput, payload []byte) string {
 	value := struct {
-		Source, SessionID, EventType, OccurredAt, ProjectID, ProjectLocationID, WorkContextID, ResolutionMethod, ResolutionConfidence, EvidenceJSON, Payload string
-	}{input.Source, input.SessionID, input.EventType, timestamp(input.OccurredAt), input.ProjectID, input.ProjectLocationID, input.WorkContextID, input.ResolutionMethod, input.ResolutionConfidence, input.EvidenceJSON, string(payload)}
+		Source, SourceVersion, SessionID, EventType, OccurredAt, ProjectID, ProjectLocationID, WorkContextID, ResolutionMethod, ResolutionConfidence, EvidenceJSON, Payload string
+	}{input.Source, input.SourceVersion, input.SessionID, input.EventType, timestamp(input.OccurredAt), input.ProjectID, input.ProjectLocationID, input.WorkContextID, input.ResolutionMethod, input.ResolutionConfidence, input.EvidenceJSON, string(payload)}
 	encoded, _ := json.Marshal(value)
 	return string(encoded)
 }
@@ -1991,8 +2433,8 @@ func CanonicalIngestionIdentity(input RawEventInput, sanitizedPayload []byte) (s
 		return "upstream-sha256:" + hex.EncodeToString(hash[:]), nil
 	}
 	value := struct {
-		Source, SessionID, EventType, OccurredAt, ProjectID, ProjectLocationID, WorkContextID, ResolutionMethod, ResolutionConfidence, EvidenceJSON, Payload string
-	}{input.Source, input.SessionID, input.EventType, identityOccurredAt(input), input.ProjectID, input.ProjectLocationID, input.WorkContextID, input.ResolutionMethod, input.ResolutionConfidence, input.EvidenceJSON, string(sanitizedPayload)}
+		Source, SourceVersion, SessionID, EventType, OccurredAt, ProjectID, ProjectLocationID, WorkContextID, ResolutionMethod, ResolutionConfidence, EvidenceJSON, Payload string
+	}{input.Source, input.SourceVersion, input.SessionID, input.EventType, identityOccurredAt(input), input.ProjectID, input.ProjectLocationID, input.WorkContextID, input.ResolutionMethod, input.ResolutionConfidence, input.EvidenceJSON, string(sanitizedPayload)}
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return "", err
