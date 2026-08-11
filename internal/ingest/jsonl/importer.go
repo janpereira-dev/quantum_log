@@ -30,6 +30,7 @@ type event struct {
 }
 
 type modelCallPayload struct {
+	InteractionUpstreamID  string              `json:"interaction_upstream_id"`
 	Provider               string              `json:"provider"`
 	Model                  string              `json:"model"`
 	ModelID                string              `json:"model_id"`
@@ -94,6 +95,9 @@ func importWithTrust(ctx context.Context, store *storepkg.Store, reader io.Reade
 			return count, fmt.Errorf("import NDJSON line %d: %w", line, err)
 		}
 		_, err = normalizeModelCall(ctx, store, parsed, appendResult.ID)
+		if err == nil {
+			_, err = normalizeInteraction(ctx, store, parsed, appendResult.ID)
+		}
 		if err != nil {
 			return count, fmt.Errorf("normalize NDJSON line %d: %w", line, err)
 		}
@@ -105,6 +109,38 @@ func importWithTrust(ctx context.Context, store *storepkg.Store, reader io.Reade
 		return count, fmt.Errorf("read NDJSON: %w", err)
 	}
 	return count, nil
+}
+
+func normalizeInteraction(ctx context.Context, store *storepkg.Store, parsed event, rawEventID string) (bool, error) {
+	eventType := strings.ReplaceAll(strings.ToLower(parsed.EventType), "_", ".")
+	if eventType != "interaction.prompt" && eventType != "user.prompt" && eventType != "userpromptsubmitted" && eventType != "user.message" {
+		return false, nil
+	}
+	if parsed.IngestionIdentity == "" {
+		return false, nil
+	}
+	var payload struct {
+		PromptHash      string `json:"prompt_hash"`
+		InteractionHash string `json:"interaction_hash"`
+		Redacted        string `json:"interaction_redacted"`
+	}
+	_ = json.Unmarshal(parsed.Payload, &payload)
+	_, created, err := store.RecordInteraction(ctx, storepkg.InteractionInput{
+		RawEventID: rawEventID, Source: parsed.Source, SessionID: parsed.SessionID, UpstreamID: parsed.IngestionIdentity,
+		ProjectID: parsed.ProjectID, ProjectLocationID: parsed.ProjectLocationID, WorkContextID: parsed.WorkContextID,
+		PromptHash: firstNonEmpty(payload.InteractionHash, payload.PromptHash), PromptRedacted: payload.Redacted,
+		OccurredAt: parsed.OccurredAt,
+	})
+	return created, err
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func normalizeModelCall(ctx context.Context, store *storepkg.Store, parsed event, rawEventID string) (bool, error) {
@@ -152,6 +188,15 @@ func normalizeModelCall(ctx context.Context, store *storepkg.Store, parsed event
 		EstimatedCostEURMicros: payload.EstimatedCostEURMicros,
 		OccurredAt:             parsed.OccurredAt,
 		CaptureQuality:         payload.CaptureQuality,
+	}
+	if payload.InteractionUpstreamID != "" {
+		interactionID, found, err := store.InteractionByUpstream(ctx, parsed.Source, parsed.SessionID, payload.InteractionUpstreamID)
+		if err != nil {
+			return false, err
+		}
+		if found {
+			input.InteractionID = interactionID
+		}
 	}
 	for _, metric := range payload.MetricObservations {
 		if metric.Value != nil {

@@ -4,6 +4,8 @@ package qlogevent
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"github.com/janpereira-dev/quantum_log/internal/app"
+	"github.com/janpereira-dev/quantum_log/internal/config"
 	"github.com/janpereira-dev/quantum_log/internal/ingest/jsonl"
 )
 
@@ -77,6 +80,9 @@ func Ingest(ctx context.Context, service *app.Service, event Event) (int, error)
 	if event.Source == "copilot-cli-hook" {
 		payload = lifecycleOnlyPayload(payload)
 	}
+	if isPromptEvent(event.EventType) {
+		payload = attachPromptCapture(payload, event.Payload, config.PromptCaptureMode(service.Paths))
+	}
 	line := map[string]any{
 		"source":                        event.Source,
 		"source_version":                event.SourceVersion,
@@ -102,6 +108,34 @@ func Ingest(ctx context.Context, service *app.Service, event Event) (int, error)
 		return 0, fmt.Errorf("import plugin event: %w", err)
 	}
 	return count, nil
+}
+
+func isPromptEvent(eventType string) bool {
+	normalized := strings.ReplaceAll(strings.ToLower(eventType), "_", ".")
+	return normalized == "interaction.prompt" || normalized == "user.prompt" || normalized == "userpromptsubmitted" || normalized == "user.message"
+}
+
+func attachPromptCapture(payload, raw json.RawMessage, mode string) json.RawMessage {
+	var source map[string]any
+	var target map[string]any
+	if json.Unmarshal(raw, &source) != nil || json.Unmarshal(payload, &target) != nil {
+		return payload
+	}
+	prompt, _ := source["prompt"].(string)
+	if mode != "off" && prompt != "" {
+		hash := sha256.Sum256([]byte(prompt))
+		target["interaction_hash"] = hex.EncodeToString(hash[:])
+	}
+	if mode == "full" && prompt != "" {
+		// Redaction prevents common secret-bearing prompt fragments from persisting.
+		redacted := strings.ReplaceAll(prompt, "Bearer ", "[REDACTED] ")
+		target["interaction_redacted"] = redacted
+	}
+	next, err := json.Marshal(target)
+	if err != nil {
+		return payload
+	}
+	return next
 }
 
 func normalizeCodexRawResponse(event Event) Event {
@@ -168,7 +202,7 @@ func sanitizePluginPayload(payload json.RawMessage) json.RawMessage {
 		return json.RawMessage("{}")
 	}
 	allowed := make(map[string]any, 11)
-	for _, key := range []string{"provider", "model", "model_id", "agent_name", "capture_quality", "task_id", "turn_id"} {
+	for _, key := range []string{"provider", "model", "model_id", "agent_name", "capture_quality", "task_id", "turn_id", "interaction_upstream_id", "prompt_hash", "interaction_hash", "interaction_redacted"} {
 		if value, ok := object[key].(string); ok {
 			allowed[key] = value
 		}
@@ -207,7 +241,7 @@ func sanitizeOpenCodePayload(payload json.RawMessage) json.RawMessage {
 		return json.RawMessage("{}")
 	}
 	allowed := make(map[string]any, 17)
-	for _, key := range []string{"provider", "model", "agent_name", "capture_quality", "session_id", "message_id", "parent_message_id", "part_id", "finish"} {
+	for _, key := range []string{"provider", "model", "agent_name", "capture_quality", "session_id", "message_id", "parent_message_id", "part_id", "finish", "interaction_upstream_id", "prompt_hash"} {
 		if value, ok := object[key].(string); ok {
 			allowed[key] = value
 		}

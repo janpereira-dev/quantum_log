@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 type Paths struct {
@@ -70,6 +71,59 @@ func Ensure(paths Paths) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	const defaultConfig = "schemaVersion: 1\nprivacy:\n  capturePromptContent: false\n  captureResponseContent: false\n  captureToolArguments: false\n  captureToolResults: false\n  captureAbsolutePathLocally: true\n  hashPathsOnExport: true\n  redactSecrets: true\n  redactPII: true\n"
+	const defaultConfig = "schemaVersion: 1\nprivacy:\n  promptCapture: hash\n  capturePromptContent: false\n  captureResponseContent: false\n  captureToolArguments: false\n  captureToolResults: false\n  captureAbsolutePathLocally: true\n  hashPathsOnExport: true\n  redactSecrets: true\n  redactPII: true\n"
 	return os.WriteFile(paths.ConfigFile, []byte(defaultConfig), 0o600)
 }
+
+func SetPromptCaptureMode(paths Paths, mode string) error {
+	if mode != "off" && mode != "hash" && mode != "full" {
+		return errors.New("prompt capture mode must be off, hash, or full")
+	}
+	if err := Ensure(paths); err != nil {
+		return err
+	}
+	contents, err := os.ReadFile(paths.ConfigFile)
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(string(contents), "\n")
+	found := false
+	for index, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "promptCapture:") {
+			lines[index] = "  promptCapture: " + mode
+			found = true
+		}
+	}
+	if !found {
+		for index, line := range lines {
+			if line == "privacy:" {
+				lines = append(lines[:index+1], append([]string{"  promptCapture: " + mode}, lines[index+1:]...)...)
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		return errors.New("privacy configuration is missing")
+	}
+	return os.WriteFile(paths.ConfigFile, []byte(strings.Join(lines, "\n")), 0o600)
+}
+
+func PromptCaptureMode(paths Paths) string {
+	contents, err := os.ReadFile(paths.ConfigFile)
+	if err != nil {
+		return "hash"
+	}
+	for _, line := range strings.Split(string(contents), "\n") {
+		key, _, found := strings.Cut(strings.TrimSpace(line), ":")
+		if found && key == "promptCapture" {
+			mode := strings.TrimSpace(valueAfterColon(line))
+			if mode == "off" || mode == "hash" || mode == "full" {
+				return mode
+			}
+		}
+	}
+	return "hash"
+}
+
+func valueAfterColon(line string) string { _, value, _ := strings.Cut(line, ":"); return value }

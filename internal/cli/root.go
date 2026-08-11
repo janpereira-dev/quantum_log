@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/janpereira-dev/quantum_log/internal/app"
+	"github.com/janpereira-dev/quantum_log/internal/config"
 	"github.com/janpereira-dev/quantum_log/internal/ingest/jsonl"
 	"github.com/janpereira-dev/quantum_log/internal/pricing"
 	"github.com/janpereira-dev/quantum_log/internal/storage/sqlite"
@@ -56,7 +57,7 @@ func New(version Version) *cobra.Command {
 	}
 	root.PersistentFlags().StringVar(&home, "home", "", "override the local QUANTUM_LOG data directory")
 	root.SetVersionTemplate("{{.Version}}\n")
-	root.AddCommand(newInitCommand(&home), newDoctorCommand(&home), newVerifyCommand(&home), newMaintenanceCommand(&home), newProjectCommand(&home), newIngestCommand(&home), newUsageCommand(&home), newReportCommand(&home), newLegacySummaryCommand(&home), newAllocationCommand(&home), newPricingCommand(&home), newTaskCommand(&home), newSessionCommand(&home), newExportCommand(&home), newTUICommand(&home), newAdapterCommand(&home), newSetupCommand(&home), newCollectorCommand(&home), newHookCommand(&home), newRunCommand(&home), newMCPCommand(&home, version), newUnattributedCommand(&home), newBudgetCommand(&home), newAnchorCommand(&home), newAcceptanceCommand(&home, version))
+	root.AddCommand(newInitCommand(&home), newConfigCommand(&home), newDoctorCommand(&home), newVerifyCommand(&home), newMaintenanceCommand(&home), newProjectCommand(&home), newIngestCommand(&home), newUsageCommand(&home), newLogCommand(&home), newReportCommand(&home), newLegacySummaryCommand(&home), newAllocationCommand(&home), newPricingCommand(&home), newTaskCommand(&home), newSessionCommand(&home), newExportCommand(&home), newTUICommand(&home), newAdapterCommand(&home), newSetupCommand(&home), newCollectorCommand(&home), newHookCommand(&home), newRunCommand(&home), newMCPCommand(&home, version), newUnattributedCommand(&home), newBudgetCommand(&home), newAnchorCommand(&home), newAcceptanceCommand(&home, version))
 	return root
 }
 
@@ -70,6 +71,25 @@ func newInitCommand(home *string) *cobra.Command {
 		_, result = fmt.Fprintf(command.Root().OutOrStdout(), "initialized QUANTUM_LOG at %s\n", service.Paths.Home)
 		return result
 	}}
+}
+
+func newConfigCommand(home *string) *cobra.Command {
+	configCommand := &cobra.Command{Use: "config", Short: "Manage local privacy configuration"}
+	configCommand.AddCommand(&cobra.Command{Use: "set prompt-capture <off|hash|full>", Short: "Set prompt capture policy", Args: cobra.ExactArgs(2), RunE: func(command *cobra.Command, args []string) error {
+		if args[0] != "prompt-capture" {
+			return fmt.Errorf("unsupported configuration key %q", args[0])
+		}
+		paths, err := config.Resolve(*home)
+		if err != nil {
+			return err
+		}
+		if err := config.SetPromptCaptureMode(paths, args[1]); err != nil {
+			return err
+		}
+		_, err = fmt.Fprintf(command.Root().OutOrStdout(), "prompt-capture: %s\n", args[1])
+		return err
+	}})
+	return configCommand
 }
 
 func newDoctorCommand(home *string) *cobra.Command {
@@ -380,6 +400,68 @@ func newUsageCommand(home *string) *cobra.Command {
 	return usage
 }
 
+func newLogCommand(home *string) *cobra.Command {
+	log := &cobra.Command{Use: "log", Short: "Show canonical prompt interactions"}
+	list := func(command *cobra.Command, from time.Time, limit int, jsonOutput bool) error {
+		service, err := app.OpenReadOnly(command.Context(), *home)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = service.Close() }()
+		interactions, err := service.Store.ListInteractions(command.Context(), from, limit)
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			return writeJSON(command.Root().OutOrStdout(), interactions)
+		}
+		for _, interaction := range interactions {
+			if _, err := fmt.Fprintf(command.Root().OutOrStdout(), "%s | %s | %s | %s\n", interaction.OccurredAt.Format(time.RFC3339), interaction.Source, interaction.SessionID, interaction.ID); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	var jsonOutput bool
+	log.AddCommand(&cobra.Command{Use: "today", Short: "List today's interactions", RunE: func(command *cobra.Command, _ []string) error {
+		return list(command, time.Now().UTC().Truncate(24*time.Hour), 1000, jsonOutput)
+	}})
+	log.Commands()[0].Flags().BoolVar(&jsonOutput, "json", false, "output JSON")
+	var limit int
+	var listJSON bool
+	listCommand := &cobra.Command{Use: "list", Short: "List interactions", RunE: func(command *cobra.Command, _ []string) error { return list(command, time.Time{}, limit, listJSON) }}
+	listCommand.Flags().IntVar(&limit, "limit", 100, "maximum interactions")
+	listCommand.Flags().BoolVar(&listJSON, "json", false, "output JSON")
+	log.AddCommand(listCommand)
+	var tailJSON bool
+	tail := &cobra.Command{Use: "tail", Short: "Show latest interactions", RunE: func(command *cobra.Command, _ []string) error { return list(command, time.Time{}, 20, tailJSON) }}
+	tail.Flags().BoolVar(&tailJSON, "json", false, "output JSON")
+	log.AddCommand(tail)
+	var showJSON bool
+	show := &cobra.Command{Use: "show <id>", Short: "Show one interaction", Args: cobra.ExactArgs(1), RunE: func(command *cobra.Command, args []string) error {
+		service, err := app.OpenReadOnly(command.Context(), *home)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = service.Close() }()
+		interaction, found, err := service.Store.Interaction(command.Context(), args[0])
+		if err != nil {
+			return err
+		}
+		if !found {
+			return fmt.Errorf("interaction %q not found", args[0])
+		}
+		if showJSON {
+			return writeJSON(command.Root().OutOrStdout(), interaction)
+		}
+		_, err = fmt.Fprintf(command.Root().OutOrStdout(), "%s | %s | %s | %s\n", interaction.OccurredAt.Format(time.RFC3339), interaction.Source, interaction.SessionID, interaction.ID)
+		return err
+	}}
+	show.Flags().BoolVar(&showJSON, "json", false, "output JSON")
+	log.AddCommand(show)
+	return log
+}
+
 func newUsagePeriodCommand(home *string, period string) *cobra.Command {
 	var groupBy string
 	var jsonOutput bool
@@ -564,7 +646,7 @@ func runCapabilityReport(command *cobra.Command, home *string, query sqlite.Capa
 }
 
 func writeCapabilityReport(writer io.Writer, report sqlite.CapabilityReport) error {
-	if _, err := fmt.Fprintf(writer, "MODEL CALLS %d | TOKENS %d | LIFECYCLE %d | TOOL %d | MCP %d | ERRORS %d | UNATTRIBUTED %d/%d\n", report.ModelCalls, report.Tokens, report.LifecycleEvents, report.ToolCalls, report.MCPCalls, report.Errors, report.UnattributedModelCalls, report.UnattributedTokens); err != nil {
+	if _, err := fmt.Fprintf(writer, "INTERACTIONS %d | PROMPTS %d | MODEL CALLS %d | TOKENS %d | LIFECYCLE %d | TOOL %d | MCP %d | ERRORS %d | UNATTRIBUTED %d/%d\n", report.Interactions, report.Prompts, report.ModelCalls, report.Tokens, report.LifecycleEvents, report.ToolCalls, report.MCPCalls, report.Errors, report.UnattributedModelCalls, report.UnattributedTokens); err != nil {
 		return err
 	}
 	for _, source := range report.Sources {
@@ -586,7 +668,7 @@ func writeCapabilityReport(writer io.Writer, report sqlite.CapabilityReport) err
 
 func writeCapabilityCSV(writer io.Writer, report sqlite.CapabilityReport) error {
 	csvWriter := csv.NewWriter(writer)
-	if err := csvWriter.Write([]string{"metric", "state", "value", "reported_count", "missing_count", "reported_zero_count", "source", "raw_key", "confidence", "provenance_count"}); err != nil {
+	if err := csvWriter.Write([]string{"interactions", "prompts", "metric", "state", "value", "reported_count", "missing_count", "reported_zero_count", "source", "raw_key", "confidence", "provenance_count"}); err != nil {
 		return err
 	}
 	for _, metric := range report.MetricCoverage {
@@ -595,7 +677,7 @@ func writeCapabilityCSV(writer io.Writer, report sqlite.CapabilityReport) error 
 			provenance = []sqlite.MetricProvenance{{Source: "—", RawKey: "—", Confidence: "—"}}
 		}
 		for _, item := range provenance {
-			if err := csvWriter.Write([]string{metric.Name, metric.State, displayMetric(metric), strconv.FormatInt(metric.ReportedCount, 10), strconv.FormatInt(metric.MissingCount, 10), strconv.FormatInt(metric.ReportedZeroCount, 10), item.Source, item.RawKey, item.Confidence, strconv.FormatInt(item.Count, 10)}); err != nil {
+			if err := csvWriter.Write([]string{strconv.FormatInt(report.Interactions, 10), strconv.FormatInt(report.Prompts, 10), metric.Name, metric.State, displayMetric(metric), strconv.FormatInt(metric.ReportedCount, 10), strconv.FormatInt(metric.MissingCount, 10), strconv.FormatInt(metric.ReportedZeroCount, 10), item.Source, item.RawKey, item.Confidence, strconv.FormatInt(item.Count, 10)}); err != nil {
 				return err
 			}
 		}

@@ -7,9 +7,19 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
+
+type copilotCLIUserEnvironmentStore interface {
+	Get(string) (string, bool, error)
+	Set(string, string) error
+	Delete(string) error
+}
+
+var copilotCLIUserEnvironment copilotCLIUserEnvironmentStore = newCopilotCLIUserEnvironmentStore()
+var copilotCLIUserEnvironmentChanged = notifyCopilotCLIUserEnvironment
 
 // copilotCLIAdapter installs an isolated user hook file. It never edits
 // user settings, repository hooks, prompts, or tool payloads.
@@ -24,6 +34,18 @@ func (a copilotCLIAdapter) Descriptor() Descriptor {
 }
 
 func (a copilotCLIAdapter) Install(_ context.Context, options InstallOptions) (InstallResult, error) {
+	changes := make([]SetupChange, 0, 4)
+	if runtime.GOOS == "windows" {
+		profileChange, err := a.installWindowsPowerShellProfile(options.DryRun)
+		if err != nil {
+			return InstallResult{}, err
+		}
+		environmentChange, err := a.installWindowsUserEnvironment(options.DryRun)
+		if err != nil {
+			return InstallResult{}, err
+		}
+		changes = append(changes, profileChange, environmentChange)
+	}
 	change, err := applyManagedFile(a.hooksPath(), copilotCLIHooksConfig(options.Home, options.ExecutablePath), options.DryRun)
 	if err != nil {
 		return InstallResult{}, err
@@ -32,9 +54,14 @@ func (a copilotCLIAdapter) Install(_ context.Context, options InstallOptions) (I
 	if err != nil {
 		return InstallResult{}, err
 	}
-	changes := []SetupChange{change, otelChange}
-	actions := []string{formatChange(change), formatChange(otelChange)}
-	changed := !options.DryRun && (change.Action == "created" || change.Action == "updated" || otelChange.Action == "created" || otelChange.Action == "updated")
+	changes = append(changes, change, otelChange)
+	actions := make([]string, 0, len(changes))
+	changed := false
+	for _, item := range changes {
+		actions = append(actions, formatChange(item))
+		changed = changed || item.Action == "created" || item.Action == "updated"
+	}
+	changed = changed && !options.DryRun
 	return InstallResult{Changed: changed, Actions: actions, Changes: changes}, nil
 }
 
@@ -50,7 +77,17 @@ func (a copilotCLIAdapter) PlanInstall(_ context.Context, options SetupOptions) 
 	if err != nil {
 		return SetupPlan{}, err
 	}
-	return SetupPlan{AdapterID: a.id, State: SetupAvailable, CaptureQuality: CaptureOTELReported, Changes: []SetupChange{change, otelChange}, Notes: []string{"installs lifecycle hooks plus a qlog-owned Copilot CLI OTel environment file; source it before launching copilot", "OTel content capture remains disabled; clean-device source evidence is still required"}}, nil
+	changes := []SetupChange{change, otelChange}
+	notes := []string{"installs lifecycle hooks plus a qlog-owned Copilot CLI OTel environment file; source it before launching copilot"}
+	if runtime.GOOS == "windows" {
+		changes = append(changes,
+			SetupChange{Path: "PowerShell CurrentUserCurrentHost profile", Action: "updated", Description: "adds qlog-owned Copilot OTel profile block"},
+			SetupChange{Path: "HKCU\\Environment", Action: "updated", Description: "sets qlog-owned Copilot OTel variables for new PowerShell processes"},
+		)
+		notes[0] = "installs lifecycle hooks plus qlog-owned Windows PowerShell profile configuration for new copilot launches"
+	}
+	notes = append(notes, "OTel content capture remains disabled; clean-device source evidence is still required")
+	return SetupPlan{AdapterID: a.id, State: SetupAvailable, CaptureQuality: CaptureOTELReported, Changes: changes, Notes: notes}, nil
 }
 
 func (a copilotCLIAdapter) Status(ctx context.Context) (SetupStatus, error) {
@@ -59,6 +96,9 @@ func (a copilotCLIAdapter) Status(ctx context.Context) (SetupStatus, error) {
 		return SetupStatus{}, err
 	}
 	installed := fileContains(a.hooksPath(), "hook copilot-cli --event")
+	if runtime.GOOS == "windows" {
+		installed = installed && a.windowsPowerShellProfileInstalled() && a.windowsUserEnvironmentInstalled()
+	}
 	state := SetupUnavailable
 	if detection.Available {
 		state = SetupAvailable
@@ -82,7 +122,7 @@ func (a copilotCLIAdapter) Test(ctx context.Context) (TestResult, error) {
 }
 
 func (a copilotCLIAdapter) Uninstall(_ context.Context, options InstallOptions) (InstallResult, error) {
-	changes := make([]SetupChange, 0, 2)
+	changes := make([]SetupChange, 0, 4)
 	for _, item := range []struct{ path, description string }{
 		{a.hooksPath(), "Copilot CLI qlog hook config"},
 		{a.otelPath(), "Copilot CLI qlog OTel environment"},
@@ -103,6 +143,17 @@ func (a copilotCLIAdapter) Uninstall(_ context.Context, options InstallOptions) 
 			change.Description = "dry run: " + change.Description
 		}
 		changes = append(changes, change)
+	}
+	if runtime.GOOS == "windows" {
+		profileChange, err := a.uninstallWindowsPowerShellProfile(options.DryRun)
+		if err != nil {
+			return InstallResult{}, err
+		}
+		environmentChange, err := a.uninstallWindowsUserEnvironment(options.DryRun)
+		if err != nil {
+			return InstallResult{}, err
+		}
+		changes = append(changes, profileChange, environmentChange)
 	}
 	actions := make([]string, 0, len(changes))
 	changed := false
@@ -136,6 +187,14 @@ func (a copilotCLIAdapter) hooksPath() string {
 
 func (a copilotCLIAdapter) otelPath() string {
 	return filepath.Join(filepath.Dir(a.hooksPath()), "qlog-otel.env")
+}
+
+func (a copilotCLIAdapter) windowsUserEnvironmentStatePath() string {
+	return filepath.Join(filepath.Dir(a.hooksPath()), "qlog-copilot-otel-user-env")
+}
+
+func (a copilotCLIAdapter) windowsPowerShellProfileStatePath() string {
+	return filepath.Join(filepath.Dir(a.hooksPath()), "qlog-copilot-otel-profile")
 }
 
 func copilotCLIOTELConfig(endpoint string) string {

@@ -476,6 +476,10 @@ func (f fakeAdapterStatusAccess) HasRecentEvidence(context.Context, string, adap
 }
 
 func TestCollectorStatusShowsLocalEndpoints(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Setenv("LOCALAPPDATA", t.TempDir())
+	}
+
 	run := func(args ...string) (string, error) {
 		command := New(Version{})
 		output := new(bytes.Buffer)

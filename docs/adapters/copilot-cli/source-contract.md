@@ -4,7 +4,9 @@ Source: GitHub Copilot CLI command reference, OpenTelemetry monitoring section: 
 
 ## Supported configuration
 
-`qlog adapter install copilot` creates a qlog-owned `qlog-otel.env` beside its qlog-owned hook configuration. Source that file in process environment before starting `copilot`.
+`qlog adapter install copilot` creates a qlog-owned `qlog-otel.env` beside its qlog-owned hook configuration. On Windows, it discovers the active Windows PowerShell `CurrentUserCurrentHost` profile with `powershell.exe -NoProfile -NonInteractive -Command $PROFILE.CurrentUserCurrentHost`, then adds a delimited qlog-owned OTel block to that exact profile. This supports redirected Documents locations, including OneDrive. It also writes matching qlog-owned current-user environment values as a complementary setting. Existing terminals retain their inherited environment; close them and launch a new PowerShell after setup. Uninstall removes only the qlog-owned profile block and environment values, preserving unrelated profile content and user-modified values. qlog backs up a preexisting profile before changing it.
+
+Copilot CLI documents hooks and OTel environment variables, but not arbitrary persistent OTLP settings. On non-Windows shells, source `qlog-otel.env` before starting `copilot`.
 
 - `COPILOT_OTEL_ENABLED=true`
 - `COPILOT_OTEL_EXPORTER_TYPE=otlp-http`

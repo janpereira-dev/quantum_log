@@ -104,22 +104,27 @@ func claudeCodeHookEvent(input []byte) (qlogevent.Event, error) {
 }
 
 func copilotCLIHookEvent(input []byte, eventType string) (qlogevent.Event, error) {
-	allowedEvents := map[string]bool{"sessionStart": true, "sessionEnd": true, "agentStop": true, "postToolUse": true}
+	allowedEvents := map[string]bool{"sessionStart": true, "sessionEnd": true, "agentStop": true, "postToolUse": true, "userPromptSubmitted": true, "error": true, "subagentStart": true, "subagentStop": true}
 	if !allowedEvents[eventType] {
 		return qlogevent.Event{}, fmt.Errorf("unsupported Copilot CLI hook event %q", eventType)
 	}
 	var raw struct {
 		SessionID string `json:"sessionId"`
 		CWD       string `json:"cwd"`
+		EventID   string `json:"eventId"`
 	}
 	if err := json.Unmarshal(input, &raw); err != nil {
 		return qlogevent.Event{}, fmt.Errorf("decode Copilot CLI hook JSON: %w", err)
+	}
+	normalizedEvent := eventType
+	if eventType == "userPromptSubmitted" {
+		normalizedEvent = "interaction.prompt"
 	}
 	payload, err := json.Marshal(map[string]any{"agent_name": "copilot", "capture_quality": "lifecycle_only"})
 	if err != nil {
 		return qlogevent.Event{}, fmt.Errorf("encode Copilot CLI hook payload: %w", err)
 	}
-	return qlogevent.Event{Source: "copilot-cli-hook", SessionID: raw.SessionID, EventType: eventType, OccurredAt: time.Now().UTC(), ProjectHint: qlogevent.ProjectHint{CWD: raw.CWD}, Payload: payload}, nil
+	return qlogevent.Event{Source: "copilot-cli-hook", SessionID: raw.SessionID, EventType: normalizedEvent, UpstreamEventID: raw.EventID, OccurredAt: time.Now().UTC(), ProjectHint: qlogevent.ProjectHint{CWD: raw.CWD}, Payload: payload}, nil
 }
 
 func ingestOrForwardHook(command *cobra.Command, home *string, event qlogevent.Event) error {

@@ -83,6 +83,7 @@ type AllocationInput struct {
 
 type ModelCallInput struct {
 	RawEventID             string
+	InteractionID          string
 	ProjectID              string
 	ProjectLocationID      string
 	WorkContextID          string
@@ -102,6 +103,30 @@ type ModelCallInput struct {
 	OccurredAt             time.Time
 	CaptureQuality         string
 	Metrics                []MetricInput
+}
+
+type InteractionInput struct {
+	RawEventID        string
+	Source            string
+	SessionID         string
+	UpstreamID        string
+	ProjectID         string
+	ProjectLocationID string
+	WorkContextID     string
+	PromptCaptureMode string
+	PromptHash        string
+	PromptRedacted    string
+	OccurredAt        time.Time
+}
+
+type Interaction struct {
+	ID                string    `json:"id"`
+	Source            string    `json:"source"`
+	SessionID         string    `json:"session_id"`
+	UpstreamID        string    `json:"upstream_id"`
+	PromptCaptureMode string    `json:"prompt_capture_mode"`
+	PromptHash        string    `json:"prompt_hash,omitempty"`
+	OccurredAt        time.Time `json:"occurred_at"`
 }
 
 // MetricInput is one explicitly emitted measurement. Absence is represented
@@ -213,6 +238,8 @@ type CapabilityReport struct {
 	AgentName              string           `json:"agent_name,omitempty"`
 	SessionID              string           `json:"session_id,omitempty"`
 	ModelCalls             int64            `json:"model_calls"`
+	Interactions           int64            `json:"interactions"`
+	Prompts                int64            `json:"prompts"`
 	Tokens                 int64            `json:"tokens"`
 	LifecycleEvents        int64            `json:"lifecycle_events"`
 	ToolCalls              int64            `json:"tool_calls"`
@@ -232,6 +259,8 @@ func (report CapabilityReport) MarshalJSON() ([]byte, error) {
 		AgentName              string           `json:"agent_name,omitempty"`
 		SessionID              string           `json:"session_id,omitempty"`
 		ModelCalls             int64            `json:"model_calls"`
+		Interactions           int64            `json:"interactions"`
+		Prompts                int64            `json:"prompts"`
 		Tokens                 int64            `json:"tokens"`
 		LifecycleEvents        int64            `json:"lifecycle_events"`
 		ToolCalls              int64            `json:"tool_calls"`
@@ -242,7 +271,7 @@ func (report CapabilityReport) MarshalJSON() ([]byte, error) {
 		MetricCoverage         []MetricCoverage `json:"metric_coverage"`
 		Sources                []SourceCoverage `json:"sources"`
 	}
-	encoded := encodedReport{ProjectSlug: report.ProjectSlug, AgentName: report.AgentName, SessionID: report.SessionID, ModelCalls: report.ModelCalls, Tokens: report.Tokens, LifecycleEvents: report.LifecycleEvents, ToolCalls: report.ToolCalls, MCPCalls: report.MCPCalls, Errors: report.Errors, UnattributedModelCalls: report.UnattributedModelCalls, UnattributedTokens: report.UnattributedTokens, MetricCoverage: report.MetricCoverage, Sources: report.Sources}
+	encoded := encodedReport{ProjectSlug: report.ProjectSlug, AgentName: report.AgentName, SessionID: report.SessionID, ModelCalls: report.ModelCalls, Interactions: report.Interactions, Prompts: report.Prompts, Tokens: report.Tokens, LifecycleEvents: report.LifecycleEvents, ToolCalls: report.ToolCalls, MCPCalls: report.MCPCalls, Errors: report.Errors, UnattributedModelCalls: report.UnattributedModelCalls, UnattributedTokens: report.UnattributedTokens, MetricCoverage: report.MetricCoverage, Sources: report.Sources}
 	if !report.From.IsZero() {
 		encoded.From = &report.From
 	}
@@ -463,6 +492,44 @@ func OpenReadOnly(ctx context.Context, path string) (*Store, error) {
 		return nil, fmt.Errorf("open read-only sqlite: %w", err)
 	}
 	store := &Store{db: db, quiescence: quiescence, warnings: isolatedSHMWarning(absolutePath)}
+	if err := store.validateSchema(ctx); err != nil {
+		_ = store.Close()
+		return nil, err
+	}
+	return store, nil
+}
+
+// OpenSnapshotReadOnly opens a WAL-aware read snapshot while a qlog writer is active.
+// It shares the cooperative quiescence lock and never uses immutable SQLite mode.
+func OpenSnapshotReadOnly(ctx context.Context, path string) (*Store, error) {
+	absolutePath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve database path: %w", err)
+	}
+	if _, err := os.Stat(absolutePath); err != nil {
+		return nil, fmt.Errorf("open local database: %w; run qlog init first", err)
+	}
+	quiescence, err := storelock.AcquireShared(quiescenceLockPath(absolutePath))
+	if err != nil {
+		return nil, readerQuiescenceError(err)
+	}
+	if _, err := os.Stat(writerLockPath(absolutePath)); err != nil {
+		_ = quiescence.Close()
+		return nil, readerWriterLockError(err)
+	}
+	dsn := "file:" + filepath.ToSlash(absolutePath) + "?mode=ro&_pragma=query_only(1)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		_ = quiescence.Close()
+		return nil, fmt.Errorf("open snapshot sqlite: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		_ = quiescence.Close()
+		return nil, fmt.Errorf("open snapshot sqlite: %w", err)
+	}
+	store := &Store{db: db, quiescence: quiescence}
 	if err := store.validateSchema(ctx); err != nil {
 		_ = store.Close()
 		return nil, err
@@ -842,6 +909,119 @@ func (s *Store) HasModelCallForRawEvent(ctx context.Context, rawEventID string) 
 		return false, fmt.Errorf("read raw event model call: %w", err)
 	}
 	return true, nil
+}
+
+// RecordInteraction inserts one canonical root for an upstream prompt. A
+// repeated upstream delivery returns existing root rather than another prompt.
+func (s *Store) RecordInteraction(ctx context.Context, input InteractionInput) (string, bool, error) {
+	if strings.TrimSpace(input.Source) == "" || strings.TrimSpace(input.UpstreamID) == "" {
+		return "", false, errors.New("interaction source and upstream id are required")
+	}
+	if input.OccurredAt.IsZero() {
+		input.OccurredAt = time.Now().UTC()
+	}
+	if input.PromptCaptureMode == "" {
+		input.PromptCaptureMode = "hash"
+	}
+	if input.PromptCaptureMode != "off" && input.PromptCaptureMode != "hash" && input.PromptCaptureMode != "full" {
+		return "", false, errors.New("prompt capture mode must be off, hash, or full")
+	}
+	id := newID()
+	now := timestamp(time.Now())
+	_, err := s.db.ExecContext(ctx, `INSERT INTO interactions (id, source, session_id, upstream_id, raw_event_id, primary_project_id, project_location_id, work_context_id, prompt_capture_mode, prompt_hash, prompt_redacted, occurred_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, input.Source, input.SessionID, input.UpstreamID, nullable(input.RawEventID), nullable(input.ProjectID), nullable(input.ProjectLocationID), nullable(input.WorkContextID), input.PromptCaptureMode, input.PromptHash, input.PromptRedacted, timestamp(input.OccurredAt), now)
+	if err == nil {
+		return id, true, nil
+	}
+	if !isUniqueConstraint(err) {
+		return "", false, fmt.Errorf("insert interaction: %w", err)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM interactions WHERE source = ? AND session_id = ? AND upstream_id = ?`, input.Source, input.SessionID, input.UpstreamID).Scan(&id); err != nil {
+		return "", false, fmt.Errorf("read duplicate interaction: %w", err)
+	}
+	return id, false, nil
+}
+
+func (s *Store) InteractionCount(ctx context.Context, projectID string) (int64, error) {
+	query, args := `SELECT COUNT(*) FROM interactions`, []any{}
+	if projectID != "" {
+		query += ` WHERE primary_project_id = ?`
+		args = append(args, projectID)
+	}
+	var count int64
+	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count interactions: %w", err)
+	}
+	return count, nil
+}
+
+func (s *Store) InteractionByUpstream(ctx context.Context, source, sessionID, upstreamID string) (string, bool, error) {
+	var id string
+	err := s.db.QueryRowContext(ctx, `SELECT id FROM interactions WHERE source = ? AND session_id = ? AND upstream_id = ?`, source, sessionID, upstreamID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("find interaction: %w", err)
+	}
+	return id, true, nil
+}
+
+func (s *Store) ListInteractions(ctx context.Context, from time.Time, limit int) ([]Interaction, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	query := `SELECT id, source, session_id, upstream_id, prompt_capture_mode, prompt_hash, occurred_at FROM interactions`
+	args := []any{}
+	if !from.IsZero() {
+		query += ` WHERE occurred_at >= ?`
+		args = append(args, timestamp(from))
+	}
+	query += ` ORDER BY occurred_at DESC, id DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list interactions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	interactions := make([]Interaction, 0)
+	for rows.Next() {
+		var interaction Interaction
+		var occurredAt string
+		if err := rows.Scan(&interaction.ID, &interaction.Source, &interaction.SessionID, &interaction.UpstreamID, &interaction.PromptCaptureMode, &interaction.PromptHash, &occurredAt); err != nil {
+			return nil, fmt.Errorf("scan interaction: %w", err)
+		}
+		interaction.OccurredAt = parseTimestamp(occurredAt)
+		interactions = append(interactions, interaction)
+	}
+	return interactions, rows.Err()
+}
+
+func (s *Store) Interaction(ctx context.Context, id string) (Interaction, bool, error) {
+	var interaction Interaction
+	var occurredAt string
+	err := s.db.QueryRowContext(ctx, `SELECT id, source, session_id, upstream_id, prompt_capture_mode, prompt_hash, occurred_at FROM interactions WHERE id = ?`, id).Scan(&interaction.ID, &interaction.Source, &interaction.SessionID, &interaction.UpstreamID, &interaction.PromptCaptureMode, &interaction.PromptHash, &occurredAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Interaction{}, false, nil
+	}
+	if err != nil {
+		return Interaction{}, false, fmt.Errorf("read interaction: %w", err)
+	}
+	interaction.OccurredAt = parseTimestamp(occurredAt)
+	return interaction, true, nil
+}
+
+func (s *Store) LinkModelCallInteraction(ctx context.Context, modelCallID, interactionID string) error {
+	if modelCallID == "" || interactionID == "" {
+		return errors.New("model call and interaction ids are required")
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE model_calls SET interaction_id = ? WHERE id = ? AND (interaction_id IS NULL OR interaction_id = ?)`, interactionID, modelCallID, interactionID)
+	if err != nil {
+		return fmt.Errorf("link model call interaction: %w", err)
+	}
+	if affected, _ := result.RowsAffected(); affected != 1 {
+		return errors.New("model call not found or linked to another interaction")
+	}
+	return nil
 }
 
 func (s *Store) VerifyLedger(ctx context.Context, sessionID string) error {
@@ -1292,7 +1472,7 @@ func (s *Store) RecordModelCall(ctx context.Context, input ModelCallInput) (stri
 		return "", err
 	}
 	defer rollback(tx)
-	_, err = tx.ExecContext(ctx, `INSERT INTO model_calls (id, raw_event_id, primary_project_id, project_location_id, work_context_id, task_id, session_id, turn_id, started_at, agent_name, provider, model_id, input_tokens, output_tokens, reasoning_tokens, cached_input_tokens, cache_write_tokens, total_tokens, estimated_cost_usd_micros, estimated_cost_eur_micros, capture_quality, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, nullable(input.RawEventID), nullable(input.ProjectID), nullable(input.ProjectLocationID), nullable(input.WorkContextID), nullable(input.TaskID), nullable(input.SessionID), nullable(input.TurnID), timestamp(input.OccurredAt), input.AgentName, input.Provider, input.ModelID, input.InputTokens, input.OutputTokens, input.ReasoningTokens, input.CachedInputTokens, input.CacheWriteTokens, total, input.EstimatedCostUSDMicros, input.EstimatedCostEURMicros, input.CaptureQuality, now)
+	_, err = tx.ExecContext(ctx, `INSERT INTO model_calls (id, raw_event_id, interaction_id, primary_project_id, project_location_id, work_context_id, task_id, session_id, turn_id, started_at, agent_name, provider, model_id, input_tokens, output_tokens, reasoning_tokens, cached_input_tokens, cache_write_tokens, total_tokens, estimated_cost_usd_micros, estimated_cost_eur_micros, capture_quality, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, nullable(input.RawEventID), nullable(input.InteractionID), nullable(input.ProjectID), nullable(input.ProjectLocationID), nullable(input.WorkContextID), nullable(input.TaskID), nullable(input.SessionID), nullable(input.TurnID), timestamp(input.OccurredAt), input.AgentName, input.Provider, input.ModelID, input.InputTokens, input.OutputTokens, input.ReasoningTokens, input.CachedInputTokens, input.CacheWriteTokens, total, input.EstimatedCostUSDMicros, input.EstimatedCostEURMicros, input.CaptureQuality, now)
 	if err != nil {
 		if input.RawEventID != "" && isUniqueConstraint(err) {
 			var existingID string
@@ -1777,6 +1957,11 @@ func (s *Store) CapabilityReport(ctx context.Context, query CapabilityQuery) (Ca
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(c.total_tokens), 0) FROM model_calls c LEFT JOIN projects p ON p.id = c.primary_project_id`+modelWhere, modelArgs...).Scan(&report.ModelCalls, &report.Tokens); err != nil {
 		return CapabilityReport{}, fmt.Errorf("read capability model calls: %w", err)
 	}
+	interactionWhere, interactionArgs := capabilityInteractionWhere(query)
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM interactions i LEFT JOIN projects p ON p.id = i.primary_project_id`+interactionWhere, interactionArgs...).Scan(&report.Interactions); err != nil {
+		return CapabilityReport{}, fmt.Errorf("read capability interactions: %w", err)
+	}
+	report.Prompts = report.Interactions
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(c.total_tokens), 0) FROM model_calls c LEFT JOIN projects p ON p.id = c.primary_project_id`+modelWhere+` AND NOT EXISTS (SELECT 1 FROM usage_allocations a WHERE a.subject_type = 'model_call' AND a.subject_id = c.id)`, modelArgs...).Scan(&report.UnattributedModelCalls, &report.UnattributedTokens); err != nil {
 		return CapabilityReport{}, fmt.Errorf("read capability unattributed calls: %w", err)
 	}
@@ -1874,6 +2059,28 @@ func capabilityRawWhere(query CapabilityQuery) (string, []any) {
 	}
 	if query.SessionID != "" {
 		where += " AND r.session_id = ?"
+		args = append(args, query.SessionID)
+	}
+	return where, args
+}
+
+func capabilityInteractionWhere(query CapabilityQuery) (string, []any) {
+	where := " WHERE 1 = 1"
+	args := []any{}
+	if !query.From.IsZero() {
+		where += " AND i.occurred_at >= ?"
+		args = append(args, timestamp(query.From))
+	}
+	if !query.To.IsZero() {
+		where += " AND i.occurred_at < ?"
+		args = append(args, timestamp(query.To))
+	}
+	if query.ProjectSlug != "" {
+		where += " AND p.slug = ?"
+		args = append(args, normalizeSlug(query.ProjectSlug))
+	}
+	if query.SessionID != "" {
+		where += " AND i.session_id = ?"
 		args = append(args, query.SessionID)
 	}
 	return where, args

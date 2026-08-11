@@ -2,7 +2,10 @@ package adapters
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,10 +13,38 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/pelletier/go-toml/v2"
 )
+
+func TestMain(m *testing.M) {
+	originalEnvironment := copilotCLIUserEnvironment
+	originalEnvironmentChanged := copilotCLIUserEnvironmentChanged
+	originalProfileDiscovery := copilotCLIPowerShellProfileDiscovery
+	var temporaryProfileDirectory string
+	if runtime.GOOS == "windows" {
+		copilotCLIUserEnvironment = fakeCopilotCLIUserEnvironment{}
+		copilotCLIUserEnvironmentChanged = func() error { return nil }
+		var err error
+		temporaryProfileDirectory, err = os.MkdirTemp("", "qlog-copilot-profile-")
+		if err != nil {
+			panic(err)
+		}
+		copilotCLIPowerShellProfileDiscovery = func() (string, error) {
+			return filepath.Join(temporaryProfileDirectory, "Microsoft.PowerShell_profile.ps1"), nil
+		}
+	}
+	exitCode := m.Run()
+	if temporaryProfileDirectory != "" {
+		_ = os.RemoveAll(temporaryProfileDirectory)
+	}
+	copilotCLIUserEnvironment = originalEnvironment
+	copilotCLIUserEnvironmentChanged = originalEnvironmentChanged
+	copilotCLIPowerShellProfileDiscovery = originalProfileDiscovery
+	os.Exit(exitCode)
+}
 
 func TestDefaultRegistryDeclaresOnlyVerifiedCapabilities(t *testing.T) {
 	registry := Default()
@@ -118,6 +149,233 @@ func TestCopilotCLIOTELConfigUsesOfficialEnvironmentWithoutContentCapture(t *tes
 			t.Fatalf("Copilot CLI OTel config missing %q:\n%s", want, config)
 		}
 	}
+}
+
+func TestCopilotCLIInstallConfiguresDiscoveredOneDrivePowerShellProfile(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-only PowerShell profile behavior")
+	}
+	configHome := t.TempDir()
+	redirectedProfile := filepath.Join(t.TempDir(), "OneDrive", "Documents", "WindowsPowerShell", "Microsoft.PowerShell_profile.ps1")
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	if err := os.MkdirAll(filepath.Dir(redirectedProfile), 0o700); err != nil {
+		t.Fatalf("create redirected profile directory: %v", err)
+	}
+	if err := os.WriteFile(redirectedProfile, []byte("$env:USER_SETTING = 'preserve'\n"), 0o600); err != nil {
+		t.Fatalf("write redirected profile: %v", err)
+	}
+	originalDiscovery := copilotCLIPowerShellProfileDiscovery
+	copilotCLIPowerShellProfileDiscovery = func() (string, error) { return redirectedProfile, nil }
+	t.Cleanup(func() { copilotCLIPowerShellProfileDiscovery = originalDiscovery })
+	environment := fakeCopilotCLIUserEnvironment{}
+	originalEnvironment := copilotCLIUserEnvironment
+	copilotCLIUserEnvironment = environment
+	t.Cleanup(func() { copilotCLIUserEnvironment = originalEnvironment })
+	adapter := newCopilotCLIAdapter()
+	first, err := adapter.Install(context.Background(), InstallOptions{})
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	second, err := adapter.Install(context.Background(), InstallOptions{})
+	if err != nil {
+		t.Fatalf("repeat install: %v", err)
+	}
+	if !first.Changed || second.Changed {
+		t.Fatalf("install idempotence = %#v, %#v", first, second)
+	}
+	if _, err := os.Stat(filepath.Join(configHome, "Microsoft.PowerShell_profile.ps1")); !os.IsNotExist(err) {
+		t.Fatalf("install mutated assumed PowerShell profile: %v", err)
+	}
+	profile := string(mustReadFile(t, redirectedProfile))
+	if !strings.Contains(profile, "$env:USER_SETTING = 'preserve'") {
+		t.Fatalf("install did not preserve profile contents:\n%s", profile)
+	}
+	if !strings.Contains(profile, copilotCLIProfileBlockStart) || !strings.Contains(profile, "$env:COPILOT_OTEL_ENABLED = 'true'") {
+		t.Fatalf("install did not configure discovered profile:\n%s", profile)
+	}
+	if !adapter.windowsPowerShellProfileInstalled() {
+		t.Fatal("normal PowerShell profile state is not installed")
+	}
+	for name, expected := range copilotCLIPersistentEnvironment {
+		if value := environment[name]; value != expected {
+			t.Fatalf("persistent user environment %s = %q, want %q", name, value, expected)
+		}
+	}
+	if _, err := adapter.Uninstall(context.Background(), InstallOptions{}); err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+	if len(environment) != 0 {
+		t.Fatalf("uninstall left qlog-owned persistent environment: %#v", environment)
+	}
+	profile = string(mustReadFile(t, redirectedProfile))
+	if strings.Contains(profile, copilotCLIProfileBlockStart) || !strings.Contains(profile, "$env:USER_SETTING = 'preserve'") {
+		t.Fatalf("uninstall did not remove only qlog profile block:\n%s", profile)
+	}
+}
+
+func TestCopilotCLIInstallCreatesDiscoveredPowerShellProfileParent(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-only PowerShell profile behavior")
+	}
+	configHome := t.TempDir()
+	redirectedProfile := filepath.Join(t.TempDir(), "OneDrive", "Documents", "WindowsPowerShell", "Microsoft.PowerShell_profile.ps1")
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	originalDiscovery := copilotCLIPowerShellProfileDiscovery
+	copilotCLIPowerShellProfileDiscovery = func() (string, error) { return redirectedProfile, nil }
+	t.Cleanup(func() { copilotCLIPowerShellProfileDiscovery = originalDiscovery })
+
+	if _, err := newCopilotCLIAdapter().Install(context.Background(), InstallOptions{}); err != nil {
+		t.Fatalf("install with missing discovered profile parent: %v", err)
+	}
+	if _, err := os.Stat(redirectedProfile); err != nil {
+		t.Fatalf("created discovered profile: %v", err)
+	}
+}
+
+func TestCopilotCLIInstallFallsBackToPowerShellForMissingProfileWrite(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-only PowerShell profile behavior")
+	}
+	configHome := t.TempDir()
+	profile := filepath.Join(t.TempDir(), "OneDrive", "Documents", "WindowsPowerShell", "Microsoft.PowerShell_profile.ps1")
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
+	if err := os.MkdirAll(filepath.Dir(profile), 0o700); err != nil {
+		t.Fatalf("create profile parent: %v", err)
+	}
+
+	originalDiscovery := copilotCLIPowerShellProfileDiscovery
+	copilotCLIPowerShellProfileDiscovery = func() (string, error) { return profile, nil }
+	t.Cleanup(func() { copilotCLIPowerShellProfileDiscovery = originalDiscovery })
+	originalWrite := copilotCLIPowerShellProfileWriteFile
+	copilotCLIPowerShellProfileWriteFile = func(string, []byte, os.FileMode) error {
+		return &os.PathError{Op: "open", Path: profile, Err: syscall.ENOENT}
+	}
+	t.Cleanup(func() { copilotCLIPowerShellProfileWriteFile = originalWrite })
+	originalCommand := copilotCLIPowerShellProfileWriteCommand
+	copilotCLIPowerShellProfileWriteCommand = func(name string, args ...string) (string, error) {
+		if name != "powershell.exe" {
+			t.Fatalf("command = %q, want powershell.exe", name)
+		}
+		if len(args) != 7 || args[0] != "-NoProfile" || args[1] != "-NonInteractive" || args[2] != "-Command" || args[4] != profile || args[6] != "" {
+			t.Fatalf("command args = %#v", args)
+		}
+		if args[3] != copilotCLIPowerShellProfileWriteScript || strings.Contains(args[3], "-Force") || strings.Contains(args[3], "ToHexString") || !strings.Contains(args[3], "New-Item -ItemType File -Path $target") || !strings.Contains(args[3], "Set-Content -LiteralPath $target") || !strings.Contains(args[3], "[BitConverter]::ToString") {
+			t.Fatalf("unsafe PowerShell write script: %q", args[3])
+		}
+		payload, err := base64.StdEncoding.DecodeString(args[5])
+		if err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		if err := os.WriteFile(profile, payload, 0o600); err != nil {
+			t.Fatalf("simulate PowerShell write: %v", err)
+		}
+		return "", nil
+	}
+	t.Cleanup(func() { copilotCLIPowerShellProfileWriteCommand = originalCommand })
+
+	result, err := newCopilotCLIAdapter().Install(context.Background(), InstallOptions{})
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if !result.Changed {
+		t.Fatalf("install result = %#v", result)
+	}
+	profileContents := string(mustReadFile(t, profile))
+	if !strings.Contains(profileContents, copilotCLIProfileBlockStart) {
+		t.Fatalf("profile missing qlog block:\n%s", profileContents)
+	}
+}
+
+func TestCopilotCLIProfileWriteFallbackPreservesExistingProfileForUninstall(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-only PowerShell profile behavior")
+	}
+	profile := filepath.Join(t.TempDir(), "OneDrive", "Documents", "WindowsPowerShell", "Microsoft.PowerShell_profile.ps1")
+	if err := os.MkdirAll(filepath.Dir(profile), 0o700); err != nil {
+		t.Fatalf("create profile parent: %v", err)
+	}
+	const userContents = "$env:USER_SETTING = 'preserve'\n"
+	if err := os.WriteFile(profile, []byte(userContents), 0o600); err != nil {
+		t.Fatalf("write user profile: %v", err)
+	}
+	originalDiscovery := copilotCLIPowerShellProfileDiscovery
+	copilotCLIPowerShellProfileDiscovery = func() (string, error) { return profile, nil }
+	t.Cleanup(func() { copilotCLIPowerShellProfileDiscovery = originalDiscovery })
+	originalWrite := copilotCLIPowerShellProfileWriteFile
+	copilotCLIPowerShellProfileWriteFile = func(string, []byte, os.FileMode) error {
+		return &os.PathError{Op: "open", Path: profile, Err: syscall.ENOENT}
+	}
+	t.Cleanup(func() { copilotCLIPowerShellProfileWriteFile = originalWrite })
+	originalCommand := copilotCLIPowerShellProfileWriteCommand
+	copilotCLIPowerShellProfileWriteCommand = func(_ string, args ...string) (string, error) {
+		if len(args) != 7 || args[4] != profile {
+			t.Fatalf("command args = %#v", args)
+		}
+		before := mustReadFile(t, profile)
+		hash := sha256.Sum256(before)
+		if args[6] != fmt.Sprintf("%x", hash) {
+			t.Fatalf("expected profile hash = %q, want %x", args[6], hash)
+		}
+		payload, err := base64.StdEncoding.DecodeString(args[5])
+		if err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		if err := os.WriteFile(profile, payload, 0o600); err != nil {
+			t.Fatalf("simulate PowerShell write: %v", err)
+		}
+		return "", nil
+	}
+	t.Cleanup(func() { copilotCLIPowerShellProfileWriteCommand = originalCommand })
+
+	adapter := newCopilotCLIAdapter()
+	if _, err := adapter.Install(context.Background(), InstallOptions{}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if _, err := adapter.Uninstall(context.Background(), InstallOptions{}); err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+	if got := string(mustReadFile(t, profile)); got != userContents {
+		t.Fatalf("profile after uninstall = %q, want preserved user contents", got)
+	}
+}
+
+func TestCopilotCLIPowerShellProfileDiscoveryUsesFixedNoProfileCommand(t *testing.T) {
+	originalRun := copilotCLIPowerShellProfileCommand
+	var gotName string
+	var gotArgs []string
+	copilotCLIPowerShellProfileCommand = func(name string, args ...string) (string, error) {
+		gotName, gotArgs = name, args
+		return `C:\Users\alice\OneDrive\Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1`, nil
+	}
+	t.Cleanup(func() { copilotCLIPowerShellProfileCommand = originalRun })
+
+	profile, err := discoverCopilotCLIPowerShellProfile()
+	if err != nil {
+		t.Fatalf("discover profile: %v", err)
+	}
+	if profile != `C:\Users\alice\OneDrive\Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1` {
+		t.Fatalf("profile = %q", profile)
+	}
+	if gotName != "powershell.exe" || !slices.Equal(gotArgs, []string{"-NoProfile", "-NonInteractive", "-Command", "$PROFILE.CurrentUserCurrentHost"}) {
+		t.Fatalf("discovery command = %q %q", gotName, gotArgs)
+	}
+}
+
+type fakeCopilotCLIUserEnvironment map[string]string
+
+func (f fakeCopilotCLIUserEnvironment) Get(name string) (string, bool, error) {
+	value, found := f[name]
+	return value, found, nil
+}
+
+func (f fakeCopilotCLIUserEnvironment) Set(name, value string) error {
+	f[name] = value
+	return nil
+}
+
+func (f fakeCopilotCLIUserEnvironment) Delete(name string) error {
+	delete(f, name)
+	return nil
 }
 
 func TestCopilotCLIHooksExposePowerShellGenericCommand(t *testing.T) {

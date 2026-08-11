@@ -283,6 +283,31 @@ func TestCapabilityReportCountsRecognizedRawEvidenceWithoutInventingUsage(t *tes
 	}
 }
 
+func TestCapabilityReportCountsCanonicalInteractionsNotModelCalls(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	project, _, err := store.RegisterProject(ctx, "Project", "project", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, upstreamID := range []string{"prompt-1", "prompt-2"} {
+		if _, _, err := store.RecordInteraction(ctx, InteractionInput{Source: "test", SessionID: "session", UpstreamID: upstreamID, ProjectID: project.ID}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.RecordModelCall(ctx, ModelCallInput{ProjectID: project.ID, Provider: "provider", ModelID: "model"}); err != nil {
+		t.Fatal(err)
+	}
+	report, err := store.CapabilityReport(ctx, CapabilityQuery{ProjectSlug: project.Slug})
+	if err != nil || report.Interactions != 2 || report.Prompts != 2 || report.ModelCalls != 1 {
+		t.Fatalf("report = %#v, %v", report, err)
+	}
+}
+
 func TestCapabilityReportIncludesExplicitlyAllocatedCallsWithoutDuplicates(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))

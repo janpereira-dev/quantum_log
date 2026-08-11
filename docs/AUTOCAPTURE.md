@@ -2,6 +2,8 @@
 
 `qlog setup --yes` configures only detected stable integrations and attempts a qlog-owned loopback collector. Configuration is not capture proof.
 
+Prompt capture defaults to locally stored hashes. Prompt, response, tool input, and tool output content remain excluded unless an explicit local capture policy permits redacted prompt storage.
+
 ## Start
 
 ```bash
@@ -15,6 +17,7 @@ Inspect configured result after first real agent action:
 
 ```bash
 qlog adapter verify <adapter> --since 10m --json
+qlog adapter verify copilot --since 10m --json
 qlog usage project <project-slug> --json
 ```
 

@@ -107,6 +107,44 @@ func TestHandlerKeepsOpenCodeStepFinishAsCorroborationWithoutDoubleCounting(t *t
 	}
 }
 
+func TestOpenCodeRepeatedPromptCreatesOneInteractionAndLinksMultipleCalls(t *testing.T) {
+	ctx := context.Background()
+	service, err := app.Initialize(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	repo := filepath.Join(t.TempDir(), "repo")
+	prompt := Event{Source: "opencode-plugin", SessionID: "session", EventType: "interaction.prompt", UpstreamEventID: "message:user-1", OccurredAt: time.Now().UTC(), ProjectHint: ProjectHint{CWD: repo}, Payload: json.RawMessage(`{"prompt_hash":"abc"}`)}
+	if count, err := Ingest(ctx, service, prompt); err != nil || count != 1 {
+		t.Fatalf("prompt ingest = %d, %v", count, err)
+	}
+	if count, err := Ingest(ctx, service, prompt); err != nil || count != 0 {
+		t.Fatalf("duplicate prompt ingest = %d, %v", count, err)
+	}
+	for _, id := range []string{"assistant-1", "assistant-2"} {
+		call := Event{Source: "opencode-plugin", SessionID: "session", EventType: "model.call", UpstreamEventID: "message:" + id, OccurredAt: time.Now().UTC(), ProjectHint: ProjectHint{CWD: repo}, Payload: json.RawMessage(`{"provider":"anthropic","model":"claude","interaction_upstream_id":"message:user-1","input_tokens":2,"output_tokens":3,"capture_quality":"agent_reported"}`)}
+		if count, err := Ingest(ctx, service, call); err != nil || count != 1 {
+			t.Fatalf("call %s ingest = %d, %v", id, count, err)
+		}
+	}
+	reader, err := sql.Open("sqlite", "file:"+filepath.ToSlash(service.Paths.Database)+"?mode=ro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reader.Close() })
+	var interactions, linkedCalls int
+	if err := reader.QueryRowContext(ctx, `SELECT COUNT(*) FROM interactions`).Scan(&interactions); err != nil {
+		t.Fatal(err)
+	}
+	if err := reader.QueryRowContext(ctx, `SELECT COUNT(*) FROM model_calls WHERE interaction_id IS NOT NULL`).Scan(&linkedCalls); err != nil {
+		t.Fatal(err)
+	}
+	if interactions != 1 || linkedCalls != 2 {
+		t.Fatalf("interactions=%d linked_calls=%d, want 1 and 2", interactions, linkedCalls)
+	}
+}
+
 func TestHandlerPersistsOpenCodeMetricObservationProvenance(t *testing.T) {
 	ctx := context.Background()
 	service, err := app.Initialize(ctx, t.TempDir())

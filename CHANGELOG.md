@@ -49,3 +49,7 @@
 - Added Milestones 2 through 5 reporting, capture, and distribution source assets.
 
 ## Unreleased
+
+- Added canonical prompt interactions with durable upstream deduplication and model-call linkage.
+- Added versioned embedded OpenCode plugin source and interaction log commands.
+- Preserved historical model and tool rows as legacy-unlinked during SQLite migration.
