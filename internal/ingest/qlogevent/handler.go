@@ -122,6 +122,10 @@ func attachPromptCapture(payload, raw json.RawMessage, mode string) json.RawMess
 		return payload
 	}
 	prompt, _ := source["prompt"].(string)
+	target["prompt_capture_mode"] = mode
+	delete(target, "prompt_hash")
+	delete(target, "interaction_hash")
+	delete(target, "interaction_redacted")
 	if mode != "off" && prompt != "" {
 		hash := sha256.Sum256([]byte(prompt))
 		target["interaction_hash"] = hex.EncodeToString(hash[:])
@@ -202,7 +206,7 @@ func sanitizePluginPayload(payload json.RawMessage) json.RawMessage {
 		return json.RawMessage("{}")
 	}
 	allowed := make(map[string]any, 11)
-	for _, key := range []string{"provider", "model", "model_id", "agent_name", "capture_quality", "task_id", "turn_id", "interaction_upstream_id", "prompt_hash", "interaction_hash", "interaction_redacted"} {
+	for _, key := range []string{"provider", "model", "model_id", "agent_name", "capture_quality", "task_id", "turn_id", "interaction_upstream_id", "prompt_hash", "interaction_hash", "interaction_redacted", "prompt_capture_mode"} {
 		if value, ok := object[key].(string); ok {
 			allowed[key] = value
 		}

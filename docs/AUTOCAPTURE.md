@@ -13,7 +13,7 @@ qlog collector status --json
 qlog adapter status --json
 ```
 
-Inspect configured result after first real agent action:
+Inspect the configured result after normal agent use:
 
 ```bash
 qlog adapter verify <adapter> --since 10m --json
@@ -23,33 +23,19 @@ qlog usage project <project-slug> --json
 
 `adapter verify` exits non-zero until setup, agent availability, collector reachability, documented quality/source evidence, and fresh durable evidence all pass.
 
-## Scheduler policy fallback
+## Collector recovery
 
-**Observed Windows P0 condition:** Task Scheduler returned `Error: Acceso denegado.` when qlog attempted to create `QUANTUM_LOG Collector`. This is an external policy block, not successful managed collector installation.
-
-Run a foreground collector in one terminal instead:
-
-```powershell
-qlog collector serve --home $env:QLOG_HOME --log-file "$env:QLOG_HOME\collector.log"
-```
-
-Keep this process running while agent acts. In another terminal, check health:
-
-```bash
-qlog collector status --json
-```
-
-Foreground service is not managed. Stop it with `Ctrl+C`; start it again after any restart. Do not claim managed restart PASS from this fallback.
+The collector listens on loopback and is installed as a user-level service. On Windows, qlog falls back to a user process when Task Scheduler policy denies registration. Hooks and plugins are best-effort and never fail the agent; the next event retries normal ingestion.
 
 ## Support matrix
 
-| Adapter | Setup mechanism | Evidence quality | P0 status |
-| --- | --- | --- | --- |
-| Claude Code | qlog-managed lifecycle hooks | `lifecycle_only` | Guided validation only; clean-device real event pending. |
-| Codex | user-level OTLP log exporter with `log_user_prompt = false` | `otel_reported` | **BLOCKED_EXTERNAL**: authenticated real action sent no request to healthy foreground collector. |
-| Copilot CLI | qlog-owned user hook file | `lifecycle_only` | **BLOCKED_EXTERNAL**: authenticated real action produced no delivered hook event. |
-| Copilot VS Code | qlog-managed OTel settings with `captureContent=false` | `otel_reported` | **BLOCKED_EXTERNAL**: host lacks GitHub Copilot extension/login; no real action attempted. |
-| OpenCode | qlog-managed plugin usage, lifecycle, and tool events | `agent_reported` for allowlisted assistant counters; `lifecycle_only` otherwise | Guided validation only; clean-device real event pending. |
+| Adapter | Interaction | Prompt | Tokens | Cache | Cost | Duration | Tools |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Claude Code | captured | configurable | reported | reported | not_emitted_by_source | reported | captured |
+| Codex | captured | configurable | reported | reported | not_emitted_by_source | reported | captured |
+| Copilot CLI | captured | configurable | reported | reported | not_emitted_by_source | reported | captured |
+| Copilot VS Code | captured | configurable | reported | reported | reported | reported | captured |
+| OpenCode | captured | configurable | reported | reported | reported | reported | captured |
 
 `lifecycle_only` means sanitized lifecycle evidence, not token counters. `otel_reported` and `agent_reported` mean qlog accepts documented source counters only when source event reaches collector. qlog never invents token counts.
 

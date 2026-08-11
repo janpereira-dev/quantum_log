@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0-rc.1 - 2026-08-11
+
+- Added canonical prompt interactions with source/session/upstream deduplication and linked model calls.
+- Added prompt-capture modes (`off`, `hash`, and redacted local `full`) and prompt-aware native hooks.
+- Added five-agent setup, embedded OpenCode plugin, interaction log commands, and interaction-based reports.
+- Added managed loopback collector setup and cross-platform build targets.
+
 ## 0.3.2-rc.3 - 2026-08-06
 
 ### Release candidate

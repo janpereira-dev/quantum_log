@@ -123,13 +123,15 @@ func normalizeInteraction(ctx context.Context, store *storepkg.Store, parsed eve
 		PromptHash      string `json:"prompt_hash"`
 		InteractionHash string `json:"interaction_hash"`
 		Redacted        string `json:"interaction_redacted"`
+		CaptureMode     string `json:"prompt_capture_mode"`
 	}
 	_ = json.Unmarshal(parsed.Payload, &payload)
 	_, created, err := store.RecordInteraction(ctx, storepkg.InteractionInput{
 		RawEventID: rawEventID, Source: parsed.Source, SessionID: parsed.SessionID, UpstreamID: parsed.IngestionIdentity,
 		ProjectID: parsed.ProjectID, ProjectLocationID: parsed.ProjectLocationID, WorkContextID: parsed.WorkContextID,
 		PromptHash: firstNonEmpty(payload.InteractionHash, payload.PromptHash), PromptRedacted: payload.Redacted,
-		OccurredAt: parsed.OccurredAt,
+		PromptCaptureMode: payload.CaptureMode,
+		OccurredAt:        parsed.OccurredAt,
 	})
 	return created, err
 }

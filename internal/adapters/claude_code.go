@@ -232,7 +232,7 @@ func claudeSettingsWithQlogHooks(current []byte, command string) ([]byte, error)
 	if hooks == nil {
 		hooks = map[string]any{}
 	}
-	for _, event := range []string{"SessionStart", "UserPromptSubmit", "Stop", "SubagentStop"} {
+	for _, event := range []string{"SessionStart", "UserPromptSubmit", "Stop", "StopFailure", "PostToolUse", "PostToolUseFailure", "SessionEnd", "SubagentStart", "SubagentStop"} {
 		hooks[event] = claudeHookEntriesWithQlog(hooks[event], command)
 	}
 	settings["hooks"] = hooks

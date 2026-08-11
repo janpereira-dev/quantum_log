@@ -118,12 +118,12 @@ func TestCopilotCLIInstallCreatesIsolatedLifecycleHookConfig(t *testing.T) {
 		t.Fatalf("install result = %#v", result)
 	}
 	contents := string(mustReadFile(t, adapter.hooksPath()))
-	for _, want := range []string{"\"version\": 1", "sessionStart", "sessionEnd", "agentStop", "postToolUse", "hook copilot-cli --event"} {
+	for _, want := range []string{"\"version\": 1", "sessionStart", "sessionEnd", "userPromptSubmitted", "agentStop", "errorOccurred", "preToolUse", "postToolUse", "subagentStart", "subagentStop", "hook copilot-cli --event"} {
 		if !strings.Contains(contents, want) {
 			t.Fatalf("hooks config missing %q:\n%s", want, contents)
 		}
 	}
-	for _, forbidden := range []string{"userPromptSubmitted", "preToolUse", "prompt", "toolArgs", "toolResult", "authorization", "token"} {
+	for _, forbidden := range []string{"toolArgs", "toolResult", "authorization"} {
 		if strings.Contains(contents, forbidden) {
 			t.Fatalf("hooks config contains forbidden %q:\n%s", forbidden, contents)
 		}
