@@ -130,6 +130,21 @@ type Interaction struct {
 	OccurredAt        time.Time `json:"occurred_at"`
 }
 
+// ToolCallInput is deliberately metadata-only: tool arguments and results never
+// cross the normalization boundary.
+type ToolCallInput struct {
+	RawEventID     string
+	InteractionID  string
+	ProjectID      string
+	LocationID     string
+	WorkContextID  string
+	SessionID      string
+	ToolName       string
+	ToolType       string
+	OccurredAt     time.Time
+	CaptureQuality string
+}
+
 // MetricInput is one explicitly emitted measurement. Absence is represented
 // by no input, while a zero value remains a reported measurement.
 type MetricInput struct {
@@ -1023,6 +1038,24 @@ func (s *Store) LinkModelCallInteraction(ctx context.Context, modelCallID, inter
 		return errors.New("model call not found or linked to another interaction")
 	}
 	return nil
+}
+
+func (s *Store) RecordToolCall(ctx context.Context, input ToolCallInput) (bool, error) {
+	if strings.TrimSpace(input.RawEventID) == "" || strings.TrimSpace(input.ToolName) == "" {
+		return false, errors.New("tool raw event id and name are required")
+	}
+	if input.OccurredAt.IsZero() {
+		input.OccurredAt = time.Now().UTC()
+	}
+	if input.CaptureQuality == "" {
+		input.CaptureQuality = "lifecycle_only"
+	}
+	result, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO tool_calls (id, raw_event_id, interaction_id, primary_project_id, project_location_id, work_context_id, session_id, tool_name, tool_type, started_at, capture_quality, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, newID(), input.RawEventID, nullable(input.InteractionID), nullable(input.ProjectID), nullable(input.LocationID), nullable(input.WorkContextID), nullable(input.SessionID), input.ToolName, input.ToolType, timestamp(input.OccurredAt), input.CaptureQuality, timestamp(time.Now()))
+	if err != nil {
+		return false, fmt.Errorf("record tool call: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	return affected == 1, err
 }
 
 func (s *Store) VerifyLedger(ctx context.Context, sessionID string) error {

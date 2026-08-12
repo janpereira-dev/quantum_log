@@ -98,6 +98,9 @@ func importWithTrust(ctx context.Context, store *storepkg.Store, reader io.Reade
 		if err == nil {
 			_, err = normalizeInteraction(ctx, store, parsed, appendResult.ID)
 		}
+		if err == nil {
+			_, err = normalizeToolCall(ctx, store, parsed, appendResult.ID)
+		}
 		if err != nil {
 			return count, fmt.Errorf("normalize NDJSON line %d: %w", line, err)
 		}
@@ -109,6 +112,27 @@ func importWithTrust(ctx context.Context, store *storepkg.Store, reader io.Reade
 		return count, fmt.Errorf("read NDJSON: %w", err)
 	}
 	return count, nil
+}
+
+func normalizeToolCall(ctx context.Context, store *storepkg.Store, parsed event, rawEventID string) (bool, error) {
+	eventType := strings.ToLower(strings.ReplaceAll(parsed.EventType, "_", "."))
+	if !strings.Contains(eventType, "tool") {
+		return false, nil
+	}
+	var payload struct {
+		InteractionUpstreamID string `json:"interaction_upstream_id"`
+		ToolName              string `json:"tool_name"`
+		CaptureQuality        string `json:"capture_quality"`
+	}
+	_ = json.Unmarshal(parsed.Payload, &payload)
+	if payload.ToolName == "" {
+		payload.ToolName = eventType
+	}
+	interactionID := ""
+	if payload.InteractionUpstreamID != "" {
+		interactionID, _, _ = store.InteractionByUpstream(ctx, parsed.Source, parsed.SessionID, payload.InteractionUpstreamID)
+	}
+	return store.RecordToolCall(ctx, storepkg.ToolCallInput{RawEventID: rawEventID, InteractionID: interactionID, ProjectID: parsed.ProjectID, LocationID: parsed.ProjectLocationID, WorkContextID: parsed.WorkContextID, SessionID: parsed.SessionID, ToolName: payload.ToolName, ToolType: eventType, OccurredAt: parsed.OccurredAt, CaptureQuality: payload.CaptureQuality})
 }
 
 func normalizeInteraction(ctx context.Context, store *storepkg.Store, parsed event, rawEventID string) (bool, error) {
