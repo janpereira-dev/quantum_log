@@ -182,13 +182,21 @@ func normalizeToolCall(ctx context.Context, store *storepkg.Store, parsed event,
 	}
 	interactionID := ""
 	if payload.InteractionUpstreamID != "" {
-		interactionID, _, _ = store.InteractionByUpstream(ctx, parsed.Source, parsed.SessionID, payload.InteractionUpstreamID)
+		var found bool
+		interactionID, found, _ = store.InteractionByUpstream(ctx, parsed.Source, parsed.SessionID, payload.InteractionUpstreamID)
+		if !found {
+			interactionID, _, _ = store.InteractionBySessionUpstream(ctx, parsed.SessionID, payload.InteractionUpstreamID)
+		}
 	}
 	return store.RecordToolCall(ctx, storepkg.ToolCallInput{RawEventID: rawEventID, InteractionID: interactionID, ProjectID: parsed.ProjectID, LocationID: parsed.ProjectLocationID, WorkContextID: parsed.WorkContextID, SessionID: parsed.SessionID, ToolName: payload.ToolName, ToolType: eventType, OccurredAt: parsed.OccurredAt, CaptureQuality: payload.CaptureQuality})
 }
 
 func normalizeInteraction(ctx context.Context, store *storepkg.Store, parsed event, rawEventID string) (bool, error) {
-	if !isInteractionEvent(parsed.EventType) {
+	// Codex's supported local app-server stream emits one completed response for
+	// each interactive turn but not the prompt body. Treat that source-native
+	// response identity as a privacy-safe interaction root rather than dropping
+	// the prompt count altogether.
+	if !isInteractionEvent(parsed.EventType) && !(parsed.Source == "codex-app-server" && strings.EqualFold(parsed.EventType, "model.call")) {
 		return false, nil
 	}
 	if parsed.IngestionIdentity == "" {
