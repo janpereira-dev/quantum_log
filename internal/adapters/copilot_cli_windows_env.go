@@ -230,7 +230,10 @@ func (a copilotCLIAdapter) uninstallWindowsPowerShellProfile(dryRun bool) (Setup
 				}
 			}
 		} else {
-			change, err = applyManagedFile(profile, updated, dryRun)
+			if err := os.MkdirAll(filepath.Dir(profile), 0o700); err != nil {
+				return SetupChange{}, fmt.Errorf("create PowerShell profile parent: %w", err)
+			}
+			change, err = applyManagedFileWithWrite(profile, updated, dryRun, writeCopilotCLIPowerShellProfile)
 			if err != nil {
 				return SetupChange{}, fmt.Errorf("update PowerShell profile: %w", err)
 			}
