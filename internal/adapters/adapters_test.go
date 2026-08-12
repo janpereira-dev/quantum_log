@@ -134,16 +134,10 @@ func TestCopilotCLIInstallCreatesIsolatedLifecycleHookConfig(t *testing.T) {
 	}
 }
 
-func TestCopilotCLIOTELConfigUsesOfficialEnvironmentWithoutContentCapture(t *testing.T) {
-	config := copilotCLIOTELConfig("http://127.0.0.1:4318")
+func TestCopilotCLIOTELLauncherUsesOfficialEnvironmentWithoutGlobalMutation(t *testing.T) {
+	config := copilotCLIPosixBlock()
 	for _, want := range []string{
-		"COPILOT_OTEL_ENABLED=true",
-		"COPILOT_OTEL_EXPORTER_TYPE=otlp-http",
-		"OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318",
-		"OTEL_EXPORTER_OTLP_PROTOCOL=http/json",
-		"OTEL_METRICS_EXPORTER=none",
-		"OTEL_LOGS_EXPORTER=none",
-		"OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false",
+		"COPILOT_OTEL_ENABLED=true", "COPILOT_OTEL_EXPORTER_TYPE=otlp-http", "OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318", "OTEL_EXPORTER_OTLP_PROTOCOL=http/json", "OTEL_METRICS_EXPORTER=none", "OTEL_LOGS_EXPORTER=none", "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false", "command copilot",
 	} {
 		if !strings.Contains(config, want) {
 			t.Fatalf("Copilot CLI OTel config missing %q:\n%s", want, config)
@@ -999,7 +993,7 @@ func TestClaudeCodeUninstallRemovesOnlyQlogOwnedOTELEnvironment(t *testing.T) {
 	}
 }
 
-func TestCopilotCLIUninstallRemovesOTelWhenHookIsMissingAndHonorsDryRun(t *testing.T) {
+func TestCopilotCLIUninstallRemovesLauncherWhenHookIsMissingAndHonorsDryRun(t *testing.T) {
 	configHome := t.TempDir()
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
 	adapter := newCopilotCLIAdapter()
@@ -1014,16 +1008,24 @@ func TestCopilotCLIUninstallRemovesOTelWhenHookIsMissingAndHonorsDryRun(t *testi
 	if err != nil || dryRun.Changed {
 		t.Fatalf("dry-run uninstall = %#v, %v", dryRun, err)
 	}
-	if _, err := os.Stat(adapter.otelPath()); err != nil {
-		t.Fatalf("dry run removed OTel file: %v", err)
+	launcherInstalled := adapter.posixProfileInstalled()
+	if runtime.GOOS == "windows" {
+		launcherInstalled = adapter.windowsPowerShellProfileInstalled()
+	}
+	if !launcherInstalled {
+		t.Fatal("dry run removed Copilot launcher")
 	}
 
 	result, err := adapter.Uninstall(context.Background(), InstallOptions{})
 	if err != nil || !result.Changed {
 		t.Fatalf("uninstall = %#v, %v", result, err)
 	}
-	if _, err := os.Stat(adapter.otelPath()); !os.IsNotExist(err) {
-		t.Fatalf("qlog OTel config remains: %v", err)
+	launcherInstalled = adapter.posixProfileInstalled()
+	if runtime.GOOS == "windows" {
+		launcherInstalled = adapter.windowsPowerShellProfileInstalled()
+	}
+	if launcherInstalled {
+		t.Fatal("qlog Copilot launcher remains")
 	}
 }
 

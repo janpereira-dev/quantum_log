@@ -34,7 +34,7 @@ func (a copilotCLIAdapter) Descriptor() Descriptor {
 }
 
 func (a copilotCLIAdapter) Install(_ context.Context, options InstallOptions) (InstallResult, error) {
-	changes := make([]SetupChange, 0, 4)
+	changes := make([]SetupChange, 0, 3)
 	if runtime.GOOS == "windows" {
 		profileChange, err := a.installWindowsPowerShellProfile(options.DryRun)
 		if err != nil {
@@ -52,11 +52,7 @@ func (a copilotCLIAdapter) Install(_ context.Context, options InstallOptions) (I
 	if err != nil {
 		return InstallResult{}, err
 	}
-	otelChange, err := applyManagedFile(a.otelPath(), copilotCLIOTELConfig("http://127.0.0.1:4318"), options.DryRun)
-	if err != nil {
-		return InstallResult{}, err
-	}
-	changes = append(changes, change, otelChange)
+	changes = append(changes, change)
 	actions := make([]string, 0, len(changes))
 	changed := false
 	for _, item := range changes {
@@ -75,11 +71,7 @@ func (a copilotCLIAdapter) PlanInstall(_ context.Context, options SetupOptions) 
 	if options.DryRun {
 		change.Description = "dry run: " + change.Description
 	}
-	otelChange, err := applyManagedFile(a.otelPath(), copilotCLIOTELConfig("http://127.0.0.1:4318"), true)
-	if err != nil {
-		return SetupPlan{}, err
-	}
-	changes := []SetupChange{change, otelChange}
+	changes := []SetupChange{change}
 	notes := []string{"installs prompt, lifecycle, tool, and subagent hooks plus persistent qlog-owned Copilot CLI OTel configuration"}
 	if runtime.GOOS == "windows" {
 		changes = append(changes, SetupChange{Path: "PowerShell CurrentUserCurrentHost profile", Action: "updated", Description: "adds a qlog-owned Copilot-only OTel launcher function"})
@@ -111,7 +103,7 @@ func (a copilotCLIAdapter) Status(ctx context.Context) (SetupStatus, error) {
 		state = SetupInstalled
 	}
 	quality := CaptureLifecycleOnly
-	if fileContains(a.otelPath(), "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false") {
+	if installed {
 		quality = CaptureOTELReported
 	}
 	return SetupStatus{AdapterID: a.id, Available: detection.Available, Installed: installed, State: state, InstallationState: state, CaptureQuality: quality, Evidence: detection.Evidence, Notes: []string{"Copilot CLI hooks retain lifecycle and CWD evidence; qlog-owned OTel configuration disables message content capture", "No source E2E evidence is claimed by setup"}}, nil
@@ -127,10 +119,7 @@ func (a copilotCLIAdapter) Test(ctx context.Context) (TestResult, error) {
 
 func (a copilotCLIAdapter) Uninstall(_ context.Context, options InstallOptions) (InstallResult, error) {
 	changes := make([]SetupChange, 0, 4)
-	for _, item := range []struct{ path, description string }{
-		{a.hooksPath(), "Copilot CLI qlog hook config"},
-		{a.otelPath(), "Copilot CLI qlog OTel environment"},
-	} {
+	for _, item := range []struct{ path, description string }{{a.hooksPath(), "Copilot CLI qlog hook config"}} {
 		change := SetupChange{Path: item.path, Action: "unchanged", Description: item.description + " already absent"}
 		if _, err := os.Stat(item.path); err == nil {
 			change.Action = "removed"
@@ -191,23 +180,8 @@ func (a copilotCLIAdapter) hooksPath() string {
 	return filepath.Join(".copilot", "hooks", "qlog.json")
 }
 
-func (a copilotCLIAdapter) otelPath() string {
-	return filepath.Join(filepath.Dir(a.hooksPath()), "qlog-otel.env")
-}
-
 func (a copilotCLIAdapter) windowsPowerShellProfileStatePath() string {
 	return filepath.Join(filepath.Dir(a.hooksPath()), "qlog-copilot-otel-profile")
-}
-
-func copilotCLIOTELConfig(endpoint string) string {
-	return "COPILOT_OTEL_ENABLED=true\n" +
-		"COPILOT_OTEL_EXPORTER_TYPE=otlp-http\n" +
-		"OTEL_EXPORTER_OTLP_ENDPOINT=" + endpoint + "\n" +
-		"OTEL_EXPORTER_OTLP_PROTOCOL=http/json\n" +
-		"OTEL_METRICS_EXPORTER=none\n" +
-		"OTEL_LOGS_EXPORTER=none\n" +
-		"OTEL_SERVICE_NAME=github-copilot\n" +
-		"OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false\n"
 }
 
 func copilotCLIHooksConfig(home, executablePath string) string {
