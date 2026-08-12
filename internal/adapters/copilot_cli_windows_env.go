@@ -141,6 +141,11 @@ func copilotCLIProfileBlock() string {
 }
 
 func writeCopilotCLIPowerShellProfile(path string, contents []byte, perm os.FileMode, previous []byte, exists bool) error {
+	// Windows PowerShell treats UTF-8 profile scripts without a BOM as ANSI.
+	// Keep backup files byte-exact, but make managed profile payloads unambiguous.
+	if !strings.Contains(filepath.Base(path), ".qlog-backup-") && hasNonASCIIBody(contents) && !hasUTF8BOM(contents) {
+		contents = append([]byte{0xEF, 0xBB, 0xBF}, contents...)
+	}
 	err := copilotCLIPowerShellProfileWriteFile(path, contents, perm)
 	if err == nil {
 		return err
@@ -164,6 +169,19 @@ func writeCopilotCLIPowerShellProfile(path string, contents []byte, perm os.File
 		return fmt.Errorf("write PowerShell profile through PowerShell: %w", err)
 	}
 	return nil
+}
+
+func hasUTF8BOM(contents []byte) bool {
+	return len(contents) >= 3 && contents[0] == 0xEF && contents[1] == 0xBB && contents[2] == 0xBF
+}
+
+func hasNonASCIIBody(contents []byte) bool {
+	for _, value := range contents {
+		if value >= 0x80 {
+			return true
+		}
+	}
+	return false
 }
 
 func withCopilotCLIProfileBlock(contents string) (string, error) {

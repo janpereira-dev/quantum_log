@@ -340,6 +340,26 @@ func TestCopilotCLIProfileWriteFallbackPreservesExistingProfileForUninstall(t *t
 	}
 }
 
+func TestCopilotCLIPowerShellProfileWriterAddsUTF8BOMButKeepsBackupsRaw(t *testing.T) {
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "Microsoft.PowerShell_profile.ps1")
+	backup := profile + ".qlog-backup-test"
+	if err := writeCopilotCLIPowerShellProfile(profile, []byte{0xc3, 0xa9}, 0o600, nil, false); err != nil {
+		t.Fatalf("write profile: %v", err)
+	}
+	contents := mustReadFile(t, profile)
+	if !hasUTF8BOM(contents) || !slices.Equal(contents[3:], []byte{0xc3, 0xa9}) {
+		t.Fatalf("profile bytes = %x", contents)
+	}
+	raw := []byte{0xff, 0x00, 0x81}
+	if err := writeCopilotCLIPowerShellProfile(backup, raw, 0o600, nil, false); err != nil {
+		t.Fatalf("write backup: %v", err)
+	}
+	if contents := mustReadFile(t, backup); !slices.Equal(contents, raw) {
+		t.Fatalf("backup bytes = %x, want %x", contents, raw)
+	}
+}
+
 func TestCopilotCLIPowerShellProfileDiscoveryUsesFixedNoProfileCommand(t *testing.T) {
 	originalRun := copilotCLIPowerShellProfileCommand
 	var gotName string
