@@ -292,13 +292,8 @@ func normalizeModelCall(ctx context.Context, store *storepkg.Store, parsed event
 		CacheWriteTokens:       payload.CacheWriteTokens,
 		EstimatedCostUSDMicros: payload.EstimatedCostUSDMicros,
 		EstimatedCostEURMicros: payload.EstimatedCostEURMicros,
-		OccurredAt:             modelCallStartedAt(parsed.OccurredAt, payload.CreatedAt),
-		CompletedAt:            unixMillis(payload.CompletedAt),
+		OccurredAt:             parsed.OccurredAt,
 		CaptureQuality:         payload.CaptureQuality,
-	}
-	if !input.CompletedAt.IsZero() && !input.OccurredAt.IsZero() && !input.CompletedAt.Before(input.OccurredAt) {
-		duration := input.CompletedAt.Sub(input.OccurredAt).Milliseconds()
-		input.DurationMS = &duration
 	}
 	if payload.InteractionUpstreamID != "" {
 		interactionID, found, err := store.InteractionByUpstream(ctx, parsed.Source, parsed.SessionID, payload.InteractionUpstreamID)
@@ -320,9 +315,17 @@ func normalizeModelCall(ctx context.Context, store *storepkg.Store, parsed event
 			input.Metrics = append(input.Metrics, storepkg.MetricInput{Name: metric.Name, Value: metric.Value, Source: metric.Source, RawKey: metric.RawKey, Confidence: metric.Confidence})
 		}
 	}
+	// Legacy rows were keyed by their original envelope timestamp. Reconcile
+	// that representation before adopting a more precise source timestamp.
 	linked, err = store.LinkMatchingLegacyModelCall(ctx, input)
 	if err != nil || linked {
 		return linked, err
+	}
+	input.OccurredAt = modelCallStartedAt(parsed.OccurredAt, payload.CreatedAt)
+	if completed := unixMillis(payload.CompletedAt); !completed.IsZero() && !input.OccurredAt.IsZero() && !completed.Before(input.OccurredAt) {
+		input.CompletedAt = completed
+		duration := completed.Sub(input.OccurredAt).Milliseconds()
+		input.DurationMS = &duration
 	}
 	_, err = store.RecordModelCall(ctx, input)
 	return err == nil, err

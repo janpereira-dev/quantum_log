@@ -2,6 +2,7 @@
 // Managed by qlog. Responses, tool inputs, and tool outputs never leave OpenCode.
 
 const endpoint = process.env.QLOG_COLLECTOR_URL || "http://127.0.0.1:4318/v1/events"
+const localCollector = /^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?(?:\/|$)/i.test(endpoint)
 
 async function post(event: unknown) {
   try {
@@ -33,6 +34,9 @@ export const QuantumLogPlugin = async (ctx: any) => {
   // Keep the latest user-message identity per session only in plugin memory.
   // It is sent as metadata and never persisted as prompt text by qlog.
   const activeInteractions = new Map<string, string>()
+  const toolInteractions = new Map<string, string>()
+  const toolSession = (input: any) => text(input?.sessionID || input?.session?.id) || ""
+  const toolPayload = (input: any, interactionID: string) => ({ agent_name: "opencode", capture_quality: "lifecycle_only", interaction_upstream_id: interactionID, tool_name: text(input?.tool) || text(input?.name) || text(input?.toolName) || "unknown" })
   return {
   event: async ({ event }: any) => {
     const info = event?.properties?.info
@@ -41,7 +45,10 @@ export const QuantumLogPlugin = async (ctx: any) => {
       const prompt = text(info.text || info.content) || ""
       // qlog enforces prompt-capture at its persistence boundary and derives
       // the installation-local HMAC. This local payload is never persisted raw.
-      const payload: Record<string, unknown> = { agent_name: "opencode", capture_quality: "lifecycle_only", prompt }
+      const payload: Record<string, unknown> = { agent_name: "opencode", capture_quality: "lifecycle_only", prompt_available: localCollector }
+      // Raw text may only cross the plugin boundary to qlog's loopback collector.
+      // A custom URL can be remote, so it receives no prompt body in any mode.
+      if (localCollector) payload.prompt = prompt
       const sessionID = text(info.sessionID)
       if (sessionID) activeInteractions.set(sessionID, interactionID)
       await post(envelope("interaction.prompt", ctx, event, payload, interactionID))
@@ -78,8 +85,17 @@ export const QuantumLogPlugin = async (ctx: any) => {
 	  await post(envelope("agent.event", ctx, event, { agent_name: "opencode", capture_quality: "lifecycle_only" }, `session:${sessionID}:${event.type}`))
 	}
   },
-  "tool.execute.before": async (input: any) => post(envelope("tool.execute.before", ctx, input, { agent_name: "opencode", capture_quality: "lifecycle_only", interaction_upstream_id: activeInteractions.get(input?.sessionID) || "", tool_name: text(input?.tool) || text(input?.name) || text(input?.toolName) || "unknown" }, `tool.before:${input?.callID || input?.id || "unknown"}`)),
-  "tool.execute.after": async (input: any) => post(envelope("tool.execute.after", ctx, input, { agent_name: "opencode", capture_quality: "lifecycle_only", interaction_upstream_id: activeInteractions.get(input?.sessionID) || "", tool_name: text(input?.tool) || text(input?.name) || text(input?.toolName) || "unknown" }, `tool.after:${input?.callID || input?.id || "unknown"}`)),
+  "tool.execute.before": async (input: any) => {
+    const callID = text(input?.callID || input?.id) || "unknown"
+    const interactionID = activeInteractions.get(toolSession(input)) || ""
+    toolInteractions.set(callID, interactionID)
+    await post(envelope("tool.execute.before", ctx, input, toolPayload(input, interactionID), `tool.before:${callID}`))
+  },
+  "tool.execute.after": async (input: any) => {
+    const callID = text(input?.callID || input?.id) || "unknown"
+    const interactionID = toolInteractions.get(callID) || activeInteractions.get(toolSession(input)) || ""
+    try { await post(envelope("tool.execute.after", ctx, input, toolPayload(input, interactionID), `tool.after:${callID}`)) } finally { toolInteractions.delete(callID) }
+  },
   }
 }
 

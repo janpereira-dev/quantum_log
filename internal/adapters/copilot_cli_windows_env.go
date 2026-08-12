@@ -130,7 +130,7 @@ func copilotCLIPowerShellProfilePaths() []string {
 
 func copilotCLIProfileBlock() string {
 	return copilotCLIProfileBlockStart + "\n" +
-		"$global:qlogCopilotOriginal = (Get-Command copilot -CommandType Function -ErrorAction SilentlyContinue).ScriptBlock\n" +
+		"if ($null -eq (Get-Variable qlogCopilotOriginal -Scope Global -ErrorAction SilentlyContinue)) { $global:qlogCopilotOriginal = (Get-Command copilot -CommandType Function -ErrorAction SilentlyContinue).ScriptBlock }\n" +
 		"function global:copilot {\n" +
 		"  $qlogPrevious = @{}\n" +
 		"  foreach ($qlogPair in @(@('COPILOT_OTEL_ENABLED','true'), @('COPILOT_OTEL_EXPORTER_TYPE','otlp-http'), @('OTEL_EXPORTER_OTLP_ENDPOINT','http://127.0.0.1:4318'), @('OTEL_EXPORTER_OTLP_PROTOCOL','http/json'), @('OTEL_METRICS_EXPORTER','none'), @('OTEL_LOGS_EXPORTER','none'), @('OTEL_SERVICE_NAME','github-copilot'), @('OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT','false'))) { $qlogPrevious[$qlogPair[0]] = [Environment]::GetEnvironmentVariable($qlogPair[0], 'Process'); Set-Item -Path ('Env:' + $qlogPair[0]) -Value $qlogPair[1] }\n" +
@@ -209,6 +209,10 @@ func withoutCopilotCLIProfileBlock(contents string) (string, bool, error) {
 
 func (a copilotCLIAdapter) installWindowsPowerShellProfile(dryRun bool) (SetupChange, error) {
 	profiles := copilotCLIPowerShellProfilePaths()
+	managed := []string{}
+	if state, err := os.ReadFile(a.windowsPowerShellProfileStatePath()); err == nil {
+		managed = splitManagedPaths(string(state))
+	}
 	action := "unchanged"
 	for _, profile := range profiles {
 		change, err := a.installWindowsPowerShellProfileAt(profile, dryRun)
@@ -218,13 +222,23 @@ func (a copilotCLIAdapter) installWindowsPowerShellProfile(dryRun bool) (SetupCh
 		if change.Action == "created" || change.Action == "updated" {
 			action = change.Action
 		}
-	}
-	if !dryRun {
-		if _, err := applyManagedFile(a.windowsPowerShellProfileStatePath(), strings.Join(profiles, "\n")+"\n", false); err != nil {
-			return SetupChange{}, err
+		if !dryRun && !containsManagedPath(managed, profile) {
+			managed = append(managed, profile)
+			if _, err := applyManagedFile(a.windowsPowerShellProfileStatePath(), strings.Join(managed, "\n")+"\n", false); err != nil {
+				return SetupChange{}, err
+			}
 		}
 	}
 	return SetupChange{Path: strings.Join(profiles, ", "), Action: action, Description: "configured qlog-owned Copilot OTel block in discovered PowerShell profiles"}, nil
+}
+
+func containsManagedPath(paths []string, candidate string) bool {
+	for _, path := range paths {
+		if path == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func (a copilotCLIAdapter) installWindowsPowerShellProfileAt(profile string, dryRun bool) (SetupChange, error) {
@@ -252,7 +266,7 @@ func (a copilotCLIAdapter) uninstallWindowsPowerShellProfile(dryRun bool) (Setup
 	if err != nil {
 		return SetupChange{}, fmt.Errorf("read qlog PowerShell profile state: %w", err)
 	}
-	profiles := strings.Fields(string(state))
+	profiles := splitManagedPaths(string(state))
 	if len(profiles) == 0 {
 		return SetupChange{}, fmt.Errorf("invalid qlog PowerShell profile state")
 	}

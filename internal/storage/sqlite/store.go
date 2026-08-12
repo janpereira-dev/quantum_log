@@ -950,7 +950,7 @@ func (s *Store) RecordInteraction(ctx context.Context, input InteractionInput) (
 	now := timestamp(time.Now())
 	_, err := s.db.ExecContext(ctx, `INSERT INTO interactions (id, source, session_id, upstream_id, raw_event_id, primary_project_id, project_location_id, work_context_id, prompt_capture_mode, prompt_hash, prompt_redacted, occurred_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, input.Source, input.SessionID, input.UpstreamID, nullable(input.RawEventID), nullable(input.ProjectID), nullable(input.ProjectLocationID), nullable(input.WorkContextID), input.PromptCaptureMode, input.PromptHash, input.PromptRedacted, timestamp(input.OccurredAt), now)
 	if err == nil {
-		if err := s.backfillInteractionChildren(ctx, id, input.SessionID, input.UpstreamID); err != nil {
+		if err := s.backfillInteractionChildren(ctx, id, input.Source, input.SessionID, input.UpstreamID); err != nil {
 			return "", false, err
 		}
 		return id, true, nil
@@ -961,13 +961,13 @@ func (s *Store) RecordInteraction(ctx context.Context, input InteractionInput) (
 	if err := s.db.QueryRowContext(ctx, `SELECT id FROM interactions WHERE source = ? AND session_id = ? AND upstream_id = ?`, input.Source, input.SessionID, input.UpstreamID).Scan(&id); err != nil {
 		return "", false, fmt.Errorf("read duplicate interaction: %w", err)
 	}
-	if err := s.backfillInteractionChildren(ctx, id, input.SessionID, input.UpstreamID); err != nil {
+	if err := s.backfillInteractionChildren(ctx, id, input.Source, input.SessionID, input.UpstreamID); err != nil {
 		return "", false, err
 	}
 	return id, false, nil
 }
 
-func (s *Store) backfillInteractionChildren(ctx context.Context, interactionID, sessionID, upstreamID string) error {
+func (s *Store) backfillInteractionChildren(ctx context.Context, interactionID, source, sessionID, upstreamID string) error {
 	if sessionID == "" || upstreamID == "" {
 		return nil
 	}
@@ -977,7 +977,8 @@ func (s *Store) backfillInteractionChildren(ctx context.Context, interactionID, 
 		return fmt.Errorf("backfill interaction model calls: %w", err)
 	}
 	_, err = s.db.ExecContext(ctx, `UPDATE tool_calls SET interaction_id = ?
-		WHERE interaction_id IS NULL AND session_id = ? AND interaction_upstream_id = ?`, interactionID, sessionID, upstreamID)
+		WHERE interaction_id IS NULL AND session_id = ? AND interaction_upstream_id = ?
+		AND EXISTS (SELECT 1 FROM raw_events r WHERE r.id = tool_calls.raw_event_id AND r.source = ?)`, interactionID, sessionID, upstreamID, source)
 	if err != nil {
 		return fmt.Errorf("backfill interaction tool calls: %w", err)
 	}

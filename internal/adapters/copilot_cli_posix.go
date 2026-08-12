@@ -30,6 +30,41 @@ func (a copilotCLIAdapter) posixProfilePath() string {
 	}
 }
 
+func unsupportedPosixShell() bool { return filepath.Base(os.Getenv("SHELL")) == "fish" }
+
+func (a copilotCLIAdapter) posixProfileStatePath() string {
+	return filepath.Join(filepath.Dir(a.hooksPath()), "qlog-copilot-otel-posix-profile")
+}
+
+func (a copilotCLIAdapter) posixManagedProfiles() []string {
+	if state, err := os.ReadFile(a.posixProfileStatePath()); err == nil {
+		paths := splitManagedPaths(string(state))
+		if len(paths) > 0 {
+			return paths
+		}
+	}
+	if root := os.Getenv("QLOG_ADAPTER_CONFIG_HOME"); root != "" {
+		return []string{filepath.Join(root, ".profile")}
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return []string{a.posixProfilePath()}
+	}
+	return []string{filepath.Join(home, ".zshrc"), filepath.Join(home, ".bashrc"), filepath.Join(home, ".profile")}
+}
+
+func splitManagedPaths(state string) []string {
+	seen := map[string]bool{}
+	paths := []string{}
+	for _, value := range strings.Split(state, "\n") {
+		if path := strings.TrimSpace(value); path != "" && filepath.IsAbs(path) && !seen[path] {
+			seen[path] = true
+			paths = append(paths, path)
+		}
+	}
+	return paths
+}
+
 func copilotCLIPosixBlock() string {
 	return copilotCLIPosixBlockStart + "\n" +
 		"copilot() {\n" +
@@ -72,55 +107,82 @@ func withoutCopilotCLIPosixBlock(contents string) (string, bool, error) {
 }
 
 func (a copilotCLIAdapter) installPosixProfile(dryRun bool) (SetupChange, error) {
-	path := a.posixProfilePath()
-	contents, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
-		return SetupChange{}, fmt.Errorf("read shell profile: %w", err)
+	if unsupportedPosixShell() {
+		return SetupChange{}, fmt.Errorf("unsupported shell %q: Copilot OTel launcher requires bash, zsh, or a POSIX shell", os.Getenv("SHELL"))
 	}
+	path := a.posixProfilePath()
+	contents, readErr := os.ReadFile(path)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return SetupChange{}, fmt.Errorf("read shell profile: %w", readErr)
+	}
+	missing := os.IsNotExist(readErr)
 	next, err := withCopilotCLIPosixBlock(string(contents))
 	if err != nil {
 		return SetupChange{}, err
 	}
-	if !dryRun && !os.IsNotExist(err) && string(contents) != next {
+	if !dryRun && !missing && string(contents) != next {
 		if err := os.WriteFile(path+".qlog-backup", contents, 0o600); err != nil {
 			return SetupChange{}, fmt.Errorf("backup shell profile: %w", err)
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return SetupChange{}, err
+	if !dryRun {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return SetupChange{}, err
+		}
 	}
 	change, err := applyManagedFile(path, next, dryRun)
-	if err == nil {
-		change.Description = "configured qlog-owned Copilot-only OTel shell function"
+	if err != nil {
+		return change, err
 	}
-	return change, err
+	if !dryRun {
+		if _, err := applyManagedFile(a.posixProfileStatePath(), path+"\n", false); err != nil {
+			return SetupChange{}, err
+		}
+	}
+	change.Description = "configured qlog-owned Copilot-only OTel shell function"
+	return change, nil
 }
 
 func (a copilotCLIAdapter) uninstallPosixProfile(dryRun bool) (SetupChange, error) {
-	path := a.posixProfilePath()
-	contents, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return SetupChange{Path: path, Action: "unchanged", Description: "qlog Copilot OTel shell function already absent"}, nil
+	profiles := a.posixManagedProfiles()
+	change := SetupChange{Path: strings.Join(profiles, ", "), Action: "unchanged", Description: "qlog Copilot OTel shell function already absent"}
+	for _, path := range profiles {
+		contents, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return SetupChange{}, fmt.Errorf("read shell profile: %w", err)
+		}
+		next, removed, err := withoutCopilotCLIPosixBlock(string(contents))
+		if err != nil {
+			return SetupChange{}, err
+		}
+		if !removed {
+			continue
+		}
+		if _, err := applyManagedFile(path, next, dryRun); err != nil {
+			return SetupChange{}, err
+		}
+		change.Action, change.Description = "removed", "removed qlog-owned Copilot OTel shell functions"
 	}
-	if err != nil {
-		return SetupChange{}, err
+	if !dryRun {
+		if _, err := removeManagedFile(a.posixProfileStatePath(), "Copilot CLI qlog POSIX profile state", false); err != nil {
+			return SetupChange{}, err
+		}
 	}
-	next, removed, err := withoutCopilotCLIPosixBlock(string(contents))
-	if err != nil {
-		return SetupChange{}, err
-	}
-	if !removed {
-		return SetupChange{Path: path, Action: "unchanged", Description: "qlog Copilot OTel shell function already absent"}, nil
-	}
-	change, err := applyManagedFile(path, next, dryRun)
-	if err == nil {
-		change.Action = "removed"
-		change.Description = "removed qlog-owned Copilot OTel shell function"
-	}
-	return change, err
+	return change, nil
 }
 
 func (a copilotCLIAdapter) posixProfileInstalled() bool {
-	contents, err := os.ReadFile(a.posixProfilePath())
-	return err == nil && strings.Contains(string(contents), copilotCLIPosixBlockStart) && strings.Contains(string(contents), copilotCLIPosixBlockEnd)
+	if unsupportedPosixShell() {
+		return false
+	}
+	for _, path := range a.posixManagedProfiles() {
+		contents, err := os.ReadFile(path)
+		if err == nil && strings.Contains(string(contents), copilotCLIPosixBlockStart) && strings.Contains(string(contents), copilotCLIPosixBlockEnd) {
+			return true
+		}
+	}
+	return false
 }

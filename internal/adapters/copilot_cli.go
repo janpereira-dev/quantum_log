@@ -148,6 +148,11 @@ func (a copilotCLIAdapter) Uninstall(_ context.Context, options InstallOptions) 
 			return InstallResult{}, err
 		}
 		changes = append(changes, profileChange)
+		legacyChange, err := a.cleanupLegacyWindowsUserEnvironment(options.DryRun)
+		if err != nil {
+			return InstallResult{}, err
+		}
+		changes = append(changes, legacyChange)
 	} else {
 		profileChange, err := a.uninstallPosixProfile(options.DryRun)
 		if err != nil {
