@@ -1,16 +1,6 @@
 ---
 name: "quantum-log-tracing"
-version: "1.0.0"
-project: "quantum-log"
-kind: "skill"
-language: "es"
-blocking_capable: true
-triggers:
-  - "span"
-  - "trace"
-  - "latencia"
-  - "dependencia"
-  - "causalidad"
+description: Provides project guidance for quantum log tracing.
 ---
 
 # quantum-log-tracing

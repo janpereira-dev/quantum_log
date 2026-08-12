@@ -1,16 +1,6 @@
 ---
 name: "quantum-log-production-readiness"
-version: "1.0.0"
-project: "quantum-log"
-kind: "skill"
-language: "es"
-blocking_capable: true
-triggers:
-  - "release"
-  - "producción"
-  - "readiness"
-  - "PR"
-  - "gate"
+description: Provides project guidance for quantum log production readiness.
 ---
 
 # quantum-log-production-readiness

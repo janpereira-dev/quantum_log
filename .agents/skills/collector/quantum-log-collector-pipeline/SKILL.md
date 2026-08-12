@@ -1,17 +1,6 @@
 ---
 name: "quantum-log-collector-pipeline"
-version: "1.0.0"
-project: "quantum-log"
-kind: "skill"
-language: "es"
-blocking_capable: true
-triggers:
-  - "Collector"
-  - "receiver"
-  - "processor"
-  - "exporter"
-  - "OTLP"
-  - "tail sampling"
+description: Provides project guidance for quantum log collector pipeline.
 ---
 
 # quantum-log-collector-pipeline

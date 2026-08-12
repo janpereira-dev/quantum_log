@@ -1,18 +1,6 @@
 ---
 name: "quantum-log-api-ipc-observability"
-version: "1.0.0"
-project: "quantum-log"
-kind: "skill"
-language: "es"
-blocking_capable: true
-triggers:
-  - "API"
-  - "HTTP"
-  - "gRPC"
-  - "IPC"
-  - "named pipe"
-  - "unix socket"
-  - "WebSocket"
+description: Provides project guidance for quantum log api ipc observability.
 ---
 
 # quantum-log-api-ipc-observability

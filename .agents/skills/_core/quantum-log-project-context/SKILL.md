@@ -1,15 +1,6 @@
 ---
 name: "quantum-log-project-context"
-version: "1.0.0"
-project: "quantum-log"
-kind: "skill"
-language: "es"
-blocking_capable: true
-triggers:
-  - "cualquier cambio transversal"
-  - "nuevos módulos"
-  - "decisiones de arquitectura"
-  - "cambios de persistencia"
+description: Provides project guidance for quantum log project context.
 ---
 
 # quantum-log-project-context

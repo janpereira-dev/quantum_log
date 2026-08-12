@@ -1,17 +1,6 @@
 ---
 name: "quantum-log-metrics"
-version: "1.0.0"
-project: "quantum-log"
-kind: "skill"
-language: "es"
-blocking_capable: true
-triggers:
-  - "métrica"
-  - "counter"
-  - "histogram"
-  - "gauge"
-  - "SLO"
-  - "dashboard"
+description: Provides project guidance for quantum log metrics.
 ---
 
 # quantum-log-metrics

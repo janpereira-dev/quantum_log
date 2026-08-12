@@ -1,16 +1,6 @@
 ---
 name: "quantum-log-ledger-correlation"
-version: "1.0.0"
-project: "quantum-log"
-kind: "skill"
-language: "es"
-blocking_capable: true
-triggers:
-  - "ledger_entry_id"
-  - "trace_id"
-  - "span_id"
-  - "correlación"
-  - "integridad"
+description: Provides project guidance for quantum log ledger correlation.
 ---
 
 # quantum-log-ledger-correlation

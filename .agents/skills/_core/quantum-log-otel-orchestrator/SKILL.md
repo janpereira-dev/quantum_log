@@ -1,18 +1,6 @@
 ---
 name: "quantum-log-otel-orchestrator"
-version: "1.0.0"
-project: "quantum-log"
-kind: "skill"
-language: "es"
-blocking_capable: true
-triggers:
-  - "traces"
-  - "metrics"
-  - "logs"
-  - "OTLP"
-  - "Collector"
-  - "instrumentación"
-  - "correlación"
+description: Provides project guidance for quantum log otel orchestrator.
 ---
 
 # quantum-log-otel-orchestrator

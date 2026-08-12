@@ -1,16 +1,6 @@
 ---
 name: "quantum-log-cardinality-cost-control"
-version: "1.0.0"
-project: "quantum-log"
-kind: "skill"
-language: "es"
-blocking_capable: true
-triggers:
-  - "cardinalidad"
-  - "series"
-  - "sampling"
-  - "volumen"
-  - "coste OTel"
+description: Provides project guidance for quantum log cardinality cost control.
 ---
 
 # quantum-log-cardinality-cost-control

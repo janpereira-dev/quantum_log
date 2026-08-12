@@ -1,16 +1,6 @@
 ---
 name: "quantum-log-go-otel-bootstrap"
-version: "1.0.0"
-project: "quantum-log"
-kind: "skill"
-language: "es"
-blocking_capable: true
-triggers:
-  - "bootstrap Go"
-  - "TracerProvider"
-  - "MeterProvider"
-  - "LoggerProvider"
-  - "shutdown"
+description: Provides project guidance for quantum log go otel bootstrap.
 ---
 
 # quantum-log-go-otel-bootstrap

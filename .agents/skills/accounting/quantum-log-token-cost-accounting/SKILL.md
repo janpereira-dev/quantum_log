@@ -1,17 +1,6 @@
 ---
 name: "quantum-log-token-cost-accounting"
-version: "1.0.0"
-project: "quantum-log"
-kind: "skill"
-language: "es"
-blocking_capable: true
-triggers:
-  - "tokens"
-  - "coste"
-  - "precio"
-  - "moneda"
-  - "usage"
-  - "cached tokens"
+description: Provides project guidance for quantum log token cost accounting.
 ---
 
 # quantum-log-token-cost-accounting

@@ -1,17 +1,6 @@
 ---
 name: "quantum-log-performance-resilience"
-version: "1.0.0"
-project: "quantum-log"
-kind: "skill"
-language: "es"
-blocking_capable: true
-triggers:
-  - "performance"
-  - "overhead"
-  - "queue"
-  - "retry"
-  - "backpressure"
-  - "offline"
+description: Provides project guidance for quantum log performance resilience.
 ---
 
 # quantum-log-performance-resilience
