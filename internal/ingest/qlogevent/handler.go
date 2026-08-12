@@ -4,11 +4,13 @@ package qlogevent
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -18,6 +20,12 @@ import (
 )
 
 const maxEventBodyBytes = 1 << 20
+
+var promptSecretPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\bbearer\s+[a-z0-9._~+/=-]+`),
+	regexp.MustCompile(`(?i)\b(authorization|api[_ -]?key|access[_ -]?token|password|cookie)\s*[:=]\s*[^\s,;]+`),
+	regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----`),
+}
 
 type Handler struct {
 	service *app.Service
@@ -81,7 +89,7 @@ func Ingest(ctx context.Context, service *app.Service, event Event) (int, error)
 		payload = lifecycleOnlyPayload(payload)
 	}
 	if isPromptEvent(event.EventType) {
-		payload = attachPromptCapture(payload, event.Payload, config.PromptCaptureMode(service.Paths))
+		payload = attachPromptCapture(payload, event.Payload, config.PromptCaptureMode(service.Paths), service.Paths)
 	}
 	line := map[string]any{
 		"source":                        event.Source,
@@ -103,7 +111,7 @@ func Ingest(ctx context.Context, service *app.Service, event Event) (int, error)
 	if err := json.NewEncoder(&buffer).Encode(line); err != nil {
 		return 0, err
 	}
-	count, err := jsonl.Import(ctx, service.Store, &buffer)
+	count, err := jsonl.ImportWithPromptCapture(ctx, service.Store, &buffer, config.PromptCaptureMode(service.Paths))
 	if err != nil {
 		return 0, fmt.Errorf("import plugin event: %w", err)
 	}
@@ -115,7 +123,7 @@ func isPromptEvent(eventType string) bool {
 	return normalized == "interaction.prompt" || normalized == "user.prompt" || normalized == "userpromptsubmitted" || normalized == "userpromptsubmit" || normalized == "user.message"
 }
 
-func attachPromptCapture(payload, raw json.RawMessage, mode string) json.RawMessage {
+func attachPromptCapture(payload, raw json.RawMessage, mode string, paths config.Paths) json.RawMessage {
 	var source map[string]any
 	var target map[string]any
 	if json.Unmarshal(raw, &source) != nil || json.Unmarshal(payload, &target) != nil {
@@ -123,23 +131,40 @@ func attachPromptCapture(payload, raw json.RawMessage, mode string) json.RawMess
 	}
 	prompt, _ := source["prompt"].(string)
 	target["prompt_capture_mode"] = mode
+	existingHash, _ := target["interaction_hash"].(string)
+	if existingHash == "" {
+		existingHash, _ = target["prompt_hash"].(string)
+	}
 	delete(target, "prompt_hash")
 	delete(target, "interaction_hash")
 	delete(target, "interaction_redacted")
-	if mode != "off" && prompt != "" {
-		hash := sha256.Sum256([]byte(prompt))
-		target["interaction_hash"] = hex.EncodeToString(hash[:])
+	if mode != "off" {
+		if prompt != "" {
+			if key, err := config.PromptHashKey(paths); err == nil {
+				hash := hmac.New(sha256.New, key)
+				_, _ = hash.Write([]byte(prompt))
+				target["interaction_hash"] = hex.EncodeToString(hash.Sum(nil))
+			}
+		} else if existingHash != "" {
+			// Hash-only plugins (notably OpenCode) intentionally never send text.
+			target["interaction_hash"] = existingHash
+		}
 	}
 	if mode == "full" && prompt != "" {
-		// Redaction prevents common secret-bearing prompt fragments from persisting.
-		redacted := strings.ReplaceAll(prompt, "Bearer ", "[REDACTED] ")
-		target["interaction_redacted"] = redacted
+		target["interaction_redacted"] = redactPrompt(prompt)
 	}
 	next, err := json.Marshal(target)
 	if err != nil {
 		return payload
 	}
 	return next
+}
+
+func redactPrompt(prompt string) string {
+	for _, pattern := range promptSecretPatterns {
+		prompt = pattern.ReplaceAllString(prompt, "[REDACTED]")
+	}
+	return prompt
 }
 
 func normalizeCodexRawResponse(event Event) Event {

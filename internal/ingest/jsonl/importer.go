@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"time"
 
@@ -56,15 +57,30 @@ type metricObservation struct {
 	Confidence string `json:"confidence"`
 }
 
+var importedPromptSecretPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\bbearer\s+[a-z0-9._~+/=-]+`),
+	regexp.MustCompile(`(?i)\b(authorization|api[_ -]?key|access[_ -]?token|password|cookie)\s*[:=]\s*[^\s,;]+`),
+	regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----`),
+}
+
 func Import(ctx context.Context, store *storepkg.Store, reader io.Reader) (int, error) {
-	return importWithTrust(ctx, store, reader, false)
+	return importWithTrustAndPromptCapture(ctx, store, reader, false, "hash")
+}
+
+// ImportWithPromptCapture applies the local privacy policy at the persistence
+// boundary, including for manually imported or spoofed envelopes.
+func ImportWithPromptCapture(ctx context.Context, store *storepkg.Store, reader io.Reader, mode string) (int, error) {
+	return importWithTrustAndPromptCapture(ctx, store, reader, false, mode)
 }
 
 func ImportTrusted(ctx context.Context, store *storepkg.Store, reader io.Reader) (int, error) {
-	return importWithTrust(ctx, store, reader, true)
+	return importWithTrustAndPromptCapture(ctx, store, reader, true, "hash")
 }
 
-func importWithTrust(ctx context.Context, store *storepkg.Store, reader io.Reader, trusted bool) (int, error) {
+func importWithTrustAndPromptCapture(ctx context.Context, store *storepkg.Store, reader io.Reader, trusted bool, promptCaptureMode string) (int, error) {
+	if promptCaptureMode != "off" && promptCaptureMode != "hash" && promptCaptureMode != "full" {
+		promptCaptureMode = "hash"
+	}
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	count := 0
@@ -85,6 +101,9 @@ func importWithTrust(ctx context.Context, store *storepkg.Store, reader io.Reade
 		}
 		if parsed.Payload == nil {
 			parsed.Payload = json.RawMessage("{}")
+		}
+		if isInteractionEvent(parsed.EventType) {
+			parsed.Payload = enforcePromptCapturePolicy(parsed.Payload, promptCaptureMode)
 		}
 		evidence := "{}"
 		if parsed.EvidenceJSON != nil {
@@ -114,6 +133,36 @@ func importWithTrust(ctx context.Context, store *storepkg.Store, reader io.Reade
 	return count, nil
 }
 
+func isInteractionEvent(eventType string) bool {
+	eventType = strings.ReplaceAll(strings.ToLower(eventType), "_", ".")
+	return eventType == "interaction.prompt" || eventType == "user.prompt" || eventType == "userpromptsubmitted" || eventType == "userpromptsubmit" || eventType == "user.message"
+}
+
+func enforcePromptCapturePolicy(payload json.RawMessage, mode string) json.RawMessage {
+	var values map[string]any
+	if json.Unmarshal(payload, &values) != nil {
+		return json.RawMessage(`{"prompt_capture_mode":"off"}`)
+	}
+	values["prompt_capture_mode"] = mode
+	if mode == "off" {
+		delete(values, "prompt_hash")
+		delete(values, "interaction_hash")
+		delete(values, "interaction_redacted")
+	} else if mode == "hash" {
+		delete(values, "interaction_redacted")
+	} else if redacted, ok := values["interaction_redacted"].(string); ok {
+		for _, pattern := range importedPromptSecretPatterns {
+			redacted = pattern.ReplaceAllString(redacted, "[REDACTED]")
+		}
+		values["interaction_redacted"] = redacted
+	}
+	result, err := json.Marshal(values)
+	if err != nil {
+		return json.RawMessage(`{"prompt_capture_mode":"off"}`)
+	}
+	return result
+}
+
 func normalizeToolCall(ctx context.Context, store *storepkg.Store, parsed event, rawEventID string) (bool, error) {
 	eventType := strings.ToLower(strings.ReplaceAll(parsed.EventType, "_", "."))
 	if !strings.Contains(eventType, "tool") {
@@ -139,8 +188,7 @@ func normalizeToolCall(ctx context.Context, store *storepkg.Store, parsed event,
 }
 
 func normalizeInteraction(ctx context.Context, store *storepkg.Store, parsed event, rawEventID string) (bool, error) {
-	eventType := strings.ReplaceAll(strings.ToLower(parsed.EventType), "_", ".")
-	if eventType != "interaction.prompt" && eventType != "user.prompt" && eventType != "userpromptsubmitted" && eventType != "userpromptsubmit" && eventType != "user.message" {
+	if !isInteractionEvent(parsed.EventType) {
 		return false, nil
 	}
 	if parsed.IngestionIdentity == "" {

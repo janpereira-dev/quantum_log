@@ -383,7 +383,7 @@ func importReader(command *cobra.Command, home *string, reader io.Reader) error 
 		return err
 	}
 	defer func() { _ = service.Close() }()
-	count, err := jsonl.Import(command.Context(), service.Store, reader)
+	count, err := jsonl.ImportWithPromptCapture(command.Context(), service.Store, reader, config.PromptCaptureMode(service.Paths))
 	if err != nil {
 		return err
 	}
