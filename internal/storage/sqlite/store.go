@@ -126,6 +126,7 @@ type Interaction struct {
 	UpstreamID        string    `json:"upstream_id"`
 	PromptCaptureMode string    `json:"prompt_capture_mode"`
 	PromptHash        string    `json:"prompt_hash,omitempty"`
+	PromptRedacted    string    `json:"prompt_redacted,omitempty"`
 	OccurredAt        time.Time `json:"occurred_at"`
 }
 
@@ -970,13 +971,13 @@ func (s *Store) ListInteractions(ctx context.Context, from time.Time, limit int)
 	if limit <= 0 {
 		limit = 100
 	}
-	query := `SELECT id, source, session_id, upstream_id, prompt_capture_mode, prompt_hash, occurred_at FROM interactions`
+	query := `SELECT id, source, session_id, upstream_id, prompt_capture_mode, prompt_hash, prompt_redacted, occurred_at FROM interactions`
 	args := []any{}
 	if !from.IsZero() {
-		query += ` WHERE occurred_at >= ?`
+		query += ` WHERE julianday(occurred_at) >= julianday(?)`
 		args = append(args, timestamp(from))
 	}
-	query += ` ORDER BY occurred_at DESC, id DESC LIMIT ?`
+	query += ` ORDER BY julianday(occurred_at) DESC, id DESC LIMIT ?`
 	args = append(args, limit)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -987,7 +988,7 @@ func (s *Store) ListInteractions(ctx context.Context, from time.Time, limit int)
 	for rows.Next() {
 		var interaction Interaction
 		var occurredAt string
-		if err := rows.Scan(&interaction.ID, &interaction.Source, &interaction.SessionID, &interaction.UpstreamID, &interaction.PromptCaptureMode, &interaction.PromptHash, &occurredAt); err != nil {
+		if err := rows.Scan(&interaction.ID, &interaction.Source, &interaction.SessionID, &interaction.UpstreamID, &interaction.PromptCaptureMode, &interaction.PromptHash, &interaction.PromptRedacted, &occurredAt); err != nil {
 			return nil, fmt.Errorf("scan interaction: %w", err)
 		}
 		interaction.OccurredAt = parseTimestamp(occurredAt)
@@ -999,7 +1000,7 @@ func (s *Store) ListInteractions(ctx context.Context, from time.Time, limit int)
 func (s *Store) Interaction(ctx context.Context, id string) (Interaction, bool, error) {
 	var interaction Interaction
 	var occurredAt string
-	err := s.db.QueryRowContext(ctx, `SELECT id, source, session_id, upstream_id, prompt_capture_mode, prompt_hash, occurred_at FROM interactions WHERE id = ?`, id).Scan(&interaction.ID, &interaction.Source, &interaction.SessionID, &interaction.UpstreamID, &interaction.PromptCaptureMode, &interaction.PromptHash, &occurredAt)
+	err := s.db.QueryRowContext(ctx, `SELECT id, source, session_id, upstream_id, prompt_capture_mode, prompt_hash, prompt_redacted, occurred_at FROM interactions WHERE id = ?`, id).Scan(&interaction.ID, &interaction.Source, &interaction.SessionID, &interaction.UpstreamID, &interaction.PromptCaptureMode, &interaction.PromptHash, &interaction.PromptRedacted, &occurredAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Interaction{}, false, nil
 	}
