@@ -2,12 +2,16 @@ package adapters
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 )
+
+//go:embed assets/opencode-plugin-v1.ts
+var embeddedOpenCodePlugin string
 
 type openCodeAdapter struct {
 	commandAdapter
@@ -75,6 +79,12 @@ func (a openCodeAdapter) pluginPath() string {
 }
 
 func applyManagedFile(path, content string, dryRun bool) (SetupChange, error) {
+	return applyManagedFileWithWrite(path, content, dryRun, func(path string, contents []byte, perm os.FileMode, _ []byte, _ bool) error {
+		return os.WriteFile(path, contents, perm)
+	})
+}
+
+func applyManagedFileWithWrite(path, content string, dryRun bool, writeFile func(string, []byte, os.FileMode, []byte, bool) error) (SetupChange, error) {
 	currentBytes, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return SetupChange{}, fmt.Errorf("read %s: %w", path, err)
@@ -100,8 +110,26 @@ func applyManagedFile(path, content string, dryRun bool) (SetupChange, error) {
 		}
 		change.BackupPath = backupPath
 	}
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+	if err := writeFile(path, []byte(content), 0o600, currentBytes, err == nil); err != nil {
 		return SetupChange{}, fmt.Errorf("write %s: %w", path, err)
+	}
+	return change, nil
+}
+
+func removeManagedFile(path, description string, dryRun bool) (SetupChange, error) {
+	change := SetupChange{Path: path, Action: "unchanged", Description: description + " already absent"}
+	if _, err := os.Stat(path); err == nil {
+		change.Action = "removed"
+		change.Description = "removed qlog-owned " + description
+		if dryRun {
+			change.Description = "dry run: " + change.Description
+			return change, nil
+		}
+		if err := os.Remove(path); err != nil {
+			return SetupChange{}, fmt.Errorf("remove %s: %w", description, err)
+		}
+	} else if !os.IsNotExist(err) {
+		return SetupChange{}, fmt.Errorf("stat %s: %w", description, err)
 	}
 	return change, nil
 }
@@ -112,147 +140,151 @@ func fileContains(path, needle string) bool {
 }
 
 func openCodePluginSource() string {
-	return `// QUANTUM_LOG OpenCode passive capture
-// Managed by qlog setup opencode. Do not store prompts, responses, reasoning, tool args, or tool results.
+	return embeddedOpenCodePlugin
+	/*
+	   `// QUANTUM_LOG OpenCode passive capture
+	   // Managed by qlog setup opencode. Do not store prompts, responses, reasoning, tool args, or tool results.
 
-const endpoint = process.env.QLOG_COLLECTOR_URL || "http://127.0.0.1:4318/v1/events"
+	   const endpoint = process.env.QLOG_COLLECTOR_URL || "http://127.0.0.1:4318/v1/events"
 
-async function post(event) {
-  try {
-    await fetch(endpoint, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(event),
-    })
-  } catch {
-    // qlog must never break the agent workflow.
-  }
-}
+	   	async function post(event) {
+	   	  try {
+	   	    await fetch(endpoint, {
+	   	      method: "POST",
+	   	      headers: { "content-type": "application/json" },
+	   	      body: JSON.stringify(event),
+	   	    })
+	   	  } catch {
+	   	    // qlog must never break the agent workflow.
+	   	  }
+	   	}
 
-function envelope(type, ctx, event, payload, upstreamEventID) {
-	const body = event || {}
-	const properties = body.properties || {}
-	const context = body.context || {}
-	const info = properties.info || {}
-	const part = properties.part || {}
-	return {
-	  source: "opencode-plugin",
-	  session_id: properties.sessionID || info.sessionID || part.sessionID || "",
-    event_type: type,
-    occurred_at: new Date(body.time || Date.now()).toISOString(),
-    upstream_event_id: upstreamEventID || body.id || "",
-    project_hint: {
-      project: "",
-      cwd: ctx.directory || ctx.worktree || context.directory || context.worktree || "",
-    },
-    payload,
-  }
-}
+	   	function envelope(type, ctx, event, payload, upstreamEventID) {
+	   		const body = event || {}
+	   		const properties = body.properties || {}
+	   		const context = body.context || {}
+	   		const info = properties.info || {}
+	   		const part = properties.part || {}
+	   		return {
+	   		  source: "opencode-plugin",
+	   		  session_id: properties.sessionID || info.sessionID || part.sessionID || "",
+	   	    event_type: type,
+	   	    occurred_at: new Date(body.time || Date.now()).toISOString(),
+	   	    upstream_event_id: upstreamEventID || body.id || "",
+	   	    project_hint: {
+	   	      project: "",
+	   	      cwd: ctx.directory || ctx.worktree || context.directory || context.worktree || "",
+	   	    },
+	   	    payload,
+	   	  }
+	   	}
 
-function stringValue(value) {
-  return typeof value === "string" ? value : undefined
-}
+	   	function stringValue(value) {
+	   	  return typeof value === "string" ? value : undefined
+	   	}
 
-function numberValue(value) {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined
-}
+	   	function numberValue(value) {
+	   	  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined
+	   	}
 
-function setString(target, key, value) {
-  const next = stringValue(value)
-  if (next !== undefined) target[key] = next
-}
+	   	function setString(target, key, value) {
+	   	  const next = stringValue(value)
+	   	  if (next !== undefined) target[key] = next
+	   	}
 
-function setNumber(target, key, value) {
-  const next = numberValue(value)
-  if (next !== undefined) target[key] = next
-}
+	   	function setNumber(target, key, value) {
+	   	  const next = numberValue(value)
+	   	  if (next !== undefined) target[key] = next
+	   	}
 
-function metricObservations(tokens, cache) {
-  const observations = []
-  for (const [name, rawKey, value] of [
-    ["input_tokens", "tokens.input", tokens.input],
-    ["output_tokens", "tokens.output", tokens.output],
-    ["reasoning_tokens", "tokens.reasoning", tokens.reasoning],
-    ["cached_input_tokens", "tokens.cache.read", cache.read],
-    ["cache_write_tokens", "tokens.cache.write", cache.write],
-  ]) {
-    const number = numberValue(value)
-    if (number !== undefined) observations.push({ name, value: number, source: "opencode", raw_key: rawKey, confidence: "reported" })
-  }
-  return observations
-}
+	   	function metricObservations(tokens, cache) {
+	   	  const observations = []
+	   	  for (const [name, rawKey, value] of [
+	   	    ["input_tokens", "tokens.input", tokens.input],
+	   	    ["output_tokens", "tokens.output", tokens.output],
+	   	    ["reasoning_tokens", "tokens.reasoning", tokens.reasoning],
+	   	    ["cached_input_tokens", "tokens.cache.read", cache.read],
+	   	    ["cache_write_tokens", "tokens.cache.write", cache.write],
+	   	  ]) {
+	   	    const number = numberValue(value)
+	   	    if (number !== undefined) observations.push({ name, value: number, source: "opencode", raw_key: rawKey, confidence: "reported" })
+	   	  }
+	   	  return observations
+	   	}
 
-function lifecyclePayload() {
-  return { agent_name: "opencode", capture_quality: "lifecycle_only" }
-}
+	   	function lifecyclePayload() {
+	   	  return { agent_name: "opencode", capture_quality: "lifecycle_only" }
+	   	}
 
-function assistantUsage(ctx, event) {
-  const properties = (event || {}).properties || {}
-  const info = properties.info
-  if (!info || info.role !== "assistant") return
-  if (numberValue(info.time && info.time.completed) === undefined) return
+	   	function assistantUsage(ctx, event) {
+	   	  const properties = (event || {}).properties || {}
+	   	  const info = properties.info
+	   	  if (!info || info.role !== "assistant") return
+	   	  if (numberValue(info.time && info.time.completed) === undefined) return
 
-  const tokens = info.tokens || {}
-  const cache = tokens.cache || {}
-  const payload = { agent_name: "opencode", capture_quality: "agent_reported" }
-	setString(payload, "session_id", properties.sessionID || info.sessionID)
-  setString(payload, "message_id", info.id)
-  setString(payload, "parent_message_id", info.parentID)
-  setString(payload, "provider", info.providerID)
-  setString(payload, "model", info.modelID)
-  setString(payload, "finish", info.finish)
-  setNumber(payload, "estimated_cost_usd_micros", numberValue(info.cost) === undefined ? undefined : Math.round(info.cost * 1000000))
-  setNumber(payload, "input_tokens", tokens.input)
-  setNumber(payload, "output_tokens", tokens.output)
-  setNumber(payload, "reasoning_tokens", tokens.reasoning)
-  setNumber(payload, "cached_input_tokens", cache.read)
-  setNumber(payload, "cache_write_tokens", cache.write)
-  setNumber(payload, "created_at", info.time && info.time.created)
-  setNumber(payload, "completed_at", info.time && info.time.completed)
-  payload.metric_observations = metricObservations(tokens, cache)
+	   	  const tokens = info.tokens || {}
+	   	  const cache = tokens.cache || {}
+	   	  const payload = { agent_name: "opencode", capture_quality: "agent_reported" }
+	   		setString(payload, "session_id", properties.sessionID || info.sessionID)
+	   	  setString(payload, "message_id", info.id)
+	   	  setString(payload, "parent_message_id", info.parentID)
+	   	  setString(payload, "provider", info.providerID)
+	   	  setString(payload, "model", info.modelID)
+	   	  setString(payload, "finish", info.finish)
+	   	  setNumber(payload, "estimated_cost_usd_micros", numberValue(info.cost) === undefined ? undefined : Math.round(info.cost * 1000000))
+	   	  setNumber(payload, "input_tokens", tokens.input)
+	   	  setNumber(payload, "output_tokens", tokens.output)
+	   	  setNumber(payload, "reasoning_tokens", tokens.reasoning)
+	   	  setNumber(payload, "cached_input_tokens", cache.read)
+	   	  setNumber(payload, "cache_write_tokens", cache.write)
+	   	  setNumber(payload, "created_at", info.time && info.time.created)
+	   	  setNumber(payload, "completed_at", info.time && info.time.completed)
+	   	  payload.metric_observations = metricObservations(tokens, cache)
 
-  const messageID = stringValue(info.id)
-  if (!messageID) return
-  return envelope("model.call", ctx, event, payload, "message:" + messageID)
-}
+	   	  const messageID = stringValue(info.id)
+	   	  if (!messageID) return
+	   	  return envelope("model.call", ctx, event, payload, "message:" + messageID)
+	   	}
 
-function stepFinish(ctx, event) {
-  const properties = (event || {}).properties || {}
-  const part = properties.part
-  if (!part || part.type !== "step-finish") return
+	   	function stepFinish(ctx, event) {
+	   	  const properties = (event || {}).properties || {}
+	   	  const part = properties.part
+	   	  if (!part || part.type !== "step-finish") return
 
-  const payload = { agent_name: "opencode", capture_quality: "lifecycle_only" }
-  setString(payload, "session_id", properties.sessionID || part.sessionID)
-  setString(payload, "message_id", part.messageID)
-  setString(payload, "part_id", part.id)
-  setString(payload, "finish", part.reason)
-  const partID = stringValue(part.id)
-  if (!partID) return
-  return envelope("agent.event", ctx, event, payload, "part:" + partID)
-}
+	   	  const payload = { agent_name: "opencode", capture_quality: "lifecycle_only" }
+	   	  setString(payload, "session_id", properties.sessionID || part.sessionID)
+	   	  setString(payload, "message_id", part.messageID)
+	   	  setString(payload, "part_id", part.id)
+	   	  setString(payload, "finish", part.reason)
+	   	  const partID = stringValue(part.id)
+	   	  if (!partID) return
+	   	  return envelope("agent.event", ctx, event, payload, "part:" + partID)
+	   	}
 
-export const QuantumLogPlugin = async (ctx) => ({
-  event: async ({ event }) => {
-    if (event.type === "message.updated") {
-      const usage = assistantUsage(ctx, event)
-      if (usage) await post(usage)
-      return
-    }
-    if (event.type === "message.part.updated") {
-      const completion = stepFinish(ctx, event)
-      if (completion) await post(completion)
-      return
-    }
-    if (["session.created", "session.idle", "session.error"].includes(event.type)) {
-      await post(envelope("agent.event", ctx, event, lifecyclePayload()))
-    }
-  },
-  "tool.execute.before": async (input) => {
-    await post(envelope("tool.execute.before", ctx, input, lifecyclePayload()))
-  },
-  "tool.execute.after": async (input) => {
-    await post(envelope("tool.execute.after", ctx, input, lifecyclePayload()))
-  },
-})
-`
+	   	export const QuantumLogPlugin = async (ctx) => ({
+	   	  event: async ({ event }) => {
+	   	    if (event.type === "message.updated") {
+	   	      const usage = assistantUsage(ctx, event)
+	   	      if (usage) await post(usage)
+	   	      return
+	   	    }
+	   	    if (event.type === "message.part.updated") {
+	   	      const completion = stepFinish(ctx, event)
+	   	      if (completion) await post(completion)
+	   	      return
+	   	    }
+	   	    if (["session.created", "session.idle", "session.error"].includes(event.type)) {
+	   	      await post(envelope("agent.event", ctx, event, lifecyclePayload()))
+	   	    }
+	   	  },
+	   	  "tool.execute.before": async (input) => {
+	   	    await post(envelope("tool.execute.before", ctx, input, lifecyclePayload()))
+	   	  },
+	   	  "tool.execute.after": async (input) => {
+	   	    await post(envelope("tool.execute.after", ctx, input, lifecyclePayload()))
+	   	  },
+	   	})
+
+	   `
+	*/
 }

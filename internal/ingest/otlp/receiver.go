@@ -240,7 +240,10 @@ func (r Receiver) event(ctx context.Context, resource, span map[string]string, i
 	provider := first(span, resource, "gen_ai.provider.name", "gen_ai.system")
 	model := first(span, resource, "gen_ai.response.model", "gen_ai.request.model")
 	eventType := "otel.span"
-	if provider != "" && model != "" {
+	if isInteractionRoot(input.Name, span) {
+		eventType = "interaction.prompt"
+	}
+	if provider != "" && model != "" && eventType != "interaction.prompt" {
 		eventType = "model.call"
 	}
 	occurredAt := fromUnixNano(input.StartTimeUnixNano)
@@ -548,6 +551,7 @@ type scopeLogs struct {
 	LogRecords []logRecord `json:"logRecords"`
 }
 type span struct {
+	Name              string     `json:"name"`
 	TraceID           string     `json:"traceId"`
 	SpanID            string     `json:"spanId"`
 	StartTimeUnixNano string     `json:"startTimeUnixNano"`
@@ -576,6 +580,7 @@ func fromProto(input *collectortracepb.ExportTraceServiceRequest) exportTraceSer
 			mappedScope := scopeSpans{Spans: make([]span, 0, len(scopeSpan.GetSpans()))}
 			for _, protoSpan := range scopeSpan.GetSpans() {
 				mappedScope.Spans = append(mappedScope.Spans, span{
+					Name:              protoSpan.GetName(),
 					TraceID:           fmt.Sprintf("%x", protoSpan.GetTraceId()),
 					SpanID:            fmt.Sprintf("%x", protoSpan.GetSpanId()),
 					StartTimeUnixNano: strconv.FormatUint(protoSpan.GetStartTimeUnixNano(), 10),
@@ -587,6 +592,12 @@ func fromProto(input *collectortracepb.ExportTraceServiceRequest) exportTraceSer
 		output.ResourceSpans = append(output.ResourceSpans, mappedResource)
 	}
 	return output
+}
+
+func isInteractionRoot(name string, attributes map[string]string) bool {
+	operation := strings.ToLower(first(attributes, map[string]string{}, "gen_ai.operation.name", "operation.name", "span.kind"))
+	name = strings.ToLower(name)
+	return operation == "invoke_agent" || strings.Contains(name, "invoke_agent")
 }
 
 func logsFromProto(input *collectorlogpb.ExportLogsServiceRequest) exportLogsServiceRequest {

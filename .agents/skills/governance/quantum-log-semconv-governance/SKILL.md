@@ -1,16 +1,6 @@
 ---
 name: "quantum-log-semconv-governance"
-version: "1.0.0"
-project: "quantum-log"
-kind: "skill"
-language: "es"
-blocking_capable: true
-triggers:
-  - "semantic conventions"
-  - "atributo OTel"
-  - "deprecated"
-  - "schema URL"
-  - "stability opt-in"
+description: Provides project guidance for quantum log semconv governance.
 ---
 
 # quantum-log-semconv-governance

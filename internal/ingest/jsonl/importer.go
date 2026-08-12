@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"time"
 
@@ -30,6 +31,7 @@ type event struct {
 }
 
 type modelCallPayload struct {
+	InteractionUpstreamID  string              `json:"interaction_upstream_id"`
 	Provider               string              `json:"provider"`
 	Model                  string              `json:"model"`
 	ModelID                string              `json:"model_id"`
@@ -55,15 +57,30 @@ type metricObservation struct {
 	Confidence string `json:"confidence"`
 }
 
+var importedPromptSecretPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\bbearer\s+[a-z0-9._~+/=-]+`),
+	regexp.MustCompile(`(?i)\b(authorization|api[_ -]?key|access[_ -]?token|password|cookie)\s*[:=]\s*[^\s,;]+`),
+	regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----`),
+}
+
 func Import(ctx context.Context, store *storepkg.Store, reader io.Reader) (int, error) {
-	return importWithTrust(ctx, store, reader, false)
+	return importWithTrustAndPromptCapture(ctx, store, reader, false, "hash")
+}
+
+// ImportWithPromptCapture applies the local privacy policy at the persistence
+// boundary, including for manually imported or spoofed envelopes.
+func ImportWithPromptCapture(ctx context.Context, store *storepkg.Store, reader io.Reader, mode string) (int, error) {
+	return importWithTrustAndPromptCapture(ctx, store, reader, false, mode)
 }
 
 func ImportTrusted(ctx context.Context, store *storepkg.Store, reader io.Reader) (int, error) {
-	return importWithTrust(ctx, store, reader, true)
+	return importWithTrustAndPromptCapture(ctx, store, reader, true, "hash")
 }
 
-func importWithTrust(ctx context.Context, store *storepkg.Store, reader io.Reader, trusted bool) (int, error) {
+func importWithTrustAndPromptCapture(ctx context.Context, store *storepkg.Store, reader io.Reader, trusted bool, promptCaptureMode string) (int, error) {
+	if promptCaptureMode != "off" && promptCaptureMode != "hash" && promptCaptureMode != "full" {
+		promptCaptureMode = "hash"
+	}
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	count := 0
@@ -85,6 +102,9 @@ func importWithTrust(ctx context.Context, store *storepkg.Store, reader io.Reade
 		if parsed.Payload == nil {
 			parsed.Payload = json.RawMessage("{}")
 		}
+		if isInteractionEvent(parsed.EventType) {
+			parsed.Payload = enforcePromptCapturePolicy(parsed.Payload, promptCaptureMode)
+		}
 		evidence := "{}"
 		if parsed.EvidenceJSON != nil {
 			evidence = string(parsed.EvidenceJSON)
@@ -94,6 +114,12 @@ func importWithTrust(ctx context.Context, store *storepkg.Store, reader io.Reade
 			return count, fmt.Errorf("import NDJSON line %d: %w", line, err)
 		}
 		_, err = normalizeModelCall(ctx, store, parsed, appendResult.ID)
+		if err == nil {
+			_, err = normalizeInteraction(ctx, store, parsed, appendResult.ID)
+		}
+		if err == nil {
+			_, err = normalizeToolCall(ctx, store, parsed, appendResult.ID)
+		}
 		if err != nil {
 			return count, fmt.Errorf("normalize NDJSON line %d: %w", line, err)
 		}
@@ -105,6 +131,105 @@ func importWithTrust(ctx context.Context, store *storepkg.Store, reader io.Reade
 		return count, fmt.Errorf("read NDJSON: %w", err)
 	}
 	return count, nil
+}
+
+func isInteractionEvent(eventType string) bool {
+	eventType = strings.ReplaceAll(strings.ToLower(eventType), "_", ".")
+	return eventType == "interaction.prompt" || eventType == "user.prompt" || eventType == "userpromptsubmitted" || eventType == "userpromptsubmit" || eventType == "user.message"
+}
+
+func enforcePromptCapturePolicy(payload json.RawMessage, mode string) json.RawMessage {
+	var values map[string]any
+	if json.Unmarshal(payload, &values) != nil {
+		return json.RawMessage(`{"prompt_capture_mode":"off"}`)
+	}
+	values["prompt_capture_mode"] = mode
+	if mode == "off" {
+		delete(values, "prompt_hash")
+		delete(values, "interaction_hash")
+		delete(values, "interaction_redacted")
+	} else if mode == "hash" {
+		delete(values, "interaction_redacted")
+	} else if redacted, ok := values["interaction_redacted"].(string); ok {
+		for _, pattern := range importedPromptSecretPatterns {
+			redacted = pattern.ReplaceAllString(redacted, "[REDACTED]")
+		}
+		values["interaction_redacted"] = redacted
+	}
+	result, err := json.Marshal(values)
+	if err != nil {
+		return json.RawMessage(`{"prompt_capture_mode":"off"}`)
+	}
+	return result
+}
+
+func normalizeToolCall(ctx context.Context, store *storepkg.Store, parsed event, rawEventID string) (bool, error) {
+	eventType := strings.ToLower(strings.ReplaceAll(parsed.EventType, "_", "."))
+	if !strings.Contains(eventType, "tool") {
+		return false, nil
+	}
+	var payload struct {
+		InteractionUpstreamID string `json:"interaction_upstream_id"`
+		ToolName              string `json:"tool_name"`
+		CaptureQuality        string `json:"capture_quality"`
+	}
+	_ = json.Unmarshal(parsed.Payload, &payload)
+	if payload.ToolName == "" {
+		payload.ToolName = eventType
+	}
+	if err := store.EnsureSession(ctx, parsed.SessionID, "", parsed.OccurredAt); err != nil {
+		return false, err
+	}
+	interactionID := ""
+	if payload.InteractionUpstreamID != "" {
+		var found bool
+		interactionID, found, _ = store.InteractionByUpstream(ctx, parsed.Source, parsed.SessionID, payload.InteractionUpstreamID)
+		if !found {
+			interactionID, _, _ = store.InteractionBySessionUpstream(ctx, parsed.SessionID, payload.InteractionUpstreamID)
+		}
+	}
+	return store.RecordToolCall(ctx, storepkg.ToolCallInput{RawEventID: rawEventID, InteractionID: interactionID, ProjectID: parsed.ProjectID, LocationID: parsed.ProjectLocationID, WorkContextID: parsed.WorkContextID, SessionID: parsed.SessionID, ToolName: payload.ToolName, ToolType: eventType, OccurredAt: parsed.OccurredAt, CaptureQuality: payload.CaptureQuality})
+}
+
+func normalizeInteraction(ctx context.Context, store *storepkg.Store, parsed event, rawEventID string) (bool, error) {
+	// Codex's supported local app-server stream emits one completed response for
+	// each interactive turn but not the prompt body. Treat that source-native
+	// response identity as a privacy-safe interaction root rather than dropping
+	// the prompt count altogether.
+	if !isInteractionEvent(parsed.EventType) && !isCodexResponseRoot(parsed) {
+		return false, nil
+	}
+	if parsed.IngestionIdentity == "" {
+		return false, nil
+	}
+	var payload struct {
+		PromptHash      string `json:"prompt_hash"`
+		InteractionHash string `json:"interaction_hash"`
+		Redacted        string `json:"interaction_redacted"`
+		CaptureMode     string `json:"prompt_capture_mode"`
+	}
+	_ = json.Unmarshal(parsed.Payload, &payload)
+	_, created, err := store.RecordInteraction(ctx, storepkg.InteractionInput{
+		RawEventID: rawEventID, Source: parsed.Source, SessionID: parsed.SessionID, UpstreamID: parsed.IngestionIdentity,
+		ProjectID: parsed.ProjectID, ProjectLocationID: parsed.ProjectLocationID, WorkContextID: parsed.WorkContextID,
+		PromptHash: firstNonEmpty(payload.InteractionHash, payload.PromptHash), PromptRedacted: payload.Redacted,
+		PromptCaptureMode: payload.CaptureMode,
+		OccurredAt:        parsed.OccurredAt,
+	})
+	return created, err
+}
+
+func isCodexResponseRoot(parsed event) bool {
+	return parsed.Source == "codex-app-server" && strings.EqualFold(parsed.EventType, "model.call")
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func normalizeModelCall(ctx context.Context, store *storepkg.Store, parsed event, rawEventID string) (bool, error) {
@@ -134,6 +259,7 @@ func normalizeModelCall(ctx context.Context, store *storepkg.Store, parsed event
 	}
 	input := storepkg.ModelCallInput{
 		RawEventID:             rawEventID,
+		InteractionUpstreamID:  payload.InteractionUpstreamID,
 		ProjectID:              parsed.ProjectID,
 		ProjectLocationID:      parsed.ProjectLocationID,
 		WorkContextID:          parsed.WorkContextID,
@@ -152,6 +278,21 @@ func normalizeModelCall(ctx context.Context, store *storepkg.Store, parsed event
 		EstimatedCostEURMicros: payload.EstimatedCostEURMicros,
 		OccurredAt:             parsed.OccurredAt,
 		CaptureQuality:         payload.CaptureQuality,
+	}
+	if payload.InteractionUpstreamID != "" {
+		interactionID, found, err := store.InteractionByUpstream(ctx, parsed.Source, parsed.SessionID, payload.InteractionUpstreamID)
+		if err != nil {
+			return false, err
+		}
+		if !found {
+			interactionID, found, err = store.InteractionBySessionUpstream(ctx, parsed.SessionID, payload.InteractionUpstreamID)
+			if err != nil {
+				return false, err
+			}
+		}
+		if found {
+			input.InteractionID = interactionID
+		}
 	}
 	for _, metric := range payload.MetricObservations {
 		if metric.Value != nil {

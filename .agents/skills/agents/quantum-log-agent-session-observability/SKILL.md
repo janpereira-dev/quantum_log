@@ -1,17 +1,6 @@
 ---
 name: "quantum-log-agent-session-observability"
-version: "1.0.0"
-project: "quantum-log"
-kind: "skill"
-language: "es"
-blocking_capable: true
-triggers:
-  - "agente"
-  - "sesión"
-  - "task"
-  - "subagente"
-  - "tool call"
-  - "workflow"
+description: Provides project guidance for quantum log agent session observability.
 ---
 
 # quantum-log-agent-session-observability

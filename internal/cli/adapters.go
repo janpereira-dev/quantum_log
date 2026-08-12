@@ -264,7 +264,7 @@ func (localAdapterStatusAccess) HasRecentEvidence(ctx context.Context, home stri
 	if contract.Source == "" || contract.Quality == "" {
 		return false, nil
 	}
-	service, err := app.OpenReadOnly(ctx, home)
+	service, err := app.OpenSnapshotReadOnly(ctx, home)
 	if err != nil {
 		return false, err
 	}
@@ -367,7 +367,7 @@ func verifyAdapter(ctx context.Context, home string, adapter adapters.Adapter, p
 		stages = append(stages, adapterVerifyStage{Name: "since", Passed: false, Required: true, Message: err.Error()})
 		return adapterVerifyResult{AdapterID: adapter.Descriptor().ID, Stages: stages, Message: "invalid verification window"}
 	}
-	service, err := app.OpenReadOnly(ctx, home)
+	service, err := app.OpenSnapshotReadOnly(ctx, home)
 	if err != nil {
 		stages = append(stages, adapterVerifyStage{Name: "database", Passed: false, Required: true, Message: err.Error()})
 		return adapterVerifyResult{AdapterID: adapter.Descriptor().ID, Stages: stages, Message: "database unavailable"}

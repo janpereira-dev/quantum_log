@@ -1,18 +1,6 @@
 ---
 name: "quantum-log-genai-mcp-observability"
-version: "1.0.0"
-project: "quantum-log"
-kind: "skill"
-language: "es"
-blocking_capable: true
-triggers:
-  - "GenAI"
-  - "LLM"
-  - "modelo"
-  - "MCP"
-  - "prompt"
-  - "completion"
-  - "tool"
+description: Provides project guidance for quantum log genai mcp observability.
 ---
 
 # quantum-log-genai-mcp-observability

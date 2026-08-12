@@ -103,6 +103,22 @@ func TestSetupContinuesAfterCollectorExternalPolicyDenial(t *testing.T) {
 	}
 }
 
+func TestSetupSchedulerDeniedFallbackRemainsRestartable(t *testing.T) {
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
+	manager := &policyDeniedCollectorManager{}
+
+	result, err := bootstrapSupportedAdapters(context.Background(), t.TempDir(), temporaryDurableExecutable(t), true, false, adapters.Default(), manager)
+	if err != nil {
+		t.Fatalf("bootstrapSupportedAdapters() error = %v", err)
+	}
+	if _, err := restartCollectorAfterSchedulerDenied(manager, t.TempDir(), defaultCollectorListen); err != nil {
+		t.Fatalf("restart after Scheduler denial: %v", err)
+	}
+	if !result.Collector.Installed || !manager.restartedFallback {
+		t.Fatalf("collector=%#v manager=%#v, want installed restarted fallback", result.Collector, manager)
+	}
+}
+
 func TestSetupFailsForGenericAccessDeniedCollectorError(t *testing.T) {
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
 	manager := &genericAccessDeniedCollectorManager{}
@@ -240,6 +256,11 @@ func TestBuiltArtifactSetupWritesDurableHookCommand(t *testing.T) {
 	if strings.Contains(contents, "go-build") || strings.Contains(contents, ".test") {
 		t.Fatalf("generated hook references transient Go executable: %s", contents)
 	}
+	if runtime.GOOS == "windows" {
+		// The built child cannot inherit this package's in-memory profile seam.
+		// Copilot's Windows install behavior is covered in adapters tests.
+		return
+	}
 
 	copilotHome := filepath.Join(t.TempDir(), "copilot-hooks")
 	directInstall := exec.Command(artifact, "--home", home, "adapter", "install", "copilot")
@@ -296,7 +317,10 @@ type ledgerCheckingCollectorManager struct {
 	ledgerExistedAtInstall bool
 }
 
-type policyDeniedCollectorManager struct{ fakeCollectorManager }
+type policyDeniedCollectorManager struct {
+	fakeCollectorManager
+	restartedFallback bool
+}
 
 type genericAccessDeniedCollectorManager struct{ fakeCollectorManager }
 
@@ -308,6 +332,15 @@ func (m *policyDeniedCollectorManager) InstallFallback(_, listen string) (Collec
 	m.installed = true
 	m.started = true
 	return CollectorStatus{Installed: true, Running: true, Listen: listen, Message: "user fallback installed and started"}, nil
+}
+
+func (m *policyDeniedCollectorManager) Restart(_, listen string) (CollectorStatus, error) {
+	return CollectorStatus{}, errors.New(`task scheduler operation /Create for task "QUANTUM_LOG Collector" failed: exit status 1: Error: Acceso denegado.`)
+}
+
+func (m *policyDeniedCollectorManager) RestartFallback(_, listen string) (CollectorStatus, error) {
+	m.restartedFallback = true
+	return CollectorStatus{Installed: true, Running: true, Listen: listen, Message: "user fallback restarted"}, nil
 }
 
 func (*genericAccessDeniedCollectorManager) Install(_, _ string) (CollectorStatus, error) {

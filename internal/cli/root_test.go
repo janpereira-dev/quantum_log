@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/janpereira-dev/quantum_log/internal/adapters"
 	"github.com/janpereira-dev/quantum_log/internal/app"
 	"github.com/janpereira-dev/quantum_log/internal/storage/sqlite"
 	"github.com/spf13/cobra"
@@ -39,7 +40,17 @@ func TestMain(m *testing.M) {
 		_ = os.RemoveAll(fixtureDir)
 		panic(err)
 	}
+	profileDir, err := os.MkdirTemp("", "qlog-powershell-profile-")
+	if err != nil {
+		_ = os.RemoveAll(fixtureDir)
+		panic(err)
+	}
+	restoreProfileDiscovery := adapters.SetCopilotCLIPowerShellProfileDiscoveryForTesting(func() (string, error) {
+		return filepath.Join(profileDir, "Microsoft.PowerShell_profile.ps1"), nil
+	})
 	exitCode := m.Run()
+	restoreProfileDiscovery()
+	_ = os.RemoveAll(profileDir)
 	_ = os.RemoveAll(fixtureDir)
 	os.Exit(exitCode)
 }

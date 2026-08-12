@@ -1,17 +1,6 @@
 ---
 name: "quantum-log-context-propagation"
-version: "1.0.0"
-project: "quantum-log"
-kind: "skill"
-language: "es"
-blocking_capable: true
-triggers:
-  - "context.Context"
-  - "propagación"
-  - "goroutine"
-  - "IPC"
-  - "traceparent"
-  - "baggage"
+description: Provides project guidance for quantum log context propagation.
 ---
 
 # quantum-log-context-propagation

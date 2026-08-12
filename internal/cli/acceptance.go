@@ -83,7 +83,7 @@ func newAcceptanceCommand(home *string, version Version) *cobra.Command {
 }
 
 func writeAcceptancePackage(ctx context.Context, home string, version Version, output string) error {
-	service, err := app.OpenReadOnly(ctx, home)
+	service, err := app.OpenSnapshotReadOnly(ctx, home)
 	if err != nil {
 		return err
 	}

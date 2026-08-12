@@ -3,9 +3,12 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/janpereira-dev/quantum_log/internal/attribution/resolver"
@@ -75,6 +78,22 @@ func OpenReadOnly(ctx context.Context, home string) (*Service, error) {
 	return &Service{Paths: paths, Store: store}, nil
 }
 
+// OpenSnapshotReadOnly opens a WAL-aware read snapshot for supported live evidence queries.
+func OpenSnapshotReadOnly(ctx context.Context, home string) (*Service, error) {
+	paths, err := config.Resolve(home)
+	if err != nil {
+		return nil, fmt.Errorf("resolve paths: %w", err)
+	}
+	if _, err := os.Stat(paths.Database); err != nil {
+		return nil, fmt.Errorf("open local database: %w; run qlog init first", err)
+	}
+	store, err := storepkg.OpenSnapshotReadOnly(ctx, paths.Database)
+	if err != nil {
+		return nil, err
+	}
+	return &Service{Paths: paths, Store: store}, nil
+}
+
 func Checkpoint(ctx context.Context, home string) error {
 	paths, err := config.Resolve(home)
 	if err != nil {
@@ -112,6 +131,22 @@ func (s *Service) ResolveProject(ctx context.Context, explicitProject, adapterPr
 	resolved := ResolvedProject{CWD: cwd, GitRoot: gitRoot(ctx, cwd)}
 	resolved.Resolution = resolver.Resolve(resolver.Input{ExplicitProject: explicitProject, AdapterProject: adapterProject, EnvironmentProject: os.Getenv("QLOG_PROJECT"), CWD: cwd, GitRoot: resolved.GitRoot}, paths)
 	if resolved.Resolution.ProjectSlug == "" {
+		// A Git root is an unambiguous local ownership boundary. Create its
+		// project once; anything without one remains deliberately unattributed.
+		if resolved.GitRoot == "" {
+			return resolved, nil
+		}
+		name := filepath.Base(resolved.GitRoot)
+		// Basenames are not project identities: /work/a/api and /work/b/api
+		// must never collapse into the same ledger project.
+		digest := sha256.Sum256([]byte(filepath.Clean(resolved.GitRoot)))
+		slug := name + "-" + hex.EncodeToString(digest[:8])
+		project, location, registerErr := s.Store.RegisterProject(ctx, name, slug, resolved.GitRoot)
+		if registerErr != nil {
+			return resolved, nil
+		}
+		resolved.ProjectID, resolved.LocationID, resolved.LocationPath = project.ID, location.ID, location.AbsolutePath
+		resolved.Resolution = resolver.ProjectResolution{ProjectSlug: project.Slug, Method: resolver.GitRoot, Confidence: resolver.High, Evidence: location.AbsolutePath}
 		return resolved, nil
 	}
 	var projectLocationLookup bool

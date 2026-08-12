@@ -1,16 +1,6 @@
 ---
 name: "quantum-log-logs-events"
-version: "1.0.0"
-project: "quantum-log"
-kind: "skill"
-language: "es"
-blocking_capable: true
-triggers:
-  - "log"
-  - "event"
-  - "diagnóstico"
-  - "error estructurado"
-  - "correlación"
+description: Provides project guidance for quantum log logs events.
 ---
 
 # quantum-log-logs-events

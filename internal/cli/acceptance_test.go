@@ -3,12 +3,14 @@ package cli
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/janpereira-dev/quantum_log/internal/app"
 	"github.com/janpereira-dev/quantum_log/internal/storage/sqlite"
 )
 
@@ -78,6 +80,26 @@ func TestAcceptanceRunWritesSanitizedEvidencePackage(t *testing.T) {
 		if agent.AdapterID == "" || agent.Source == "" {
 			t.Fatalf("agent capability matrix entry = %#v", agent)
 		}
+	}
+}
+
+func TestAcceptanceRunReadsSnapshotWhileCollectorWriterIsActive(t *testing.T) {
+	home := t.TempDir()
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	collector, err := app.Open(context.Background(), home)
+	if err != nil {
+		t.Fatalf("open simulated collector writer: %v", err)
+	}
+	t.Cleanup(func() { _ = collector.Close() })
+
+	output := filepath.Join(t.TempDir(), "acceptance.zip")
+	if err := writeAcceptancePackage(context.Background(), home, Version{}, output); err != nil {
+		t.Fatalf("acceptance run while collector writer is active: %v", err)
+	}
+	if _, err := os.Stat(output); err != nil {
+		t.Fatalf("acceptance package missing: %v", err)
 	}
 }
 

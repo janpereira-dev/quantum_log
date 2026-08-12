@@ -1,18 +1,6 @@
 ---
 name: "quantum-log-tray-observability"
-version: "1.0.0"
-project: "quantum-log"
-kind: "skill"
-language: "es"
-blocking_capable: true
-triggers:
-  - "tray"
-  - "Windows"
-  - "macOS"
-  - "Linux"
-  - "startup"
-  - "toggle"
-  - "estado local"
+description: Provides project guidance for quantum log tray observability.
 ---
 
 # quantum-log-tray-observability

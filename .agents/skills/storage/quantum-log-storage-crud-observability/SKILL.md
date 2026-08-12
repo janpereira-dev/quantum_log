@@ -1,17 +1,6 @@
 ---
 name: "quantum-log-storage-crud-observability"
-version: "1.0.0"
-project: "quantum-log"
-kind: "skill"
-language: "es"
-blocking_capable: true
-triggers:
-  - "CRUD"
-  - "base de datos"
-  - "persistencia"
-  - "query"
-  - "migration"
-  - "integridad"
+description: Provides project guidance for quantum log storage crud observability.
 ---
 
 # quantum-log-storage-crud-observability

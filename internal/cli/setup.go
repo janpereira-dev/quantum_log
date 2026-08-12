@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -39,6 +38,10 @@ type CollectorBootstrapStatus struct {
 
 type collectorFallbackInstaller interface {
 	InstallFallback(home, listen string) (CollectorStatus, error)
+}
+
+type collectorFallbackRestarter interface {
+	RestartFallback(home, listen string) (CollectorStatus, error)
 }
 
 func newSetupCommand(home *string) *cobra.Command {
@@ -223,16 +226,29 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 }
 
 func recordCollectorExternalPolicy(status *CollectorBootstrapStatus, err error) bool {
-	if runtime.GOOS != "windows" {
+	if !isWindowsSchedulerPolicyDenial(err) {
 		return false
 	}
+	status.Actions = append(status.Actions, "collector activation blocked by external policy: "+err.Error())
+	return true
+}
+
+func isWindowsSchedulerPolicyDenial(err error) bool {
 	diagnosis := err.Error()
 	lower := strings.ToLower(diagnosis)
-	if !strings.Contains(lower, "task scheduler operation /create") || (!strings.Contains(lower, "access denied") && !strings.Contains(lower, "acceso denegado")) {
-		return false
+	return strings.Contains(lower, "task scheduler operation /create") && (strings.Contains(lower, "access denied") || strings.Contains(lower, "acceso denegado"))
+}
+
+func restartCollectorAfterSchedulerDenied(manager collectorManager, home, listen string) (CollectorStatus, error) {
+	status, err := manager.Restart(home, listen)
+	if err == nil || !isWindowsSchedulerPolicyDenial(err) {
+		return status, err
 	}
-	status.Actions = append(status.Actions, "collector activation blocked by external policy: "+diagnosis)
-	return true
+	fallback, ok := manager.(collectorFallbackRestarter)
+	if !ok {
+		return CollectorStatus{}, err
+	}
+	return fallback.RestartFallback(home, listen)
 }
 
 func recordCollectorHealth(ctx context.Context, status *CollectorBootstrapStatus, manager collectorManager) {

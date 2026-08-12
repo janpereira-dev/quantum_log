@@ -411,6 +411,17 @@ func (manager windowsCollectorManager) Restart(home, listen string) (CollectorSt
 	return manager.Start(home, listen)
 }
 
+func (manager windowsCollectorManager) RestartFallback(home, listen string) (CollectorStatus, error) {
+	status, err := windowsCollectorStatusFn(context.Background(), listen)
+	if err != nil {
+		return CollectorStatus{}, err
+	}
+	if status.Mode == windowsCollectorFallbackMode {
+		return manager.Restart(home, listen)
+	}
+	return manager.InstallFallback(home, listen)
+}
+
 func (windowsCollectorManager) Status(ctx context.Context, listen string) (CollectorStatus, error) {
 	if err := validateCollectorListen(listen); err != nil {
 		return CollectorStatus{}, err

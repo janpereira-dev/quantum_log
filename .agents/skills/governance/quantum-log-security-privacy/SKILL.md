@@ -1,18 +1,6 @@
 ---
 name: "quantum-log-security-privacy"
-version: "1.0.0"
-project: "quantum-log"
-kind: "skill"
-language: "es"
-blocking_capable: true
-triggers:
-  - "PII"
-  - "secreto"
-  - "prompt"
-  - "redaction"
-  - "path"
-  - "header"
-  - "privacy"
+description: Provides project guidance for quantum log security privacy.
 ---
 
 # quantum-log-security-privacy

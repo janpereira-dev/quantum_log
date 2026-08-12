@@ -1,16 +1,6 @@
 ---
 name: "quantum-log-telemetry-testing"
-version: "1.0.0"
-project: "quantum-log"
-kind: "skill"
-language: "es"
-blocking_capable: true
-triggers:
-  - "test"
-  - "eval"
-  - "span exporter"
-  - "contract test"
-  - "trace-based testing"
+description: Provides project guidance for quantum log telemetry testing.
 ---
 
 # quantum-log-telemetry-testing
