@@ -112,7 +112,7 @@ func Ingest(ctx context.Context, service *app.Service, event Event) (int, error)
 
 func isPromptEvent(eventType string) bool {
 	normalized := strings.ReplaceAll(strings.ToLower(eventType), "_", ".")
-	return normalized == "interaction.prompt" || normalized == "user.prompt" || normalized == "userpromptsubmitted" || normalized == "user.message"
+	return normalized == "interaction.prompt" || normalized == "user.prompt" || normalized == "userpromptsubmitted" || normalized == "userpromptsubmit" || normalized == "user.message"
 }
 
 func attachPromptCapture(payload, raw json.RawMessage, mode string) json.RawMessage {

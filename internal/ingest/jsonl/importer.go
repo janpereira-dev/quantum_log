@@ -113,7 +113,7 @@ func importWithTrust(ctx context.Context, store *storepkg.Store, reader io.Reade
 
 func normalizeInteraction(ctx context.Context, store *storepkg.Store, parsed event, rawEventID string) (bool, error) {
 	eventType := strings.ReplaceAll(strings.ToLower(parsed.EventType), "_", ".")
-	if eventType != "interaction.prompt" && eventType != "user.prompt" && eventType != "userpromptsubmitted" && eventType != "user.message" {
+	if eventType != "interaction.prompt" && eventType != "user.prompt" && eventType != "userpromptsubmitted" && eventType != "userpromptsubmit" && eventType != "user.message" {
 		return false, nil
 	}
 	if parsed.IngestionIdentity == "" {

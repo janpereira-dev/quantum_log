@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -62,6 +64,18 @@ func claudeCodeHookEvent(input []byte) (qlogevent.Event, error) {
 		eventType = "ClaudeCodeHook"
 	}
 	cwd, _ := raw["cwd"].(string)
+	upstreamID, _ := raw["event_id"].(string)
+	if upstreamID == "" && strings.EqualFold(eventType, "UserPromptSubmit") {
+		// Claude hooks do not consistently include an event ID. Scope a
+		// deterministic identity to the session and event timestamp so repeated
+		// identical prompts remain separate interactions.
+		timestamp, _ := raw["timestamp"].(string)
+		if timestamp == "" {
+			timestamp = time.Now().UTC().Format(time.RFC3339Nano)
+		}
+		digest := sha256.Sum256([]byte(sessionID + "\x00" + timestamp + "\x00" + prompt))
+		upstreamID = "claude-prompt:" + hex.EncodeToString(digest[:])
+	}
 	payload, err := json.Marshal(map[string]any{
 		"agent_name":      "claude-code",
 		"capture_quality": "lifecycle_only",
@@ -71,12 +85,13 @@ func claudeCodeHookEvent(input []byte) (qlogevent.Event, error) {
 		return qlogevent.Event{}, fmt.Errorf("encode Claude Code hook payload: %w", err)
 	}
 	return qlogevent.Event{
-		Source:      "claude-code-hook",
-		SessionID:   sessionID,
-		EventType:   eventType,
-		OccurredAt:  time.Now().UTC(),
-		ProjectHint: qlogevent.ProjectHint{CWD: cwd},
-		Payload:     payload,
+		Source:          "claude-code-hook",
+		SessionID:       sessionID,
+		UpstreamEventID: upstreamID,
+		EventType:       eventType,
+		OccurredAt:      time.Now().UTC(),
+		ProjectHint:     qlogevent.ProjectHint{CWD: cwd},
+		Payload:         payload,
 	}, nil
 }
 
