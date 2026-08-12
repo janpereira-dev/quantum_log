@@ -146,14 +146,12 @@ func copilotCLIPowerShellProfilePath() string {
 
 func copilotCLIProfileBlock() string {
 	return copilotCLIProfileBlockStart + "\n" +
-		"$env:COPILOT_OTEL_ENABLED = 'true'\n" +
-		"$env:COPILOT_OTEL_EXPORTER_TYPE = 'otlp-http'\n" +
-		"$env:OTEL_EXPORTER_OTLP_ENDPOINT = 'http://127.0.0.1:4318'\n" +
-		"$env:OTEL_EXPORTER_OTLP_PROTOCOL = 'http/json'\n" +
-		"$env:OTEL_METRICS_EXPORTER = 'none'\n" +
-		"$env:OTEL_LOGS_EXPORTER = 'none'\n" +
-		"$env:OTEL_SERVICE_NAME = 'github-copilot'\n" +
-		"$env:OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT = 'false'\n" +
+		"function global:copilot {\n" +
+		"  $qlogCopilot = (Get-Command copilot -CommandType Application -ErrorAction Stop).Source\n" +
+		"  $qlogPrevious = @{}\n" +
+		"  foreach ($qlogPair in @(@('COPILOT_OTEL_ENABLED','true'), @('COPILOT_OTEL_EXPORTER_TYPE','otlp-http'), @('OTEL_EXPORTER_OTLP_ENDPOINT','http://127.0.0.1:4318'), @('OTEL_EXPORTER_OTLP_PROTOCOL','http/json'), @('OTEL_METRICS_EXPORTER','none'), @('OTEL_LOGS_EXPORTER','none'), @('OTEL_SERVICE_NAME','github-copilot'), @('OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT','false'))) { $qlogPrevious[$qlogPair[0]] = [Environment]::GetEnvironmentVariable($qlogPair[0], 'Process'); Set-Item -Path ('Env:' + $qlogPair[0]) -Value $qlogPair[1] }\n" +
+		"  try { & $qlogCopilot @args } finally { foreach ($qlogKey in $qlogPrevious.Keys) { if ($null -eq $qlogPrevious[$qlogKey]) { Remove-Item -Path ('Env:' + $qlogKey) -ErrorAction SilentlyContinue } else { Set-Item -Path ('Env:' + $qlogKey) -Value $qlogPrevious[$qlogKey] } } }\n" +
+		"}\n" +
 		copilotCLIProfileBlockEnd + "\n"
 }
 

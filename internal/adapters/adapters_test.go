@@ -190,22 +190,14 @@ func TestCopilotCLIInstallConfiguresDiscoveredOneDrivePowerShellProfile(t *testi
 	if !strings.Contains(profile, "$env:USER_SETTING = 'preserve'") {
 		t.Fatalf("install did not preserve profile contents:\n%s", profile)
 	}
-	if !strings.Contains(profile, copilotCLIProfileBlockStart) || !strings.Contains(profile, "$env:COPILOT_OTEL_ENABLED = 'true'") {
+	if !strings.Contains(profile, copilotCLIProfileBlockStart) || !strings.Contains(profile, "function global:copilot") {
 		t.Fatalf("install did not configure discovered profile:\n%s", profile)
 	}
 	if !adapter.windowsPowerShellProfileInstalled() {
 		t.Fatal("normal PowerShell profile state is not installed")
 	}
-	for name, expected := range copilotCLIPersistentEnvironment {
-		if value := environment[name]; value != expected {
-			t.Fatalf("persistent user environment %s = %q, want %q", name, value, expected)
-		}
-	}
 	if _, err := adapter.Uninstall(context.Background(), InstallOptions{}); err != nil {
 		t.Fatalf("uninstall: %v", err)
-	}
-	if len(environment) != 0 {
-		t.Fatalf("uninstall left qlog-owned persistent environment: %#v", environment)
 	}
 	profile = string(mustReadFile(t, redirectedProfile))
 	if strings.Contains(profile, copilotCLIProfileBlockStart) || !strings.Contains(profile, "$env:USER_SETTING = 'preserve'") {

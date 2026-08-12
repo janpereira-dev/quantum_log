@@ -40,11 +40,7 @@ func (a copilotCLIAdapter) Install(_ context.Context, options InstallOptions) (I
 		if err != nil {
 			return InstallResult{}, err
 		}
-		environmentChange, err := a.installWindowsUserEnvironment(options.DryRun)
-		if err != nil {
-			return InstallResult{}, err
-		}
-		changes = append(changes, profileChange, environmentChange)
+		changes = append(changes, profileChange)
 	}
 	change, err := applyManagedFile(a.hooksPath(), copilotCLIHooksConfig(options.Home, options.ExecutablePath), options.DryRun)
 	if err != nil {
@@ -80,11 +76,8 @@ func (a copilotCLIAdapter) PlanInstall(_ context.Context, options SetupOptions) 
 	changes := []SetupChange{change, otelChange}
 	notes := []string{"installs prompt, lifecycle, tool, and subagent hooks plus persistent qlog-owned Copilot CLI OTel configuration"}
 	if runtime.GOOS == "windows" {
-		changes = append(changes,
-			SetupChange{Path: "PowerShell CurrentUserCurrentHost profile", Action: "updated", Description: "adds qlog-owned Copilot OTel profile block"},
-			SetupChange{Path: "HKCU\\Environment", Action: "updated", Description: "sets qlog-owned Copilot OTel variables for new PowerShell processes"},
-		)
-		notes[0] = "installs lifecycle hooks plus qlog-owned Windows PowerShell profile configuration for new copilot launches"
+		changes = append(changes, SetupChange{Path: "PowerShell CurrentUserCurrentHost profile", Action: "updated", Description: "adds a qlog-owned Copilot-only OTel launcher function"})
+		notes[0] = "installs lifecycle hooks plus a qlog-owned Windows PowerShell Copilot-only OTel launcher"
 	}
 	notes = append(notes, "OTel content capture remains disabled; clean-device source evidence is still required")
 	return SetupPlan{AdapterID: a.id, State: SetupAvailable, CaptureQuality: CaptureOTELReported, Changes: changes, Notes: notes}, nil
@@ -97,7 +90,7 @@ func (a copilotCLIAdapter) Status(ctx context.Context) (SetupStatus, error) {
 	}
 	installed := fileContains(a.hooksPath(), "hook copilot-cli --event")
 	if runtime.GOOS == "windows" {
-		installed = installed && a.windowsPowerShellProfileInstalled() && a.windowsUserEnvironmentInstalled()
+		installed = installed && a.windowsPowerShellProfileInstalled()
 	}
 	state := SetupUnavailable
 	if detection.Available {
