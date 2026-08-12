@@ -105,7 +105,7 @@ func copilotCLIProfileBlock() string {
 
 func writeCopilotCLIPowerShellProfile(path string, contents []byte, perm os.FileMode, previous []byte, exists bool) error {
 	err := copilotCLIPowerShellProfileWriteFile(path, contents, perm)
-	if err == nil || !os.IsNotExist(err) {
+	if err == nil {
 		return err
 	}
 	expectedHash := ""
