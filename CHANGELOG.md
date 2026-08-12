@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.0-rc.2 - 2026-08-12
+
+- Fixed Windows PowerShell profile backups to use the same OneDrive-compatible writer as the profile update.
+
 ## 0.4.0-rc.1 - 2026-08-11
 
 - Added canonical prompt interactions with source/session/upstream deduplication and linked model calls.

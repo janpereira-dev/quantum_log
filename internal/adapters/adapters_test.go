@@ -301,19 +301,27 @@ func TestCopilotCLIProfileWriteFallbackPreservesExistingProfileForUninstall(t *t
 	t.Cleanup(func() { copilotCLIPowerShellProfileWriteFile = originalWrite })
 	originalCommand := copilotCLIPowerShellProfileWriteCommand
 	copilotCLIPowerShellProfileWriteCommand = func(_ string, args ...string) (string, error) {
-		if len(args) != 7 || args[4] != profile {
+		if len(args) != 7 {
 			t.Fatalf("command args = %#v", args)
 		}
-		before := mustReadFile(t, profile)
-		hash := sha256.Sum256(before)
-		if args[6] != fmt.Sprintf("%x", hash) {
-			t.Fatalf("expected profile hash = %q, want %x", args[6], hash)
+		target := args[4]
+		if target != profile && !strings.HasPrefix(target, profile+".qlog-backup-") {
+			t.Fatalf("unexpected write target %q", target)
+		}
+		if target == profile {
+			before := mustReadFile(t, profile)
+			hash := sha256.Sum256(before)
+			if args[6] != fmt.Sprintf("%x", hash) {
+				t.Fatalf("expected profile hash = %q, want %x", args[6], hash)
+			}
+		} else if args[6] != "" {
+			t.Fatalf("backup expected empty hash, got %q", args[6])
 		}
 		payload, err := base64.StdEncoding.DecodeString(args[5])
 		if err != nil {
 			t.Fatalf("decode payload: %v", err)
 		}
-		if err := os.WriteFile(profile, payload, 0o600); err != nil {
+		if err := os.WriteFile(target, payload, 0o600); err != nil {
 			t.Fatalf("simulate PowerShell write: %v", err)
 		}
 		return "", nil
@@ -446,6 +454,7 @@ func TestCopilotCLIUninstallRemovesOnlyQlogOwnedHookConfig(t *testing.T) {
 }
 
 func TestClaudeCodeStatusDefaultsToLifecycleOnly(t *testing.T) {
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
 	status, err := newClaudeCodeAdapter().Status(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -1185,6 +1194,32 @@ func TestApplyMarkerBlockCreatesUpdatesBacksUpAndStaysIdempotent(t *testing.T) {
 	}
 	if change.Action != "unchanged" || change.BackupPath != "" {
 		t.Fatalf("idempotent change = %#v", change)
+	}
+}
+
+func TestManagedFileUsesFallbackWriterForBackups(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "OneDrive", "profile.ps1")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("original"), 0o600); err != nil {
+		t.Fatalf("write original: %v", err)
+	}
+	var writes []string
+	write := func(target string, contents []byte, perm os.FileMode, _ []byte, _ bool) error {
+		writes = append(writes, target)
+		return os.WriteFile(target, contents, perm)
+	}
+	change, err := applyManagedFileWithWrite(path, "updated", false, write)
+	if err != nil {
+		t.Fatalf("apply managed file: %v", err)
+	}
+	if change.BackupPath == "" || len(writes) != 2 || writes[0] != change.BackupPath || writes[1] != path {
+		t.Fatalf("writer calls = %v, backup = %q", writes, change.BackupPath)
+	}
+	backup, err := os.ReadFile(change.BackupPath)
+	if err != nil || string(backup) != "original" {
+		t.Fatalf("backup = %q, %v", backup, err)
 	}
 }
 
