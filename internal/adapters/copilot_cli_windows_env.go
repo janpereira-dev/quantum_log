@@ -230,14 +230,12 @@ func (a copilotCLIAdapter) uninstallWindowsPowerShellProfile(dryRun bool) (Setup
 				}
 			}
 		} else {
-			if err := os.MkdirAll(filepath.Dir(profile), 0o700); err != nil {
-				return SetupChange{}, fmt.Errorf("create PowerShell profile parent: %w", err)
+			change = SetupChange{Path: profile, Action: "updated", Description: "removed qlog-owned Copilot OTel block from PowerShell profile"}
+			if !dryRun {
+				if err := writeCopilotCLIPowerShellProfile(profile, []byte(updated), 0o600, contents, true); err != nil {
+					return SetupChange{}, fmt.Errorf("update PowerShell profile: %w", err)
+				}
 			}
-			change, err = applyManagedFileWithWrite(profile, updated, dryRun, writeCopilotCLIPowerShellProfile)
-			if err != nil {
-				return SetupChange{}, fmt.Errorf("update PowerShell profile: %w", err)
-			}
-			change.Description = "removed qlog-owned Copilot OTel block from PowerShell profile"
 		}
 	}
 	if !dryRun {
