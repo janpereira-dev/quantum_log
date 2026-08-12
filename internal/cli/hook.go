@@ -81,7 +81,20 @@ func claudeCodeHookEvent(input []byte) (qlogevent.Event, error) {
 }
 
 func copilotCLIHookEvent(input []byte, eventType string) (qlogevent.Event, error) {
-	allowedEvents := map[string]bool{"sessionStart": true, "sessionEnd": true, "agentStop": true, "postToolUse": true, "userPromptSubmitted": true, "error": true, "subagentStart": true, "subagentStop": true}
+	// Keep this in lockstep with copilotCLIHooksConfig. Hooks are deliberately
+	// best-effort, but silently rejecting a configured event loses its
+	// lifecycle evidence before bestEffortHook can protect the agent process.
+	allowedEvents := map[string]bool{
+		"sessionStart":        true,
+		"sessionEnd":          true,
+		"agentStop":           true,
+		"errorOccurred":       true,
+		"preToolUse":          true,
+		"postToolUse":         true,
+		"userPromptSubmitted": true,
+		"subagentStart":       true,
+		"subagentStop":        true,
+	}
 	if !allowedEvents[eventType] {
 		return qlogevent.Event{}, fmt.Errorf("unsupported Copilot CLI hook event %q", eventType)
 	}

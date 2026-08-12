@@ -47,7 +47,7 @@ P0 configuration evidence:
 
 - Codex disables user-prompt logging with `log_user_prompt = false`.
 - Copilot VS Code writes `github.copilot.chat.otel.captureContent=false`.
-- Copilot CLI hook parser keeps only session ID and CWD; it discards prompt, response, tool, secret, authorization, and token data.
+- Copilot CLI hook parser keeps lifecycle metadata and applies the configured prompt policy (`off`, `hash`, or redacted `full`) before persistence; it always discards responses, tool content, authorization data, and token data from hook payloads.
 - QLog sanitizes prompt/response content, tool arguments/results, secrets, and authorization fields before hash or persistence.
 
 No P0 run persisted a real external agent event. Persisted-payload privacy inspection remains guided validation, not PASS.
