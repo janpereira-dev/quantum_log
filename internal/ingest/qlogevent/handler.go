@@ -270,7 +270,7 @@ func sanitizeOpenCodePayload(payload json.RawMessage) json.RawMessage {
 		return json.RawMessage("{}")
 	}
 	allowed := make(map[string]any, 17)
-	for _, key := range []string{"provider", "model", "agent_name", "capture_quality", "session_id", "message_id", "parent_message_id", "part_id", "finish", "interaction_upstream_id", "prompt_hash"} {
+	for _, key := range []string{"provider", "model", "agent_name", "capture_quality", "session_id", "message_id", "parent_message_id", "part_id", "finish", "interaction_upstream_id", "prompt_hash", "tool_name"} {
 		if value, ok := object[key].(string); ok {
 			allowed[key] = value
 		}

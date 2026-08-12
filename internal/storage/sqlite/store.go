@@ -102,6 +102,8 @@ type ModelCallInput struct {
 	EstimatedCostUSDMicros int64
 	EstimatedCostEURMicros int64
 	OccurredAt             time.Time
+	CompletedAt            time.Time
+	DurationMS             *int64
 	CaptureQuality         string
 	Metrics                []MetricInput
 }
@@ -134,16 +136,17 @@ type Interaction struct {
 // ToolCallInput is deliberately metadata-only: tool arguments and results never
 // cross the normalization boundary.
 type ToolCallInput struct {
-	RawEventID     string
-	InteractionID  string
-	ProjectID      string
-	LocationID     string
-	WorkContextID  string
-	SessionID      string
-	ToolName       string
-	ToolType       string
-	OccurredAt     time.Time
-	CaptureQuality string
+	RawEventID            string
+	InteractionID         string
+	InteractionUpstreamID string
+	ProjectID             string
+	LocationID            string
+	WorkContextID         string
+	SessionID             string
+	ToolName              string
+	ToolType              string
+	OccurredAt            time.Time
+	CaptureQuality        string
 }
 
 // MetricInput is one explicitly emitted measurement. Absence is represented
@@ -947,7 +950,7 @@ func (s *Store) RecordInteraction(ctx context.Context, input InteractionInput) (
 	now := timestamp(time.Now())
 	_, err := s.db.ExecContext(ctx, `INSERT INTO interactions (id, source, session_id, upstream_id, raw_event_id, primary_project_id, project_location_id, work_context_id, prompt_capture_mode, prompt_hash, prompt_redacted, occurred_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, input.Source, input.SessionID, input.UpstreamID, nullable(input.RawEventID), nullable(input.ProjectID), nullable(input.ProjectLocationID), nullable(input.WorkContextID), input.PromptCaptureMode, input.PromptHash, input.PromptRedacted, timestamp(input.OccurredAt), now)
 	if err == nil {
-		if err := s.backfillInteractionChildren(ctx, id, input.SessionID, input.UpstreamID); err != nil {
+		if err := s.backfillInteractionChildren(ctx, id, input.Source, input.SessionID, input.UpstreamID); err != nil {
 			return "", false, err
 		}
 		return id, true, nil
@@ -958,13 +961,13 @@ func (s *Store) RecordInteraction(ctx context.Context, input InteractionInput) (
 	if err := s.db.QueryRowContext(ctx, `SELECT id FROM interactions WHERE source = ? AND session_id = ? AND upstream_id = ?`, input.Source, input.SessionID, input.UpstreamID).Scan(&id); err != nil {
 		return "", false, fmt.Errorf("read duplicate interaction: %w", err)
 	}
-	if err := s.backfillInteractionChildren(ctx, id, input.SessionID, input.UpstreamID); err != nil {
+	if err := s.backfillInteractionChildren(ctx, id, input.Source, input.SessionID, input.UpstreamID); err != nil {
 		return "", false, err
 	}
 	return id, false, nil
 }
 
-func (s *Store) backfillInteractionChildren(ctx context.Context, interactionID, sessionID, upstreamID string) error {
+func (s *Store) backfillInteractionChildren(ctx context.Context, interactionID, _ string, sessionID, upstreamID string) error {
 	if sessionID == "" || upstreamID == "" {
 		return nil
 	}
@@ -972,6 +975,12 @@ func (s *Store) backfillInteractionChildren(ctx context.Context, interactionID, 
 		WHERE interaction_id IS NULL AND session_id = ? AND interaction_upstream_id = ?`, interactionID, sessionID, upstreamID)
 	if err != nil {
 		return fmt.Errorf("backfill interaction model calls: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx, `UPDATE tool_calls SET interaction_id = ?
+		WHERE interaction_id IS NULL AND session_id = ? AND interaction_upstream_id = ?
+		AND 1 = (SELECT COUNT(*) FROM interactions i WHERE i.session_id = ? AND i.upstream_id = ?)`, interactionID, sessionID, upstreamID, sessionID, upstreamID)
+	if err != nil {
+		return fmt.Errorf("backfill interaction tool calls: %w", err)
 	}
 	return nil
 }
@@ -1097,7 +1106,7 @@ func (s *Store) RecordToolCall(ctx context.Context, input ToolCallInput) (bool, 
 	if input.CaptureQuality == "" {
 		input.CaptureQuality = "lifecycle_only"
 	}
-	result, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO tool_calls (id, raw_event_id, interaction_id, primary_project_id, project_location_id, work_context_id, session_id, tool_name, tool_type, started_at, capture_quality, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, newID(), input.RawEventID, nullable(input.InteractionID), nullable(input.ProjectID), nullable(input.LocationID), nullable(input.WorkContextID), nullable(input.SessionID), input.ToolName, input.ToolType, timestamp(input.OccurredAt), input.CaptureQuality, timestamp(time.Now()))
+	result, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO tool_calls (id, raw_event_id, interaction_id, interaction_upstream_id, primary_project_id, project_location_id, work_context_id, session_id, tool_name, tool_type, started_at, capture_quality, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, newID(), input.RawEventID, nullable(input.InteractionID), input.InteractionUpstreamID, nullable(input.ProjectID), nullable(input.LocationID), nullable(input.WorkContextID), nullable(input.SessionID), input.ToolName, input.ToolType, timestamp(input.OccurredAt), input.CaptureQuality, timestamp(time.Now()))
 	if err != nil {
 		return false, fmt.Errorf("record tool call: %w", err)
 	}
@@ -1553,7 +1562,7 @@ func (s *Store) RecordModelCall(ctx context.Context, input ModelCallInput) (stri
 		return "", err
 	}
 	defer rollback(tx)
-	_, err = tx.ExecContext(ctx, `INSERT INTO model_calls (id, raw_event_id, interaction_id, interaction_upstream_id, primary_project_id, project_location_id, work_context_id, task_id, session_id, turn_id, started_at, agent_name, provider, model_id, input_tokens, output_tokens, reasoning_tokens, cached_input_tokens, cache_write_tokens, total_tokens, estimated_cost_usd_micros, estimated_cost_eur_micros, capture_quality, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, nullable(input.RawEventID), nullable(input.InteractionID), input.InteractionUpstreamID, nullable(input.ProjectID), nullable(input.ProjectLocationID), nullable(input.WorkContextID), nullable(input.TaskID), nullable(input.SessionID), nullable(input.TurnID), timestamp(input.OccurredAt), input.AgentName, input.Provider, input.ModelID, input.InputTokens, input.OutputTokens, input.ReasoningTokens, input.CachedInputTokens, input.CacheWriteTokens, total, input.EstimatedCostUSDMicros, input.EstimatedCostEURMicros, input.CaptureQuality, now)
+	_, err = tx.ExecContext(ctx, `INSERT INTO model_calls (id, raw_event_id, interaction_id, interaction_upstream_id, primary_project_id, project_location_id, work_context_id, task_id, session_id, turn_id, started_at, finished_at, duration_ms, agent_name, provider, model_id, input_tokens, output_tokens, reasoning_tokens, cached_input_tokens, cache_write_tokens, total_tokens, estimated_cost_usd_micros, estimated_cost_eur_micros, capture_quality, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, nullable(input.RawEventID), nullable(input.InteractionID), input.InteractionUpstreamID, nullable(input.ProjectID), nullable(input.ProjectLocationID), nullable(input.WorkContextID), nullable(input.TaskID), nullable(input.SessionID), nullable(input.TurnID), timestamp(input.OccurredAt), nullableTime(input.CompletedAt), durationMilliseconds(input.DurationMS), input.AgentName, input.Provider, input.ModelID, input.InputTokens, input.OutputTokens, input.ReasoningTokens, input.CachedInputTokens, input.CacheWriteTokens, total, input.EstimatedCostUSDMicros, input.EstimatedCostEURMicros, input.CaptureQuality, now)
 	if err != nil {
 		if input.RawEventID != "" && isUniqueConstraint(err) {
 			var existingID string
@@ -1669,6 +1678,30 @@ func (s *Store) LinkMatchingLegacyModelCall(ctx context.Context, input ModelCall
 		return false, fmt.Errorf("commit legacy model call linkage: %w", err)
 	}
 	return affected == 1, nil
+}
+
+// UpdateLinkedModelCallTiming enriches a pre-upgrade call after its envelope
+// identity has been matched. The caller must validate finish >= start.
+func (s *Store) UpdateLinkedModelCallTiming(ctx context.Context, rawEventID string, startedAt, finishedAt time.Time) error {
+	if rawEventID == "" || startedAt.IsZero() {
+		return nil
+	}
+	if finishedAt.IsZero() {
+		_, err := s.db.ExecContext(ctx, `UPDATE model_calls SET started_at = ? WHERE raw_event_id = ?`, timestamp(startedAt), rawEventID)
+		if err != nil {
+			return fmt.Errorf("update linked model call start: %w", err)
+		}
+		return nil
+	}
+	if finishedAt.Before(startedAt) {
+		return nil
+	}
+	duration := finishedAt.Sub(startedAt).Milliseconds()
+	_, err := s.db.ExecContext(ctx, `UPDATE model_calls SET started_at = ?, finished_at = ?, duration_ms = ? WHERE raw_event_id = ?`, timestamp(startedAt), timestamp(finishedAt), duration, rawEventID)
+	if err != nil {
+		return fmt.Errorf("update linked model call timing: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) EnsureSession(ctx context.Context, id, agentName string, startedAt time.Time) error {
@@ -2898,6 +2931,20 @@ func parseTimestamp(value string) time.Time {
 	return parsed
 }
 func chainKey(source, sessionID string) string { return source + "\x00" + sessionID }
+func durationMilliseconds(value *int64) int64 {
+	if value == nil {
+		return 0
+	}
+	return *value
+}
+
+func nullableTime(value time.Time) any {
+	if value.IsZero() {
+		return nil
+	}
+	return timestamp(value)
+}
+
 func nullable(value string) any {
 	if value == "" {
 		return nil

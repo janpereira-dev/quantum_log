@@ -1,5 +1,5 @@
 // QUANTUM_LOG OpenCode passive capture
-// Managed by qlog. Prompt bodies, responses, tool inputs, and tool outputs never leave OpenCode.
+// Managed by qlog. Responses, tool inputs, and tool outputs never leave OpenCode.
 
 const endpoint = process.env.QLOG_COLLECTOR_URL || "http://127.0.0.1:4318/v1/events"
 
@@ -14,19 +14,12 @@ async function post(event: unknown) {
 function text(value: unknown): string | undefined { return typeof value === "string" ? value : undefined }
 function numberValue(value: unknown): number | undefined { return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined }
 
-async function promptHash(value: unknown): Promise<string> {
-  if (typeof value !== "string" || !value) return ""
-  const bytes = new TextEncoder().encode(value)
-  const digest = await crypto.subtle.digest("SHA-256", bytes)
-  return Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, "0")).join("")
-}
-
 function envelope(type: string, ctx: any, event: any, payload: Record<string, unknown>, upstreamEventID: string) {
   const properties = event?.properties || {}
   const context = event?.context || {}
   return {
     source: "opencode-plugin",
-    session_id: properties.sessionID || properties.info?.sessionID || properties.part?.sessionID || "",
+    session_id: properties.sessionID || properties.info?.sessionID || properties.part?.sessionID || event?.sessionID || "",
     event_type: type,
     occurred_at: new Date(event?.time || Date.now()).toISOString(),
     upstream_event_id: upstreamEventID,
@@ -35,20 +28,31 @@ function envelope(type: string, ctx: any, event: any, payload: Record<string, un
   }
 }
 
-export const QuantumLogPlugin = async (ctx: any) => ({
+export const QuantumLogPlugin = async (ctx: any) => {
+  // OpenCode's tool callbacks identify their session, not their parent message.
+  // Keep the latest user-message identity per session only in plugin memory.
+  // It is sent as metadata and never persisted as prompt text by qlog.
+  const activeInteractions = new Map<string, string>()
+  const toolInteractions = new Map<string, string>()
+  const toolSession = (input: any) => text(input?.sessionID || input?.session?.id) || ""
+  const toolPayload = (input: any, interactionID: string) => ({ agent_name: "opencode", capture_quality: "lifecycle_only", interaction_upstream_id: interactionID, tool_name: text(input?.tool) || text(input?.name) || text(input?.toolName) || "unknown" })
+  return {
   event: async ({ event }: any) => {
     const info = event?.properties?.info
     if (event?.type === "message.updated" && info?.role === "user" && text(info.id)) {
-      // Only hash user text locally. Hash identity permits dedup without transcript retention.
-      const hash = await promptHash(info.text || info.content)
-      await post(envelope("interaction.prompt", ctx, event, { agent_name: "opencode", capture_quality: "lifecycle_only", prompt_hash: hash }, `message:${info.id}`))
+      const interactionID = `message:${info.id}`
+      // Plugins cannot authenticate a receiver before posting. Never forward raw
+      // prompt text: qlog still records this canonical interaction by message ID.
+      const payload: Record<string, unknown> = { agent_name: "opencode", capture_quality: "lifecycle_only", prompt_available: false, prompt_source: "not_emitted" }
+      const sessionID = text(info.sessionID)
+      if (sessionID) activeInteractions.set(sessionID, interactionID)
+      await post(envelope("interaction.prompt", ctx, event, payload, interactionID))
       return
     }
     if (event?.type === "message.updated" && info?.role === "assistant" && text(info.id)) {
       if (numberValue(info.time && info.time.completed) === undefined) return
       const tokens = info.tokens || {}
       const cache = tokens.cache || {}
-	  const sessionID = info.sessionID
       const payload: Record<string, unknown> = { agent_name: "opencode", capture_quality: "agent_reported", interaction_upstream_id: info.parentID ? `message:${info.parentID}` : "" }
       for (const [name, value] of [["provider", info.providerID], ["model", info.modelID], ["message_id", info.id], ["finish", info.finish]]) {
         const next = text(value); if (next) payload[name] = next
@@ -72,11 +76,22 @@ export const QuantumLogPlugin = async (ctx: any) => ({
 	if (["session.created", "session.idle", "session.error"].includes(event?.type)) {
 	  const sessionID = event?.properties?.info?.id || event?.properties?.sessionID || event?.properties?.info?.sessionID || "unknown"
 	  await post(envelope("agent.event", ctx, event, { agent_name: "opencode", capture_quality: "lifecycle_only" }, `session:${sessionID}:${event.type}`))
+	  if (event?.type !== "session.created" && sessionID !== "unknown") activeInteractions.delete(sessionID)
 	}
   },
-  "tool.execute.before": async (input: any) => post(envelope("tool.execute.before", ctx, input, { agent_name: "opencode", capture_quality: "lifecycle_only", interaction_upstream_id: input?.sessionID ? `active:${input.sessionID}` : "" }, `tool.before:${input?.callID || input?.id || "unknown"}`)),
-  "tool.execute.after": async (input: any) => post(envelope("tool.execute.after", ctx, input, { agent_name: "opencode", capture_quality: "lifecycle_only", interaction_upstream_id: input?.sessionID ? `active:${input.sessionID}` : "" }, `tool.after:${input?.callID || input?.id || "unknown"}`)),
-})
+  "tool.execute.before": async (input: any) => {
+    const callID = text(input?.callID || input?.id) || "unknown"
+    const interactionID = activeInteractions.get(toolSession(input)) || ""
+    toolInteractions.set(callID, interactionID)
+    await post(envelope("tool.execute.before", ctx, input, toolPayload(input, interactionID), `tool.before:${callID}`))
+  },
+  "tool.execute.after": async (input: any) => {
+    const callID = text(input?.callID || input?.id) || "unknown"
+    const interactionID = toolInteractions.get(callID) || activeInteractions.get(toolSession(input)) || ""
+    try { await post(envelope("tool.execute.after", ctx, input, toolPayload(input, interactionID), `tool.after:${callID}`)) } finally { toolInteractions.delete(callID) }
+  },
+  }
+}
 
 function metricObservations(tokens: any, cache: any) {
   const observations = []

@@ -29,7 +29,7 @@ Run `qlog setup --yes`, restart configured agents, and use them normally. The co
 | Copilot VS Code | captured | configurable | reported | reported | reported | reported | captured |
 | Codex | captured | configurable | reported | reported | not_emitted_by_source | reported | captured |
 | Claude Code | captured | configurable | reported | reported | not_emitted_by_source | reported | captured |
-| OpenCode | captured | configurable | reported | reported | reported | reported | captured |
+| OpenCode | captured | not_emitted_by_source | reported | reported | reported | reported | captured |
 
 `lifecycle_only` records sanitized lifecycle evidence with no token counters. `unavailable` means qlog does not claim automatic counters. `agent_reported`, `otel_reported`, and `provider_reported` require documented source counters; `estimated` is visibly non-measured. Reports keep capture qualities separate and label cost fields as estimated; they never manufacture tokens or provider spend.
 

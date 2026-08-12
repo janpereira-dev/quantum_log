@@ -2,6 +2,7 @@ package jsonl
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -222,6 +223,45 @@ func TestImportWithoutOccurredAtSuppressesReplayButKeepsDistinctPayloads(t *test
 	}
 	if err := store.VerifyLedger(ctx, "session-a"); err != nil {
 		t.Fatalf("verify timestamp-less ledger: %v", err)
+	}
+}
+
+func TestImportCreatesOneInteractionForEachDistinctPrompt(t *testing.T) {
+	ctx := context.Background()
+	store, err := storepkg.Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	var input strings.Builder
+	for index := 0; index < 100; index++ {
+		fmt.Fprintf(&input, `{"source":"fixture-hook","upstream_event_id":"prompt-%03d","session_id":"session-a","event_type":"interaction.prompt","occurred_at":"2026-08-12T12:00:00Z","payload":{"agent_name":"fixture","interaction_hash":"hash-%03d"}}`+"\n", index, index)
+	}
+	if count, err := Import(ctx, store, strings.NewReader(input.String())); err != nil || count != 100 {
+		t.Fatalf("Import() = %d, %v", count, err)
+	}
+	report, err := store.CapabilityReport(ctx, storepkg.CapabilityQuery{AgentName: "fixture"})
+	if err != nil || report.Interactions != 100 || report.Prompts != 100 || report.ModelCalls != 0 {
+		t.Fatalf("interaction report = %#v, %v", report, err)
+	}
+}
+
+func TestImportReplayedPromptDoesNotDuplicateInteraction(t *testing.T) {
+	ctx := context.Background()
+	store, err := storepkg.Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	input := `{"source":"fixture-hook","upstream_event_id":"prompt-1","session_id":"session-a","event_type":"interaction.prompt","occurred_at":"2026-08-12T12:00:00Z","payload":{"agent_name":"fixture","interaction_hash":"hash-1"}}` + "\n"
+	for attempt := 0; attempt < 2; attempt++ {
+		if _, err := Import(ctx, store, strings.NewReader(input)); err != nil {
+			t.Fatalf("Import(%d): %v", attempt, err)
+		}
+	}
+	report, err := store.CapabilityReport(ctx, storepkg.CapabilityQuery{AgentName: "fixture"})
+	if err != nil || report.Interactions != 1 || report.Prompts != 1 {
+		t.Fatalf("deduplicated interaction report = %#v, %v", report, err)
 	}
 }
 

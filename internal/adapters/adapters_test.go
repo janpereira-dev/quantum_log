@@ -129,21 +129,21 @@ func TestCopilotCLIInstallCreatesIsolatedLifecycleHookConfig(t *testing.T) {
 		}
 	}
 	status, err := adapter.Status(context.Background())
-	if err != nil || !status.Installed || status.CaptureQuality != CaptureOTELReported {
+	if err != nil || !status.Installed {
 		t.Fatalf("status = %#v, %v", status, err)
+	}
+	if runtime.GOOS == "windows" && status.CaptureQuality != CaptureOTELReported {
+		t.Fatalf("Windows capture quality = %q, want %q", status.CaptureQuality, CaptureOTELReported)
+	}
+	if runtime.GOOS != "windows" && (status.State != SetupPartial || status.CaptureQuality != CaptureLifecycleOnly) {
+		t.Fatalf("POSIX status = %#v, want partial lifecycle-only without a non-interactive launcher", status)
 	}
 }
 
-func TestCopilotCLIOTELConfigUsesOfficialEnvironmentWithoutContentCapture(t *testing.T) {
-	config := copilotCLIOTELConfig("http://127.0.0.1:4318")
+func TestCopilotCLIOTELLauncherUsesOfficialEnvironmentWithoutGlobalMutation(t *testing.T) {
+	config := copilotCLIPosixBlock()
 	for _, want := range []string{
-		"COPILOT_OTEL_ENABLED=true",
-		"COPILOT_OTEL_EXPORTER_TYPE=otlp-http",
-		"OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318",
-		"OTEL_EXPORTER_OTLP_PROTOCOL=http/json",
-		"OTEL_METRICS_EXPORTER=none",
-		"OTEL_LOGS_EXPORTER=none",
-		"OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false",
+		"COPILOT_OTEL_ENABLED=true", "COPILOT_OTEL_EXPORTER_TYPE=otlp-http", "OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318", "OTEL_EXPORTER_OTLP_PROTOCOL=http/json", "OTEL_METRICS_EXPORTER=none", "OTEL_LOGS_EXPORTER=none", "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false", "command copilot",
 	} {
 		if !strings.Contains(config, want) {
 			t.Fatalf("Copilot CLI OTel config missing %q:\n%s", want, config)
@@ -190,22 +190,14 @@ func TestCopilotCLIInstallConfiguresDiscoveredOneDrivePowerShellProfile(t *testi
 	if !strings.Contains(profile, "$env:USER_SETTING = 'preserve'") {
 		t.Fatalf("install did not preserve profile contents:\n%s", profile)
 	}
-	if !strings.Contains(profile, copilotCLIProfileBlockStart) || !strings.Contains(profile, "$env:COPILOT_OTEL_ENABLED = 'true'") {
+	if !strings.Contains(profile, copilotCLIProfileBlockStart) || !strings.Contains(profile, "function global:copilot") {
 		t.Fatalf("install did not configure discovered profile:\n%s", profile)
 	}
 	if !adapter.windowsPowerShellProfileInstalled() {
 		t.Fatal("normal PowerShell profile state is not installed")
 	}
-	for name, expected := range copilotCLIPersistentEnvironment {
-		if value := environment[name]; value != expected {
-			t.Fatalf("persistent user environment %s = %q, want %q", name, value, expected)
-		}
-	}
 	if _, err := adapter.Uninstall(context.Background(), InstallOptions{}); err != nil {
 		t.Fatalf("uninstall: %v", err)
-	}
-	if len(environment) != 0 {
-		t.Fatalf("uninstall left qlog-owned persistent environment: %#v", environment)
 	}
 	profile = string(mustReadFile(t, redirectedProfile))
 	if strings.Contains(profile, copilotCLIProfileBlockStart) || !strings.Contains(profile, "$env:USER_SETTING = 'preserve'") {
@@ -291,6 +283,7 @@ func TestCopilotCLIProfileWriteFallbackPreservesExistingProfileForUninstall(t *t
 		t.Skip("Windows-only PowerShell profile behavior")
 	}
 	profile := filepath.Join(t.TempDir(), "OneDrive", "Documents", "WindowsPowerShell", "Microsoft.PowerShell_profile.ps1")
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
 	if err := os.MkdirAll(filepath.Dir(profile), 0o700); err != nil {
 		t.Fatalf("create profile parent: %v", err)
 	}
@@ -771,7 +764,7 @@ func TestOpenCodeInstallWritesGlobalPluginPostingLocalEvents(t *testing.T) {
 		t.Fatalf("read plugin: %v", err)
 	}
 	text := string(contents)
-	for _, want := range []string{"/v1/events", "session.created", "message.updated", "message.part.updated", "tool.execute.before", "tool.execute.after", "properties.info", "properties.part", "step-finish", "capture_quality", "input_tokens", "output_tokens", "reasoning_tokens", "cached_input_tokens", "cache_write_tokens"} {
+	for _, want := range []string{"/v1/events", "session.created", "message.updated", "message.part.updated", "tool.execute.before", "tool.execute.after", "properties.info", "properties.part", "step-finish", "capture_quality", "input_tokens", "output_tokens", "reasoning_tokens", "cached_input_tokens", "cache_write_tokens", "tool_name", "callID", "activeInteractions.get(toolSession(input))", "toolInteractions.get(callID)", "prompt_available: false", "prompt_source: \"not_emitted\"", "event?.sessionID"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("plugin missing %q:\n%s", want, text)
 		}
@@ -792,7 +785,7 @@ func TestOpenCodePluginUsesAuditedUsageFieldsWithoutRawContent(t *testing.T) {
 			t.Fatalf("plugin missing %q:\n%s", want, source)
 		}
 	}
-	for _, forbidden := range []string{"payload: info", "payload: part", "...info", "...part", `setString(payload, "prompt"`, `setString(payload, "response"`, `setString(payload, "tool_args"`, `setString(payload, "tool_results"`, `setString(payload, "authorization"`, `setString(payload, "secret"`, "total_tokens"} {
+	for _, forbidden := range []string{"payload: info", "payload: part", "...info", "...part", `setString(payload, "response"`, `setString(payload, "tool_args"`, `setString(payload, "tool_results"`, `setString(payload, "authorization"`, `setString(payload, "secret"`, "total_tokens"} {
 		if strings.Contains(source, forbidden) {
 			t.Fatalf("plugin forwards forbidden raw content %q:\n%s", forbidden, source)
 		}
@@ -1007,7 +1000,7 @@ func TestClaudeCodeUninstallRemovesOnlyQlogOwnedOTELEnvironment(t *testing.T) {
 	}
 }
 
-func TestCopilotCLIUninstallRemovesOTelWhenHookIsMissingAndHonorsDryRun(t *testing.T) {
+func TestCopilotCLIUninstallRemovesLauncherWhenHookIsMissingAndHonorsDryRun(t *testing.T) {
 	configHome := t.TempDir()
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
 	adapter := newCopilotCLIAdapter()
@@ -1022,16 +1015,24 @@ func TestCopilotCLIUninstallRemovesOTelWhenHookIsMissingAndHonorsDryRun(t *testi
 	if err != nil || dryRun.Changed {
 		t.Fatalf("dry-run uninstall = %#v, %v", dryRun, err)
 	}
-	if _, err := os.Stat(adapter.otelPath()); err != nil {
-		t.Fatalf("dry run removed OTel file: %v", err)
+	launcherInstalled := adapter.posixProfileInstalled()
+	if runtime.GOOS == "windows" {
+		launcherInstalled = adapter.windowsPowerShellProfileInstalled()
+	}
+	if !launcherInstalled {
+		t.Fatal("dry run removed Copilot launcher")
 	}
 
 	result, err := adapter.Uninstall(context.Background(), InstallOptions{})
 	if err != nil || !result.Changed {
 		t.Fatalf("uninstall = %#v, %v", result, err)
 	}
-	if _, err := os.Stat(adapter.otelPath()); !os.IsNotExist(err) {
-		t.Fatalf("qlog OTel config remains: %v", err)
+	launcherInstalled = adapter.posixProfileInstalled()
+	if runtime.GOOS == "windows" {
+		launcherInstalled = adapter.windowsPowerShellProfileInstalled()
+	}
+	if launcherInstalled {
+		t.Fatal("qlog Copilot launcher remains")
 	}
 }
 

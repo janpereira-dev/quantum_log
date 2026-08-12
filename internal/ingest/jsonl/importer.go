@@ -45,6 +45,8 @@ type modelCallPayload struct {
 	CacheWriteTokens       int64               `json:"cache_write_tokens"`
 	EstimatedCostUSDMicros int64               `json:"estimated_cost_usd_micros"`
 	EstimatedCostEURMicros int64               `json:"estimated_cost_eur_micros"`
+	CreatedAt              int64               `json:"created_at"`
+	CompletedAt            int64               `json:"completed_at"`
 	CaptureQuality         string              `json:"capture_quality"`
 	MetricObservations     []metricObservation `json:"metric_observations"`
 }
@@ -188,7 +190,7 @@ func normalizeToolCall(ctx context.Context, store *storepkg.Store, parsed event,
 			interactionID, _, _ = store.InteractionBySessionUpstream(ctx, parsed.SessionID, payload.InteractionUpstreamID)
 		}
 	}
-	return store.RecordToolCall(ctx, storepkg.ToolCallInput{RawEventID: rawEventID, InteractionID: interactionID, ProjectID: parsed.ProjectID, LocationID: parsed.ProjectLocationID, WorkContextID: parsed.WorkContextID, SessionID: parsed.SessionID, ToolName: payload.ToolName, ToolType: eventType, OccurredAt: parsed.OccurredAt, CaptureQuality: payload.CaptureQuality})
+	return store.RecordToolCall(ctx, storepkg.ToolCallInput{RawEventID: rawEventID, InteractionID: interactionID, InteractionUpstreamID: payload.InteractionUpstreamID, ProjectID: parsed.ProjectID, LocationID: parsed.ProjectLocationID, WorkContextID: parsed.WorkContextID, SessionID: parsed.SessionID, ToolName: payload.ToolName, ToolType: eventType, OccurredAt: parsed.OccurredAt, CaptureQuality: payload.CaptureQuality})
 }
 
 func normalizeInteraction(ctx context.Context, store *storepkg.Store, parsed event, rawEventID string) (bool, error) {
@@ -232,6 +234,20 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+func unixMillis(value int64) time.Time {
+	if value <= 0 {
+		return time.Time{}
+	}
+	return time.UnixMilli(value).UTC()
+}
+
+func modelCallStartedAt(fallback time.Time, createdAt int64) time.Time {
+	if created := unixMillis(createdAt); !created.IsZero() {
+		return created
+	}
+	return fallback
+}
+
 func normalizeModelCall(ctx context.Context, store *storepkg.Store, parsed event, rawEventID string) (bool, error) {
 	eventType := strings.ReplaceAll(strings.ToLower(parsed.EventType), "_", ".")
 	if eventType != "model.call" {
@@ -254,7 +270,8 @@ func normalizeModelCall(ctx context.Context, store *storepkg.Store, parsed event
 	if payload.Provider == "" || payload.Model == "" {
 		return false, nil
 	}
-	if err := store.EnsureSession(ctx, parsed.SessionID, payload.AgentName, parsed.OccurredAt); err != nil {
+	sourceStartedAt := modelCallStartedAt(parsed.OccurredAt, payload.CreatedAt)
+	if err := store.EnsureSession(ctx, parsed.SessionID, payload.AgentName, sourceStartedAt); err != nil {
 		return false, err
 	}
 	input := storepkg.ModelCallInput{
@@ -299,9 +316,20 @@ func normalizeModelCall(ctx context.Context, store *storepkg.Store, parsed event
 			input.Metrics = append(input.Metrics, storepkg.MetricInput{Name: metric.Name, Value: metric.Value, Source: metric.Source, RawKey: metric.RawKey, Confidence: metric.Confidence})
 		}
 	}
+	// Legacy rows were keyed by their original envelope timestamp. Reconcile
+	// that representation before adopting a more precise source timestamp.
 	linked, err = store.LinkMatchingLegacyModelCall(ctx, input)
-	if err != nil || linked {
-		return linked, err
+	if err != nil {
+		return false, err
+	}
+	input.OccurredAt = sourceStartedAt
+	if completed := unixMillis(payload.CompletedAt); !completed.IsZero() && !input.OccurredAt.IsZero() && !completed.Before(input.OccurredAt) {
+		input.CompletedAt = completed
+		duration := completed.Sub(input.OccurredAt).Milliseconds()
+		input.DurationMS = &duration
+	}
+	if linked {
+		return true, store.UpdateLinkedModelCallTiming(ctx, input.RawEventID, input.OccurredAt, input.CompletedAt)
 	}
 	_, err = store.RecordModelCall(ctx, input)
 	return err == nil, err

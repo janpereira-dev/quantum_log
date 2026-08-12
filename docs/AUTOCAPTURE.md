@@ -35,7 +35,7 @@ The collector listens on loopback and is installed as a user-level service. On W
 | Codex | captured | configurable | reported | reported | not_emitted_by_source | reported | captured |
 | Copilot CLI | captured | configurable | reported | reported | not_emitted_by_source | reported | captured |
 | Copilot VS Code | captured | configurable | reported | reported | reported | reported | captured |
-| OpenCode | captured | configurable | reported | reported | reported | reported | captured |
+| OpenCode | captured | not_emitted_by_source | reported | reported | reported | reported | captured |
 
 `lifecycle_only` means sanitized lifecycle evidence, not token counters. `otel_reported` and `agent_reported` mean qlog accepts documented source counters only when source event reaches collector. qlog never invents token counts.
 
