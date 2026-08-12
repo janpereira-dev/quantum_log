@@ -41,6 +41,11 @@ func (a copilotCLIAdapter) Install(_ context.Context, options InstallOptions) (I
 			return InstallResult{}, err
 		}
 		changes = append(changes, profileChange)
+		legacyChange, err := a.cleanupLegacyWindowsUserEnvironment(options.DryRun)
+		if err != nil {
+			return InstallResult{}, err
+		}
+		changes = append(changes, legacyChange)
 	} else {
 		profileChange, err := a.installPosixProfile(options.DryRun)
 		if err != nil {
@@ -182,6 +187,10 @@ func (a copilotCLIAdapter) hooksPath() string {
 
 func (a copilotCLIAdapter) windowsPowerShellProfileStatePath() string {
 	return filepath.Join(filepath.Dir(a.hooksPath()), "qlog-copilot-otel-profile")
+}
+
+func (a copilotCLIAdapter) windowsUserEnvironmentStatePath() string {
+	return filepath.Join(filepath.Dir(a.hooksPath()), "qlog-copilot-otel-user-env")
 }
 
 func copilotCLIHooksConfig(home, executablePath string) string {

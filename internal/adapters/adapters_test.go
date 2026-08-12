@@ -277,6 +277,7 @@ func TestCopilotCLIProfileWriteFallbackPreservesExistingProfileForUninstall(t *t
 		t.Skip("Windows-only PowerShell profile behavior")
 	}
 	profile := filepath.Join(t.TempDir(), "OneDrive", "Documents", "WindowsPowerShell", "Microsoft.PowerShell_profile.ps1")
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
 	if err := os.MkdirAll(filepath.Dir(profile), 0o700); err != nil {
 		t.Fatalf("create profile parent: %v", err)
 	}
