@@ -196,7 +196,7 @@ func normalizeInteraction(ctx context.Context, store *storepkg.Store, parsed eve
 	// each interactive turn but not the prompt body. Treat that source-native
 	// response identity as a privacy-safe interaction root rather than dropping
 	// the prompt count altogether.
-	if !isInteractionEvent(parsed.EventType) && !(parsed.Source == "codex-app-server" && strings.EqualFold(parsed.EventType, "model.call")) {
+	if !isInteractionEvent(parsed.EventType) && !isCodexResponseRoot(parsed) {
 		return false, nil
 	}
 	if parsed.IngestionIdentity == "" {
@@ -217,6 +217,10 @@ func normalizeInteraction(ctx context.Context, store *storepkg.Store, parsed eve
 		OccurredAt:        parsed.OccurredAt,
 	})
 	return created, err
+}
+
+func isCodexResponseRoot(parsed event) bool {
+	return parsed.Source == "codex-app-server" && strings.EqualFold(parsed.EventType, "model.call")
 }
 
 func firstNonEmpty(values ...string) string {
