@@ -66,13 +66,16 @@ export const QuantumLogPlugin = async (ctx: any) => ({
 	if (event?.type === "message.part.updated" && event?.properties?.part?.type === "step-finish") {
 	  const part = event.properties.part
 	  const sessionID = part.sessionID
-	  await post(envelope("agent.event", ctx, event, { agent_name: "opencode", capture_quality: "lifecycle_only" }, `part:${event.properties.part.id}`))
+	  await post(envelope("agent.event", ctx, event, { agent_name: "opencode", capture_quality: "lifecycle_only" }, `part:${part.sessionID || "unknown"}:${part.id}`))
 	  return
 	}
-    if (["session.created", "session.idle", "session.error"].includes(event?.type)) await post(envelope("agent.event", ctx, event, { agent_name: "opencode", capture_quality: "lifecycle_only" }, event?.id || event?.type))
+	if (["session.created", "session.idle", "session.error"].includes(event?.type)) {
+	  const sessionID = event?.properties?.info?.id || event?.properties?.sessionID || event?.properties?.info?.sessionID || "unknown"
+	  await post(envelope("agent.event", ctx, event, { agent_name: "opencode", capture_quality: "lifecycle_only" }, `session:${sessionID}:${event.type}`))
+	}
   },
-  "tool.execute.before": async (input: any) => post(envelope("tool.execute.before", ctx, input, { agent_name: "opencode", capture_quality: "lifecycle_only", interaction_upstream_id: input?.sessionID ? `active:${input.sessionID}` : "" }, input?.id || "tool.before")),
-  "tool.execute.after": async (input: any) => post(envelope("tool.execute.after", ctx, input, { agent_name: "opencode", capture_quality: "lifecycle_only", interaction_upstream_id: input?.sessionID ? `active:${input.sessionID}` : "" }, input?.id || "tool.after")),
+  "tool.execute.before": async (input: any) => post(envelope("tool.execute.before", ctx, input, { agent_name: "opencode", capture_quality: "lifecycle_only", interaction_upstream_id: input?.sessionID ? `active:${input.sessionID}` : "" }, `tool.before:${input?.callID || input?.id || "unknown"}`)),
+  "tool.execute.after": async (input: any) => post(envelope("tool.execute.after", ctx, input, { agent_name: "opencode", capture_quality: "lifecycle_only", interaction_upstream_id: input?.sessionID ? `active:${input.sessionID}` : "" }, `tool.after:${input?.callID || input?.id || "unknown"}`)),
 })
 
 function metricObservations(tokens: any, cache: any) {

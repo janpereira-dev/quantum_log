@@ -2632,7 +2632,7 @@ func canonicalEvent(input RawEventInput, payload []byte) string {
 // CanonicalIngestionIdentity identifies a sanitized event without including receive time.
 func CanonicalIngestionIdentity(input RawEventInput, sanitizedPayload []byte) (string, error) {
 	if identity := strings.TrimSpace(input.IngestionIdentity); identity != "" {
-		encoded, err := json.Marshal(struct{ Source, Identity string }{input.Source, identity})
+		encoded, err := json.Marshal(struct{ Source, SessionID, Identity string }{input.Source, input.SessionID, identity})
 		if err != nil {
 			return "", err
 		}
