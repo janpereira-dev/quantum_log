@@ -78,7 +78,7 @@ func (a copilotCLIAdapter) installWindowsUserEnvironment(dryRun bool) (SetupChan
 			return SetupChange{}, fmt.Errorf("read Windows user environment %s: %w", name, err)
 		}
 		if found && value != expected {
-			return SetupChange{}, fmt.Errorf("Windows user environment %s is already set differently; qlog will not overwrite it", name)
+			return SetupChange{}, fmt.Errorf("windows user environment %s is already set differently; qlog will not overwrite it", name)
 		}
 		if !found {
 			owned = append(owned, name)
@@ -117,10 +117,17 @@ func discoverCopilotCLIPowerShellProfile() (string, error) {
 		return "", err
 	}
 	profile := strings.TrimSpace(output)
-	if profile == "" || !filepath.IsAbs(profile) {
+	if profile == "" || !isAbsoluteWindowsPath(profile) {
 		return "", fmt.Errorf("PowerShell returned invalid current-user profile path %q", profile)
 	}
 	return profile, nil
+}
+
+func isAbsoluteWindowsPath(path string) bool {
+	if filepath.IsAbs(path) {
+		return true
+	}
+	return len(path) >= 3 && ((path[0] >= 'a' && path[0] <= 'z') || (path[0] >= 'A' && path[0] <= 'Z')) && path[1] == ':' && (path[2] == '\\' || path[2] == '/')
 }
 
 func copilotCLIPowerShellProfilePath() string {

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -227,9 +226,6 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 }
 
 func recordCollectorExternalPolicy(status *CollectorBootstrapStatus, err error) bool {
-	if runtime.GOOS != "windows" {
-		return false
-	}
 	if !isWindowsSchedulerPolicyDenial(err) {
 		return false
 	}
