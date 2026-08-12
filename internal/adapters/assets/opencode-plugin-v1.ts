@@ -2,7 +2,6 @@
 // Managed by qlog. Responses, tool inputs, and tool outputs never leave OpenCode.
 
 const endpoint = process.env.QLOG_COLLECTOR_URL || "http://127.0.0.1:4318/v1/events"
-const localCollector = /^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?(?:\/|$)/i.test(endpoint)
 
 async function post(event: unknown) {
   try {
@@ -42,13 +41,9 @@ export const QuantumLogPlugin = async (ctx: any) => {
     const info = event?.properties?.info
     if (event?.type === "message.updated" && info?.role === "user" && text(info.id)) {
       const interactionID = `message:${info.id}`
-      const prompt = text(info.text || info.content) || ""
-      // qlog enforces prompt-capture at its persistence boundary and derives
-      // the installation-local HMAC. This local payload is never persisted raw.
-      const payload: Record<string, unknown> = { agent_name: "opencode", capture_quality: "lifecycle_only", prompt_available: localCollector }
-      // Raw text may only cross the plugin boundary to qlog's loopback collector.
-      // A custom URL can be remote, so it receives no prompt body in any mode.
-      if (localCollector) payload.prompt = prompt
+      // Plugins cannot authenticate a receiver before posting. Never forward raw
+      // prompt text: qlog still records this canonical interaction by message ID.
+      const payload: Record<string, unknown> = { agent_name: "opencode", capture_quality: "lifecycle_only", prompt_available: false, prompt_source: "not_emitted" }
       const sessionID = text(info.sessionID)
       if (sessionID) activeInteractions.set(sessionID, interactionID)
       await post(envelope("interaction.prompt", ctx, event, payload, interactionID))

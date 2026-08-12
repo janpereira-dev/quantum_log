@@ -758,7 +758,7 @@ func TestOpenCodeInstallWritesGlobalPluginPostingLocalEvents(t *testing.T) {
 		t.Fatalf("read plugin: %v", err)
 	}
 	text := string(contents)
-	for _, want := range []string{"/v1/events", "session.created", "message.updated", "message.part.updated", "tool.execute.before", "tool.execute.after", "properties.info", "properties.part", "step-finish", "capture_quality", "input_tokens", "output_tokens", "reasoning_tokens", "cached_input_tokens", "cache_write_tokens", "tool_name", "callID", "activeInteractions.get(toolSession(input))", "toolInteractions.get(callID)", "localCollector", "event?.sessionID"} {
+	for _, want := range []string{"/v1/events", "session.created", "message.updated", "message.part.updated", "tool.execute.before", "tool.execute.after", "properties.info", "properties.part", "step-finish", "capture_quality", "input_tokens", "output_tokens", "reasoning_tokens", "cached_input_tokens", "cache_write_tokens", "tool_name", "callID", "activeInteractions.get(toolSession(input))", "toolInteractions.get(callID)", "prompt_available: false", "prompt_source: \"not_emitted\"", "event?.sessionID"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("plugin missing %q:\n%s", want, text)
 		}

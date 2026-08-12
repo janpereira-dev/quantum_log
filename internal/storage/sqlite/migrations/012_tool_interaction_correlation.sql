@@ -10,3 +10,16 @@ WHERE interaction_upstream_id = '' AND raw_event_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_tool_calls_interaction_correlation
     ON tool_calls(session_id, interaction_upstream_id)
     WHERE interaction_id IS NULL AND interaction_upstream_id <> '';
+
+-- Link already-migrated children only when the cross-source identity is unique.
+UPDATE tool_calls
+SET interaction_id = (
+    SELECT MIN(i.id) FROM interactions i
+    WHERE i.session_id = tool_calls.session_id
+      AND i.upstream_id = tool_calls.interaction_upstream_id
+)
+WHERE interaction_id IS NULL
+  AND interaction_upstream_id <> ''
+  AND 1 = (SELECT COUNT(*) FROM interactions i
+           WHERE i.session_id = tool_calls.session_id
+             AND i.upstream_id = tool_calls.interaction_upstream_id);

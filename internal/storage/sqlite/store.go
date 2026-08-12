@@ -967,7 +967,7 @@ func (s *Store) RecordInteraction(ctx context.Context, input InteractionInput) (
 	return id, false, nil
 }
 
-func (s *Store) backfillInteractionChildren(ctx context.Context, interactionID, source, sessionID, upstreamID string) error {
+func (s *Store) backfillInteractionChildren(ctx context.Context, interactionID, _ string, sessionID, upstreamID string) error {
 	if sessionID == "" || upstreamID == "" {
 		return nil
 	}
@@ -978,7 +978,7 @@ func (s *Store) backfillInteractionChildren(ctx context.Context, interactionID, 
 	}
 	_, err = s.db.ExecContext(ctx, `UPDATE tool_calls SET interaction_id = ?
 		WHERE interaction_id IS NULL AND session_id = ? AND interaction_upstream_id = ?
-		AND EXISTS (SELECT 1 FROM raw_events r WHERE r.id = tool_calls.raw_event_id AND r.source = ?)`, interactionID, sessionID, upstreamID, source)
+		AND 1 = (SELECT COUNT(*) FROM interactions i WHERE i.session_id = ? AND i.upstream_id = ?)`, interactionID, sessionID, upstreamID, sessionID, upstreamID)
 	if err != nil {
 		return fmt.Errorf("backfill interaction tool calls: %w", err)
 	}

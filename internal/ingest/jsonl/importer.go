@@ -270,7 +270,8 @@ func normalizeModelCall(ctx context.Context, store *storepkg.Store, parsed event
 	if payload.Provider == "" || payload.Model == "" {
 		return false, nil
 	}
-	if err := store.EnsureSession(ctx, parsed.SessionID, payload.AgentName, parsed.OccurredAt); err != nil {
+	sourceStartedAt := modelCallStartedAt(parsed.OccurredAt, payload.CreatedAt)
+	if err := store.EnsureSession(ctx, parsed.SessionID, payload.AgentName, sourceStartedAt); err != nil {
 		return false, err
 	}
 	input := storepkg.ModelCallInput{
@@ -321,7 +322,7 @@ func normalizeModelCall(ctx context.Context, store *storepkg.Store, parsed event
 	if err != nil || linked {
 		return linked, err
 	}
-	input.OccurredAt = modelCallStartedAt(parsed.OccurredAt, payload.CreatedAt)
+	input.OccurredAt = sourceStartedAt
 	if completed := unixMillis(payload.CompletedAt); !completed.IsZero() && !input.OccurredAt.IsZero() && !completed.Before(input.OccurredAt) {
 		input.CompletedAt = completed
 		duration := completed.Sub(input.OccurredAt).Milliseconds()
