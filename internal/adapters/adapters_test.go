@@ -251,7 +251,7 @@ func TestCopilotCLIInstallFallsBackToPowerShellForMissingProfileWrite(t *testing
 		if len(args) != 7 || args[0] != "-NoProfile" || args[1] != "-NonInteractive" || args[2] != "-Command" || args[4] != profile || args[6] != "" {
 			t.Fatalf("command args = %#v", args)
 		}
-		if args[3] != copilotCLIPowerShellProfileWriteScript || strings.Contains(args[3], "-Force") || strings.Contains(args[3], "ToHexString") || !strings.Contains(args[3], "New-Item -ItemType File -Path $target") || !strings.Contains(args[3], "Set-Content -LiteralPath $target") || !strings.Contains(args[3], "[BitConverter]::ToString") {
+		if args[3] != copilotCLIPowerShellProfileWriteScript || strings.Contains(args[3], "-Force") || strings.Contains(args[3], "ToHexString") || !strings.Contains(args[3], "New-Item -ItemType File -Path $target") || !strings.Contains(args[3], "[IO.File]::WriteAllBytes($target, $bytes)") || !strings.Contains(args[3], "[BitConverter]::ToString") {
 			t.Fatalf("unsafe PowerShell write script: %q", args[3])
 		}
 		payload, err := base64.StdEncoding.DecodeString(args[5])

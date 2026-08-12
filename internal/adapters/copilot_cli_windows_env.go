@@ -50,7 +50,7 @@ var copilotCLIPowerShellProfileWriteCommand = func(name string, args ...string) 
 const copilotCLIPowerShellProfileWriteScript = `& {
 param([string]$target, [string]$payload, [string]$expectedHash)
 $ErrorActionPreference = 'Stop'
-$contents = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($payload))
+$bytes = [Convert]::FromBase64String($payload)
 if (Test-Path -LiteralPath $target -PathType Leaf) {
     if ($expectedHash -eq '') { throw 'PowerShell profile appeared during qlog setup' }
     $currentHash = ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([IO.File]::ReadAllBytes($target)))).Replace('-', '').ToLowerInvariant()
@@ -59,7 +59,7 @@ if (Test-Path -LiteralPath $target -PathType Leaf) {
     if ($expectedHash -ne '') { throw 'PowerShell profile disappeared during qlog setup' }
     [void](New-Item -ItemType File -Path $target -ErrorAction Stop)
 }
-Set-Content -LiteralPath $target -Value $contents -NoNewline -Encoding utf8 -ErrorAction Stop
+[IO.File]::WriteAllBytes($target, $bytes)
 }`
 
 // SetCopilotCLIPowerShellProfileDiscoveryForTesting isolates callers in other
