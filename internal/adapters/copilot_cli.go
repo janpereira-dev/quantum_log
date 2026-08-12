@@ -86,7 +86,12 @@ func (a copilotCLIAdapter) PlanInstall(_ context.Context, options SetupOptions) 
 		notes[0] = "installs lifecycle hooks plus a qlog-owned shell Copilot-only OTel launcher"
 	}
 	notes = append(notes, "OTel content capture remains disabled; clean-device source evidence is still required")
-	return SetupPlan{AdapterID: a.id, State: SetupAvailable, CaptureQuality: CaptureOTELReported, Changes: changes, Notes: notes}, nil
+	quality, state := CaptureOTELReported, SetupAvailable
+	if runtime.GOOS != "windows" {
+		quality, state = CaptureLifecycleOnly, SetupPartial
+		notes = append(notes, "POSIX profile launchers apply only to interactive bash/zsh shells; non-interactive launches remain lifecycle-only")
+	}
+	return SetupPlan{AdapterID: a.id, State: state, CaptureQuality: quality, Changes: changes, Notes: notes}, nil
 }
 
 func (a copilotCLIAdapter) Status(ctx context.Context) (SetupStatus, error) {
