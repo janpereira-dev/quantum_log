@@ -129,8 +129,14 @@ func TestCopilotCLIInstallCreatesIsolatedLifecycleHookConfig(t *testing.T) {
 		}
 	}
 	status, err := adapter.Status(context.Background())
-	if err != nil || !status.Installed || status.CaptureQuality != CaptureOTELReported {
+	if err != nil || !status.Installed {
 		t.Fatalf("status = %#v, %v", status, err)
+	}
+	if runtime.GOOS == "windows" && status.CaptureQuality != CaptureOTELReported {
+		t.Fatalf("Windows capture quality = %q, want %q", status.CaptureQuality, CaptureOTELReported)
+	}
+	if runtime.GOOS != "windows" && (status.State != SetupPartial || status.CaptureQuality != CaptureLifecycleOnly) {
+		t.Fatalf("POSIX status = %#v, want partial lifecycle-only without a non-interactive launcher", status)
 	}
 }
 
