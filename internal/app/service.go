@@ -3,6 +3,8 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -135,7 +137,11 @@ func (s *Service) ResolveProject(ctx context.Context, explicitProject, adapterPr
 			return resolved, nil
 		}
 		name := filepath.Base(resolved.GitRoot)
-		project, location, registerErr := s.Store.RegisterProject(ctx, name, name, resolved.GitRoot)
+		// Basenames are not project identities: /work/a/api and /work/b/api
+		// must never collapse into the same ledger project.
+		digest := sha256.Sum256([]byte(filepath.Clean(resolved.GitRoot)))
+		slug := name + "-" + hex.EncodeToString(digest[:8])
+		project, location, registerErr := s.Store.RegisterProject(ctx, name, slug, resolved.GitRoot)
 		if registerErr != nil {
 			return resolved, nil
 		}
