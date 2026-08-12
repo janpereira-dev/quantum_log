@@ -105,7 +105,10 @@ func applyManagedFileWithWrite(path, content string, dryRun bool, writeFile func
 	change := SetupChange{Path: path, Action: action, Description: "qlog managed file written"}
 	if err == nil {
 		backupPath := fmt.Sprintf("%s.qlog-backup-%s", path, time.Now().UTC().Format("20060102150405"))
-		if err := os.WriteFile(backupPath, currentBytes, 0o600); err != nil {
+		// Use the same writer as the managed target. Windows profile paths can
+		// require the PowerShell fallback (for example under OneDrive), and a
+		// raw os.WriteFile backup would fail before that fallback can run.
+		if err := writeFile(backupPath, currentBytes, 0o600, nil, false); err != nil {
 			return SetupChange{}, fmt.Errorf("write backup: %w", err)
 		}
 		change.BackupPath = backupPath
