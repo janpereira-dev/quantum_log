@@ -1686,16 +1686,18 @@ func (s *Store) UpdateLinkedModelCallTiming(ctx context.Context, rawEventID stri
 	if rawEventID == "" || startedAt.IsZero() {
 		return nil
 	}
-	var duration int64
-	finished := any(nil)
-	if !finishedAt.IsZero() {
-		if finishedAt.Before(startedAt) {
-			return nil
+	if finishedAt.IsZero() {
+		_, err := s.db.ExecContext(ctx, `UPDATE model_calls SET started_at = ? WHERE raw_event_id = ?`, timestamp(startedAt), rawEventID)
+		if err != nil {
+			return fmt.Errorf("update linked model call start: %w", err)
 		}
-		duration = finishedAt.Sub(startedAt).Milliseconds()
-		finished = timestamp(finishedAt)
+		return nil
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE model_calls SET started_at = ?, finished_at = ?, duration_ms = ? WHERE raw_event_id = ?`, timestamp(startedAt), finished, duration, rawEventID)
+	if finishedAt.Before(startedAt) {
+		return nil
+	}
+	duration := finishedAt.Sub(startedAt).Milliseconds()
+	_, err := s.db.ExecContext(ctx, `UPDATE model_calls SET started_at = ?, finished_at = ?, duration_ms = ? WHERE raw_event_id = ?`, timestamp(startedAt), timestamp(finishedAt), duration, rawEventID)
 	if err != nil {
 		return fmt.Errorf("update linked model call timing: %w", err)
 	}

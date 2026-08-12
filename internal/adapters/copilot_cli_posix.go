@@ -13,7 +13,7 @@ const (
 	copilotCLIPosixBlockEnd   = "# <<< qlog Copilot CLI OTel <<<"
 )
 
-var copilotCLIPosixWrapper = regexp.MustCompile(`(?m)^\s*(?:function\s+)?copilot\s*\(\)|^\s*alias\s+copilot=`)
+var copilotCLIPosixWrapper = regexp.MustCompile(`(?m)^\s*(?:function\s+)?copilot\s*(?:\(\s*\)|\{)|^\s*alias\s+copilot\s*=`)
 
 func (a copilotCLIAdapter) posixProfilePath() string {
 	if root := os.Getenv("QLOG_ADAPTER_CONFIG_HOME"); root != "" {

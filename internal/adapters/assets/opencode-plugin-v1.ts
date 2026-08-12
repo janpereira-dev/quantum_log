@@ -76,6 +76,7 @@ export const QuantumLogPlugin = async (ctx: any) => {
 	if (["session.created", "session.idle", "session.error"].includes(event?.type)) {
 	  const sessionID = event?.properties?.info?.id || event?.properties?.sessionID || event?.properties?.info?.sessionID || "unknown"
 	  await post(envelope("agent.event", ctx, event, { agent_name: "opencode", capture_quality: "lifecycle_only" }, `session:${sessionID}:${event.type}`))
+	  if (event?.type !== "session.created" && sessionID !== "unknown") activeInteractions.delete(sessionID)
 	}
   },
   "tool.execute.before": async (input: any) => {
