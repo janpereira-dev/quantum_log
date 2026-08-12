@@ -108,10 +108,15 @@ func (a copilotCLIAdapter) Status(ctx context.Context) (SetupStatus, error) {
 		state = SetupInstalled
 	}
 	quality := CaptureLifecycleOnly
-	if installed {
+	notes := []string{"Copilot CLI hooks retain lifecycle and CWD evidence; qlog-owned OTel configuration disables message content capture", "No source E2E evidence is claimed by setup"}
+	if installed && runtime.GOOS == "windows" {
 		quality = CaptureOTELReported
 	}
-	return SetupStatus{AdapterID: a.id, Available: detection.Available, Installed: installed, State: state, InstallationState: state, CaptureQuality: quality, Evidence: detection.Evidence, Notes: []string{"Copilot CLI hooks retain lifecycle and CWD evidence; qlog-owned OTel configuration disables message content capture", "No source E2E evidence is claimed by setup"}}, nil
+	if installed && runtime.GOOS != "windows" {
+		state = SetupPartial
+		notes = append(notes, "POSIX shell profiles instrument interactive bash/zsh launches only; non-interactive launches remain lifecycle-only")
+	}
+	return SetupStatus{AdapterID: a.id, Available: detection.Available, Installed: installed, State: state, InstallationState: state, CaptureQuality: quality, Evidence: detection.Evidence, Notes: notes}, nil
 }
 
 func (a copilotCLIAdapter) Test(ctx context.Context) (TestResult, error) {

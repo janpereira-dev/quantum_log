@@ -319,14 +319,17 @@ func normalizeModelCall(ctx context.Context, store *storepkg.Store, parsed event
 	// Legacy rows were keyed by their original envelope timestamp. Reconcile
 	// that representation before adopting a more precise source timestamp.
 	linked, err = store.LinkMatchingLegacyModelCall(ctx, input)
-	if err != nil || linked {
-		return linked, err
+	if err != nil {
+		return false, err
 	}
 	input.OccurredAt = sourceStartedAt
 	if completed := unixMillis(payload.CompletedAt); !completed.IsZero() && !input.OccurredAt.IsZero() && !completed.Before(input.OccurredAt) {
 		input.CompletedAt = completed
 		duration := completed.Sub(input.OccurredAt).Milliseconds()
 		input.DurationMS = &duration
+	}
+	if linked {
+		return true, store.UpdateLinkedModelCallTiming(ctx, input.RawEventID, input.OccurredAt, input.CompletedAt)
 	}
 	_, err = store.RecordModelCall(ctx, input)
 	return err == nil, err

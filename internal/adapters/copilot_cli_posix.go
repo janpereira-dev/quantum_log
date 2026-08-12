@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -11,6 +12,8 @@ const (
 	copilotCLIPosixBlockStart = "# >>> qlog Copilot CLI OTel >>>"
 	copilotCLIPosixBlockEnd   = "# <<< qlog Copilot CLI OTel <<<"
 )
+
+var copilotCLIPosixWrapper = regexp.MustCompile(`(?m)^\s*(?:function\s+)?copilot\s*\(\)|^\s*alias\s+copilot=`)
 
 func (a copilotCLIAdapter) posixProfilePath() string {
 	if root := os.Getenv("QLOG_ADAPTER_CONFIG_HOME"); root != "" {
@@ -73,6 +76,23 @@ func copilotCLIPosixBlock() string {
 		copilotCLIPosixBlockEnd + "\n"
 }
 
+func validCopilotCLIPosixBlock(contents string) bool {
+	return strings.Contains(contents, copilotCLIPosixBlockStart) &&
+		strings.Contains(contents, copilotCLIPosixBlockEnd) &&
+		strings.Contains(contents, "copilot() {") &&
+		strings.Contains(contents, "COPILOT_OTEL_ENABLED=true") &&
+		strings.Contains(contents, "OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318") &&
+		strings.Contains(contents, "command copilot \"$@\"")
+}
+
+func hasUnmanagedCopilotWrapper(contents string) (bool, error) {
+	without, _, err := withoutCopilotCLIPosixBlock(contents)
+	if err != nil {
+		return false, err
+	}
+	return copilotCLIPosixWrapper.MatchString(without), nil
+}
+
 func withCopilotCLIPosixBlock(contents string) (string, error) {
 	start, end := strings.Index(contents, copilotCLIPosixBlockStart), strings.Index(contents, copilotCLIPosixBlockEnd)
 	if (start == -1) != (end == -1) || end < start {
@@ -116,6 +136,11 @@ func (a copilotCLIAdapter) installPosixProfile(dryRun bool) (SetupChange, error)
 		return SetupChange{}, fmt.Errorf("read shell profile: %w", readErr)
 	}
 	missing := os.IsNotExist(readErr)
+	if conflict, err := hasUnmanagedCopilotWrapper(string(contents)); err != nil {
+		return SetupChange{}, err
+	} else if conflict {
+		return SetupChange{}, fmt.Errorf("existing copilot shell wrapper in %s: qlog will not replace it", path)
+	}
 	next, err := withCopilotCLIPosixBlock(string(contents))
 	if err != nil {
 		return SetupChange{}, err
@@ -180,7 +205,7 @@ func (a copilotCLIAdapter) posixProfileInstalled() bool {
 	}
 	for _, path := range a.posixManagedProfiles() {
 		contents, err := os.ReadFile(path)
-		if err == nil && strings.Contains(string(contents), copilotCLIPosixBlockStart) && strings.Contains(string(contents), copilotCLIPosixBlockEnd) {
+		if err == nil && validCopilotCLIPosixBlock(string(contents)) {
 			return true
 		}
 	}

@@ -53,7 +53,6 @@ export const QuantumLogPlugin = async (ctx: any) => {
       if (numberValue(info.time && info.time.completed) === undefined) return
       const tokens = info.tokens || {}
       const cache = tokens.cache || {}
-	  const sessionID = info.sessionID
       const payload: Record<string, unknown> = { agent_name: "opencode", capture_quality: "agent_reported", interaction_upstream_id: info.parentID ? `message:${info.parentID}` : "" }
       for (const [name, value] of [["provider", info.providerID], ["model", info.modelID], ["message_id", info.id], ["finish", info.finish]]) {
         const next = text(value); if (next) payload[name] = next
@@ -66,7 +65,6 @@ export const QuantumLogPlugin = async (ctx: any) => {
 	  const completed = numberValue(info.time && info.time.completed); if (completed !== undefined) payload.completed_at = completed
 	  payload.metric_observations = metricObservations(tokens, cache)
       await post(envelope("model.call", ctx, event, payload, `message:${info.id}`))
-	  if (sessionID && activeInteractions.get(sessionID) === payload.interaction_upstream_id) activeInteractions.delete(sessionID)
       return
     }
 	if (event?.type === "message.part.updated" && event?.properties?.part?.type === "step-finish") {

@@ -1680,6 +1680,28 @@ func (s *Store) LinkMatchingLegacyModelCall(ctx context.Context, input ModelCall
 	return affected == 1, nil
 }
 
+// UpdateLinkedModelCallTiming enriches a pre-upgrade call after its envelope
+// identity has been matched. The caller must validate finish >= start.
+func (s *Store) UpdateLinkedModelCallTiming(ctx context.Context, rawEventID string, startedAt, finishedAt time.Time) error {
+	if rawEventID == "" || startedAt.IsZero() {
+		return nil
+	}
+	var duration int64
+	finished := any(nil)
+	if !finishedAt.IsZero() {
+		if finishedAt.Before(startedAt) {
+			return nil
+		}
+		duration = finishedAt.Sub(startedAt).Milliseconds()
+		finished = timestamp(finishedAt)
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE model_calls SET started_at = ?, finished_at = ?, duration_ms = ? WHERE raw_event_id = ?`, timestamp(startedAt), finished, duration, rawEventID)
+	if err != nil {
+		return fmt.Errorf("update linked model call timing: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) EnsureSession(ctx context.Context, id, agentName string, startedAt time.Time) error {
 	if strings.TrimSpace(id) == "" {
 		return nil
