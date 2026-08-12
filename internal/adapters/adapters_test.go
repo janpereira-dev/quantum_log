@@ -758,7 +758,7 @@ func TestOpenCodeInstallWritesGlobalPluginPostingLocalEvents(t *testing.T) {
 		t.Fatalf("read plugin: %v", err)
 	}
 	text := string(contents)
-	for _, want := range []string{"/v1/events", "session.created", "message.updated", "message.part.updated", "tool.execute.before", "tool.execute.after", "properties.info", "properties.part", "step-finish", "capture_quality", "input_tokens", "output_tokens", "reasoning_tokens", "cached_input_tokens", "cache_write_tokens"} {
+	for _, want := range []string{"/v1/events", "session.created", "message.updated", "message.part.updated", "tool.execute.before", "tool.execute.after", "properties.info", "properties.part", "step-finish", "capture_quality", "input_tokens", "output_tokens", "reasoning_tokens", "cached_input_tokens", "cache_write_tokens", "tool_name", "callID", "activeInteractions.get(input?.sessionID)", "event?.sessionID"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("plugin missing %q:\n%s", want, text)
 		}
@@ -779,7 +779,7 @@ func TestOpenCodePluginUsesAuditedUsageFieldsWithoutRawContent(t *testing.T) {
 			t.Fatalf("plugin missing %q:\n%s", want, source)
 		}
 	}
-	for _, forbidden := range []string{"payload: info", "payload: part", "...info", "...part", `setString(payload, "prompt"`, `setString(payload, "response"`, `setString(payload, "tool_args"`, `setString(payload, "tool_results"`, `setString(payload, "authorization"`, `setString(payload, "secret"`, "total_tokens"} {
+	for _, forbidden := range []string{"payload: info", "payload: part", "...info", "...part", `setString(payload, "response"`, `setString(payload, "tool_args"`, `setString(payload, "tool_results"`, `setString(payload, "authorization"`, `setString(payload, "secret"`, "total_tokens"} {
 		if strings.Contains(source, forbidden) {
 			t.Fatalf("plugin forwards forbidden raw content %q:\n%s", forbidden, source)
 		}

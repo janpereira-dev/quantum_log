@@ -19,7 +19,7 @@ function envelope(type: string, ctx: any, event: any, payload: Record<string, un
   const context = event?.context || {}
   return {
     source: "opencode-plugin",
-    session_id: properties.sessionID || properties.info?.sessionID || properties.part?.sessionID || "",
+    session_id: properties.sessionID || properties.info?.sessionID || properties.part?.sessionID || event?.sessionID || "",
     event_type: type,
     occurred_at: new Date(event?.time || Date.now()).toISOString(),
     upstream_event_id: upstreamEventID,
@@ -78,8 +78,8 @@ export const QuantumLogPlugin = async (ctx: any) => {
 	  await post(envelope("agent.event", ctx, event, { agent_name: "opencode", capture_quality: "lifecycle_only" }, `session:${sessionID}:${event.type}`))
 	}
   },
-  "tool.execute.before": async (input: any) => post(envelope("tool.execute.before", ctx, input, { agent_name: "opencode", capture_quality: "lifecycle_only", interaction_upstream_id: activeInteractions.get(input?.sessionID) || "" }, `tool.before:${input?.callID || input?.id || "unknown"}`)),
-  "tool.execute.after": async (input: any) => post(envelope("tool.execute.after", ctx, input, { agent_name: "opencode", capture_quality: "lifecycle_only", interaction_upstream_id: activeInteractions.get(input?.sessionID) || "" }, `tool.after:${input?.callID || input?.id || "unknown"}`)),
+  "tool.execute.before": async (input: any) => post(envelope("tool.execute.before", ctx, input, { agent_name: "opencode", capture_quality: "lifecycle_only", interaction_upstream_id: activeInteractions.get(input?.sessionID) || "", tool_name: text(input?.tool) || text(input?.name) || text(input?.toolName) || "unknown" }, `tool.before:${input?.callID || input?.id || "unknown"}`)),
+  "tool.execute.after": async (input: any) => post(envelope("tool.execute.after", ctx, input, { agent_name: "opencode", capture_quality: "lifecycle_only", interaction_upstream_id: activeInteractions.get(input?.sessionID) || "", tool_name: text(input?.tool) || text(input?.name) || text(input?.toolName) || "unknown" }, `tool.after:${input?.callID || input?.id || "unknown"}`)),
   }
 }
 
