@@ -247,6 +247,7 @@ func normalizeModelCall(ctx context.Context, store *storepkg.Store, parsed event
 	}
 	input := storepkg.ModelCallInput{
 		RawEventID:             rawEventID,
+		InteractionUpstreamID:  payload.InteractionUpstreamID,
 		ProjectID:              parsed.ProjectID,
 		ProjectLocationID:      parsed.ProjectLocationID,
 		WorkContextID:          parsed.WorkContextID,
@@ -270,6 +271,12 @@ func normalizeModelCall(ctx context.Context, store *storepkg.Store, parsed event
 		interactionID, found, err := store.InteractionByUpstream(ctx, parsed.Source, parsed.SessionID, payload.InteractionUpstreamID)
 		if err != nil {
 			return false, err
+		}
+		if !found {
+			interactionID, found, err = store.InteractionBySessionUpstream(ctx, parsed.SessionID, payload.InteractionUpstreamID)
+			if err != nil {
+				return false, err
+			}
 		}
 		if found {
 			input.InteractionID = interactionID

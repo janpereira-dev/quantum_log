@@ -84,6 +84,7 @@ type AllocationInput struct {
 type ModelCallInput struct {
 	RawEventID             string
 	InteractionID          string
+	InteractionUpstreamID  string
 	ProjectID              string
 	ProjectLocationID      string
 	WorkContextID          string
@@ -946,6 +947,9 @@ func (s *Store) RecordInteraction(ctx context.Context, input InteractionInput) (
 	now := timestamp(time.Now())
 	_, err := s.db.ExecContext(ctx, `INSERT INTO interactions (id, source, session_id, upstream_id, raw_event_id, primary_project_id, project_location_id, work_context_id, prompt_capture_mode, prompt_hash, prompt_redacted, occurred_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, input.Source, input.SessionID, input.UpstreamID, nullable(input.RawEventID), nullable(input.ProjectID), nullable(input.ProjectLocationID), nullable(input.WorkContextID), input.PromptCaptureMode, input.PromptHash, input.PromptRedacted, timestamp(input.OccurredAt), now)
 	if err == nil {
+		if err := s.backfillInteractionChildren(ctx, id, input.SessionID, input.UpstreamID); err != nil {
+			return "", false, err
+		}
 		return id, true, nil
 	}
 	if !isUniqueConstraint(err) {
@@ -954,7 +958,22 @@ func (s *Store) RecordInteraction(ctx context.Context, input InteractionInput) (
 	if err := s.db.QueryRowContext(ctx, `SELECT id FROM interactions WHERE source = ? AND session_id = ? AND upstream_id = ?`, input.Source, input.SessionID, input.UpstreamID).Scan(&id); err != nil {
 		return "", false, fmt.Errorf("read duplicate interaction: %w", err)
 	}
+	if err := s.backfillInteractionChildren(ctx, id, input.SessionID, input.UpstreamID); err != nil {
+		return "", false, err
+	}
 	return id, false, nil
+}
+
+func (s *Store) backfillInteractionChildren(ctx context.Context, interactionID, sessionID, upstreamID string) error {
+	if sessionID == "" || upstreamID == "" {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE model_calls SET interaction_id = ?
+		WHERE interaction_id IS NULL AND session_id = ? AND interaction_upstream_id = ?`, interactionID, sessionID, upstreamID)
+	if err != nil {
+		return fmt.Errorf("backfill interaction model calls: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) InteractionCount(ctx context.Context, projectID string) (int64, error) {
@@ -980,6 +999,34 @@ func (s *Store) InteractionByUpstream(ctx context.Context, source, sessionID, up
 		return "", false, fmt.Errorf("find interaction: %w", err)
 	}
 	return id, true, nil
+}
+
+// InteractionBySessionUpstream correlates transports only when the parent
+// identity is unambiguous within a session. It never guesses across sessions.
+func (s *Store) InteractionBySessionUpstream(ctx context.Context, sessionID, upstreamID string) (string, bool, error) {
+	if sessionID == "" || upstreamID == "" {
+		return "", false, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM interactions WHERE session_id = ? AND upstream_id = ? LIMIT 2`, sessionID, upstreamID)
+	if err != nil {
+		return "", false, fmt.Errorf("find cross-source interaction: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	ids := make([]string, 0, 2)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return "", false, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return "", false, err
+	}
+	if len(ids) != 1 {
+		return "", false, nil
+	}
+	return ids[0], true, nil
 }
 
 func (s *Store) ListInteractions(ctx context.Context, from time.Time, limit int) ([]Interaction, error) {
@@ -1506,7 +1553,7 @@ func (s *Store) RecordModelCall(ctx context.Context, input ModelCallInput) (stri
 		return "", err
 	}
 	defer rollback(tx)
-	_, err = tx.ExecContext(ctx, `INSERT INTO model_calls (id, raw_event_id, interaction_id, primary_project_id, project_location_id, work_context_id, task_id, session_id, turn_id, started_at, agent_name, provider, model_id, input_tokens, output_tokens, reasoning_tokens, cached_input_tokens, cache_write_tokens, total_tokens, estimated_cost_usd_micros, estimated_cost_eur_micros, capture_quality, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, nullable(input.RawEventID), nullable(input.InteractionID), nullable(input.ProjectID), nullable(input.ProjectLocationID), nullable(input.WorkContextID), nullable(input.TaskID), nullable(input.SessionID), nullable(input.TurnID), timestamp(input.OccurredAt), input.AgentName, input.Provider, input.ModelID, input.InputTokens, input.OutputTokens, input.ReasoningTokens, input.CachedInputTokens, input.CacheWriteTokens, total, input.EstimatedCostUSDMicros, input.EstimatedCostEURMicros, input.CaptureQuality, now)
+	_, err = tx.ExecContext(ctx, `INSERT INTO model_calls (id, raw_event_id, interaction_id, interaction_upstream_id, primary_project_id, project_location_id, work_context_id, task_id, session_id, turn_id, started_at, agent_name, provider, model_id, input_tokens, output_tokens, reasoning_tokens, cached_input_tokens, cache_write_tokens, total_tokens, estimated_cost_usd_micros, estimated_cost_eur_micros, capture_quality, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, nullable(input.RawEventID), nullable(input.InteractionID), input.InteractionUpstreamID, nullable(input.ProjectID), nullable(input.ProjectLocationID), nullable(input.WorkContextID), nullable(input.TaskID), nullable(input.SessionID), nullable(input.TurnID), timestamp(input.OccurredAt), input.AgentName, input.Provider, input.ModelID, input.InputTokens, input.OutputTokens, input.ReasoningTokens, input.CachedInputTokens, input.CacheWriteTokens, total, input.EstimatedCostUSDMicros, input.EstimatedCostEURMicros, input.CaptureQuality, now)
 	if err != nil {
 		if input.RawEventID != "" && isUniqueConstraint(err) {
 			var existingID string
@@ -1600,7 +1647,7 @@ func (s *Store) LinkMatchingLegacyModelCall(ctx context.Context, input ModelCall
 	if len(candidates) != 1 {
 		return false, tx.Commit()
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE model_calls SET raw_event_id = ? WHERE id = ? AND raw_event_id IS NULL`, input.RawEventID, candidates[0])
+	result, err := tx.ExecContext(ctx, `UPDATE model_calls SET raw_event_id = ?, interaction_id = COALESCE(interaction_id, ?), interaction_upstream_id = CASE WHEN interaction_upstream_id = '' THEN ? ELSE interaction_upstream_id END WHERE id = ? AND raw_event_id IS NULL`, input.RawEventID, nullable(input.InteractionID), input.InteractionUpstreamID, candidates[0])
 	if err != nil {
 		return false, fmt.Errorf("link legacy model call: %w", err)
 	}
