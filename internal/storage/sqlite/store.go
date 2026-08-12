@@ -2160,6 +2160,10 @@ func capabilityInteractionWhere(query CapabilityQuery) (string, []any) {
 		where += " AND p.slug = ?"
 		args = append(args, normalizeSlug(query.ProjectSlug))
 	}
+	if query.AgentName != "" {
+		where += " AND COALESCE(json_extract((SELECT r.payload_json_sanitized FROM raw_events r WHERE r.id = i.raw_event_id), '$.agent_name'), '') = ?"
+		args = append(args, query.AgentName)
+	}
 	if query.SessionID != "" {
 		where += " AND i.session_id = ?"
 		args = append(args, query.SessionID)
