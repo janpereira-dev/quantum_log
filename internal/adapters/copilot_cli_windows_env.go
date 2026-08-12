@@ -135,7 +135,7 @@ func copilotCLIProfileBlock() string {
 		"  $qlogPrevious = @{}\n" +
 		"  foreach ($qlogPair in @(@('COPILOT_OTEL_ENABLED','true'), @('COPILOT_OTEL_EXPORTER_TYPE','otlp-http'), @('OTEL_EXPORTER_OTLP_ENDPOINT','http://127.0.0.1:4318'), @('OTEL_EXPORTER_OTLP_PROTOCOL','http/json'), @('OTEL_METRICS_EXPORTER','none'), @('OTEL_LOGS_EXPORTER','none'), @('OTEL_SERVICE_NAME','github-copilot'), @('OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT','false'))) { $qlogPrevious[$qlogPair[0]] = [Environment]::GetEnvironmentVariable($qlogPair[0], 'Process'); Set-Item -Path ('Env:' + $qlogPair[0]) -Value $qlogPair[1] }\n" +
 		"  try { if ($null -ne $global:qlogCopilotOriginal) { & $global:qlogCopilotOriginal @args } else { & (Get-Command copilot -CommandType Application -ErrorAction Stop).Source @args }; $qlogSuccess = $?; $qlogExitCode = $LASTEXITCODE } finally { foreach ($qlogKey in $qlogPrevious.Keys) { if ($null -eq $qlogPrevious[$qlogKey]) { Remove-Item -Path ('Env:' + $qlogKey) -ErrorAction SilentlyContinue } else { Set-Item -Path ('Env:' + $qlogKey) -Value $qlogPrevious[$qlogKey] } } }\n" +
-		"  if ($null -ne $qlogExitCode) { $global:LASTEXITCODE = $qlogExitCode }; if (-not $qlogSuccess) { return $false }\n" +
+		"  if (-not $qlogSuccess) { & $env:ComSpec /d /s /c ('exit ' + $qlogExitCode); return }; if ($null -ne $qlogExitCode) { $global:LASTEXITCODE = $qlogExitCode }\n" +
 		"}\n" +
 		copilotCLIProfileBlockEnd + "\n"
 }
