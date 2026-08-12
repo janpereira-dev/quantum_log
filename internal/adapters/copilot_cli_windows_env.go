@@ -59,17 +59,6 @@ func SetCopilotCLIPowerShellProfileDiscoveryForTesting(discover func() (string, 
 	return func() { copilotCLIPowerShellProfileDiscovery = original }
 }
 
-var copilotCLIPersistentEnvironment = map[string]string{
-	"COPILOT_OTEL_ENABLED":                               "true",
-	"COPILOT_OTEL_EXPORTER_TYPE":                         "otlp-http",
-	"OTEL_EXPORTER_OTLP_ENDPOINT":                        "http://127.0.0.1:4318",
-	"OTEL_EXPORTER_OTLP_PROTOCOL":                        "http/json",
-	"OTEL_METRICS_EXPORTER":                              "none",
-	"OTEL_LOGS_EXPORTER":                                 "none",
-	"OTEL_SERVICE_NAME":                                  "github-copilot",
-	"OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "false",
-}
-
 func discoverCopilotCLIPowerShellProfile() (string, error) {
 	output, err := copilotCLIPowerShellProfileCommand("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "$PROFILE.CurrentUserCurrentHost")
 	if err != nil {
@@ -262,38 +251,4 @@ func (a copilotCLIAdapter) windowsPowerShellProfileInstalled() bool {
 		return false
 	}
 	return strings.Contains(string(contents), copilotCLIProfileBlockStart) && strings.Contains(string(contents), copilotCLIProfileBlockEnd)
-}
-
-func (a copilotCLIAdapter) uninstallWindowsUserEnvironment(dryRun bool) (SetupChange, error) {
-	contents, err := os.ReadFile(a.windowsUserEnvironmentStatePath())
-	if os.IsNotExist(err) {
-		return SetupChange{Path: "HKCU\\Environment", Action: "unchanged", Description: "qlog-owned Copilot OTel variables already absent"}, nil
-	}
-	if err != nil {
-		return SetupChange{}, err
-	}
-	for _, name := range strings.Fields(string(contents)) {
-		expected, known := copilotCLIPersistentEnvironment[name]
-		if !known {
-			continue
-		}
-		value, found, err := copilotCLIUserEnvironment.Get(name)
-		if err != nil {
-			return SetupChange{}, fmt.Errorf("read Windows user environment %s: %w", name, err)
-		}
-		if found && value == expected && !dryRun {
-			if err := copilotCLIUserEnvironment.Delete(name); err != nil {
-				return SetupChange{}, fmt.Errorf("remove Windows user environment %s: %w", name, err)
-			}
-		}
-	}
-	if !dryRun {
-		if _, err := removeManagedFile(a.windowsUserEnvironmentStatePath(), "Copilot CLI qlog user environment state", false); err != nil {
-			return SetupChange{}, err
-		}
-		if err := copilotCLIUserEnvironmentChanged(); err != nil {
-			return SetupChange{}, err
-		}
-	}
-	return SetupChange{Path: "HKCU\\Environment", Action: "removed", Description: "removed qlog-owned Copilot OTel variables"}, nil
 }

@@ -41,6 +41,12 @@ func (a copilotCLIAdapter) Install(_ context.Context, options InstallOptions) (I
 			return InstallResult{}, err
 		}
 		changes = append(changes, profileChange)
+	} else {
+		profileChange, err := a.installPosixProfile(options.DryRun)
+		if err != nil {
+			return InstallResult{}, err
+		}
+		changes = append(changes, profileChange)
 	}
 	change, err := applyManagedFile(a.hooksPath(), copilotCLIHooksConfig(options.Home, options.ExecutablePath), options.DryRun)
 	if err != nil {
@@ -78,6 +84,9 @@ func (a copilotCLIAdapter) PlanInstall(_ context.Context, options SetupOptions) 
 	if runtime.GOOS == "windows" {
 		changes = append(changes, SetupChange{Path: "PowerShell CurrentUserCurrentHost profile", Action: "updated", Description: "adds a qlog-owned Copilot-only OTel launcher function"})
 		notes[0] = "installs lifecycle hooks plus a qlog-owned Windows PowerShell Copilot-only OTel launcher"
+	} else {
+		changes = append(changes, SetupChange{Path: a.posixProfilePath(), Action: "updated", Description: "adds a qlog-owned Copilot-only OTel shell function"})
+		notes[0] = "installs lifecycle hooks plus a qlog-owned shell Copilot-only OTel launcher"
 	}
 	notes = append(notes, "OTel content capture remains disabled; clean-device source evidence is still required")
 	return SetupPlan{AdapterID: a.id, State: SetupAvailable, CaptureQuality: CaptureOTELReported, Changes: changes, Notes: notes}, nil
@@ -91,6 +100,8 @@ func (a copilotCLIAdapter) Status(ctx context.Context) (SetupStatus, error) {
 	installed := fileContains(a.hooksPath(), "hook copilot-cli --event")
 	if runtime.GOOS == "windows" {
 		installed = installed && a.windowsPowerShellProfileInstalled()
+	} else {
+		installed = installed && a.posixProfileInstalled()
 	}
 	state := SetupUnavailable
 	if detection.Available {
@@ -142,11 +153,13 @@ func (a copilotCLIAdapter) Uninstall(_ context.Context, options InstallOptions) 
 		if err != nil {
 			return InstallResult{}, err
 		}
-		environmentChange, err := a.uninstallWindowsUserEnvironment(options.DryRun)
+		changes = append(changes, profileChange)
+	} else {
+		profileChange, err := a.uninstallPosixProfile(options.DryRun)
 		if err != nil {
 			return InstallResult{}, err
 		}
-		changes = append(changes, profileChange, environmentChange)
+		changes = append(changes, profileChange)
 	}
 	actions := make([]string, 0, len(changes))
 	changed := false
@@ -180,10 +193,6 @@ func (a copilotCLIAdapter) hooksPath() string {
 
 func (a copilotCLIAdapter) otelPath() string {
 	return filepath.Join(filepath.Dir(a.hooksPath()), "qlog-otel.env")
-}
-
-func (a copilotCLIAdapter) windowsUserEnvironmentStatePath() string {
-	return filepath.Join(filepath.Dir(a.hooksPath()), "qlog-copilot-otel-user-env")
 }
 
 func (a copilotCLIAdapter) windowsPowerShellProfileStatePath() string {
