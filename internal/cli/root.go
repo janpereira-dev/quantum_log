@@ -403,7 +403,7 @@ func newUsageCommand(home *string) *cobra.Command {
 func newLogCommand(home *string) *cobra.Command {
 	log := &cobra.Command{Use: "log", Short: "Show canonical prompt interactions"}
 	list := func(command *cobra.Command, from time.Time, limit int, jsonOutput bool) error {
-		service, err := app.OpenReadOnly(command.Context(), *home)
+		service, err := app.OpenSnapshotReadOnly(command.Context(), *home)
 		if err != nil {
 			return err
 		}
@@ -439,7 +439,7 @@ func newLogCommand(home *string) *cobra.Command {
 	log.AddCommand(tail)
 	var showJSON bool
 	show := &cobra.Command{Use: "show <id>", Short: "Show one interaction", Args: cobra.ExactArgs(1), RunE: func(command *cobra.Command, args []string) error {
-		service, err := app.OpenReadOnly(command.Context(), *home)
+		service, err := app.OpenSnapshotReadOnly(command.Context(), *home)
 		if err != nil {
 			return err
 		}

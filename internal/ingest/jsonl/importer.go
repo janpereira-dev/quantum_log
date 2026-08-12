@@ -128,6 +128,9 @@ func normalizeToolCall(ctx context.Context, store *storepkg.Store, parsed event,
 	if payload.ToolName == "" {
 		payload.ToolName = eventType
 	}
+	if err := store.EnsureSession(ctx, parsed.SessionID, "", parsed.OccurredAt); err != nil {
+		return false, err
+	}
 	interactionID := ""
 	if payload.InteractionUpstreamID != "" {
 		interactionID, _, _ = store.InteractionByUpstream(ctx, parsed.Source, parsed.SessionID, payload.InteractionUpstreamID)
