@@ -70,47 +70,6 @@ var copilotCLIPersistentEnvironment = map[string]string{
 	"OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "false",
 }
 
-func (a copilotCLIAdapter) installWindowsUserEnvironment(dryRun bool) (SetupChange, error) {
-	owned := make([]string, 0, len(copilotCLIPersistentEnvironment))
-	for name, expected := range copilotCLIPersistentEnvironment {
-		value, found, err := copilotCLIUserEnvironment.Get(name)
-		if err != nil {
-			return SetupChange{}, fmt.Errorf("read Windows user environment %s: %w", name, err)
-		}
-		if found && value != expected {
-			return SetupChange{}, fmt.Errorf("windows user environment %s is already set differently; qlog will not overwrite it", name)
-		}
-		if !found {
-			owned = append(owned, name)
-		}
-	}
-	if len(owned) == 0 {
-		return SetupChange{Path: "HKCU\\Environment", Action: "unchanged", Description: "Copilot OTel user environment already configured"}, nil
-	}
-	if !dryRun {
-		for _, name := range owned {
-			if err := copilotCLIUserEnvironment.Set(name, copilotCLIPersistentEnvironment[name]); err != nil {
-				for _, rollback := range owned {
-					if rollback == name {
-						break
-					}
-					_ = copilotCLIUserEnvironment.Delete(rollback)
-				}
-				return SetupChange{}, fmt.Errorf("set Windows user environment %s: %w", name, err)
-			}
-		}
-	}
-	if !dryRun {
-		if _, err := applyManagedFile(a.windowsUserEnvironmentStatePath(), strings.Join(owned, "\n")+"\n", false); err != nil {
-			return SetupChange{}, err
-		}
-		if err := copilotCLIUserEnvironmentChanged(); err != nil {
-			return SetupChange{}, err
-		}
-	}
-	return SetupChange{Path: "HKCU\\Environment", Action: "updated", Description: "set qlog-owned Copilot OTel variables for new PowerShell processes"}, nil
-}
-
 func discoverCopilotCLIPowerShellProfile() (string, error) {
 	output, err := copilotCLIPowerShellProfileCommand("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "$PROFILE.CurrentUserCurrentHost")
 	if err != nil {
@@ -337,14 +296,4 @@ func (a copilotCLIAdapter) uninstallWindowsUserEnvironment(dryRun bool) (SetupCh
 		}
 	}
 	return SetupChange{Path: "HKCU\\Environment", Action: "removed", Description: "removed qlog-owned Copilot OTel variables"}, nil
-}
-
-func (a copilotCLIAdapter) windowsUserEnvironmentInstalled() bool {
-	for name, expected := range copilotCLIPersistentEnvironment {
-		value, found, err := copilotCLIUserEnvironment.Get(name)
-		if err != nil || !found || value != expected {
-			return false
-		}
-	}
-	return true
 }
