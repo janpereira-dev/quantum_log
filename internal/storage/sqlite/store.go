@@ -102,6 +102,8 @@ type ModelCallInput struct {
 	EstimatedCostUSDMicros int64
 	EstimatedCostEURMicros int64
 	OccurredAt             time.Time
+	CompletedAt            time.Time
+	DurationMS             *int64
 	CaptureQuality         string
 	Metrics                []MetricInput
 }
@@ -1559,7 +1561,7 @@ func (s *Store) RecordModelCall(ctx context.Context, input ModelCallInput) (stri
 		return "", err
 	}
 	defer rollback(tx)
-	_, err = tx.ExecContext(ctx, `INSERT INTO model_calls (id, raw_event_id, interaction_id, interaction_upstream_id, primary_project_id, project_location_id, work_context_id, task_id, session_id, turn_id, started_at, agent_name, provider, model_id, input_tokens, output_tokens, reasoning_tokens, cached_input_tokens, cache_write_tokens, total_tokens, estimated_cost_usd_micros, estimated_cost_eur_micros, capture_quality, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, nullable(input.RawEventID), nullable(input.InteractionID), input.InteractionUpstreamID, nullable(input.ProjectID), nullable(input.ProjectLocationID), nullable(input.WorkContextID), nullable(input.TaskID), nullable(input.SessionID), nullable(input.TurnID), timestamp(input.OccurredAt), input.AgentName, input.Provider, input.ModelID, input.InputTokens, input.OutputTokens, input.ReasoningTokens, input.CachedInputTokens, input.CacheWriteTokens, total, input.EstimatedCostUSDMicros, input.EstimatedCostEURMicros, input.CaptureQuality, now)
+	_, err = tx.ExecContext(ctx, `INSERT INTO model_calls (id, raw_event_id, interaction_id, interaction_upstream_id, primary_project_id, project_location_id, work_context_id, task_id, session_id, turn_id, started_at, finished_at, duration_ms, agent_name, provider, model_id, input_tokens, output_tokens, reasoning_tokens, cached_input_tokens, cache_write_tokens, total_tokens, estimated_cost_usd_micros, estimated_cost_eur_micros, capture_quality, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, nullable(input.RawEventID), nullable(input.InteractionID), input.InteractionUpstreamID, nullable(input.ProjectID), nullable(input.ProjectLocationID), nullable(input.WorkContextID), nullable(input.TaskID), nullable(input.SessionID), nullable(input.TurnID), timestamp(input.OccurredAt), nullableTime(input.CompletedAt), durationMilliseconds(input.DurationMS), input.AgentName, input.Provider, input.ModelID, input.InputTokens, input.OutputTokens, input.ReasoningTokens, input.CachedInputTokens, input.CacheWriteTokens, total, input.EstimatedCostUSDMicros, input.EstimatedCostEURMicros, input.CaptureQuality, now)
 	if err != nil {
 		if input.RawEventID != "" && isUniqueConstraint(err) {
 			var existingID string
@@ -2904,6 +2906,20 @@ func parseTimestamp(value string) time.Time {
 	return parsed
 }
 func chainKey(source, sessionID string) string { return source + "\x00" + sessionID }
+func durationMilliseconds(value *int64) int64 {
+	if value == nil {
+		return 0
+	}
+	return *value
+}
+
+func nullableTime(value time.Time) any {
+	if value.IsZero() {
+		return nil
+	}
+	return timestamp(value)
+}
+
 func nullable(value string) any {
 	if value == "" {
 		return nil

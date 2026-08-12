@@ -45,6 +45,8 @@ type modelCallPayload struct {
 	CacheWriteTokens       int64               `json:"cache_write_tokens"`
 	EstimatedCostUSDMicros int64               `json:"estimated_cost_usd_micros"`
 	EstimatedCostEURMicros int64               `json:"estimated_cost_eur_micros"`
+	CreatedAt              int64               `json:"created_at"`
+	CompletedAt            int64               `json:"completed_at"`
 	CaptureQuality         string              `json:"capture_quality"`
 	MetricObservations     []metricObservation `json:"metric_observations"`
 }
@@ -232,6 +234,20 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+func unixMillis(value int64) time.Time {
+	if value <= 0 {
+		return time.Time{}
+	}
+	return time.UnixMilli(value).UTC()
+}
+
+func modelCallStartedAt(fallback time.Time, createdAt int64) time.Time {
+	if created := unixMillis(createdAt); !created.IsZero() {
+		return created
+	}
+	return fallback
+}
+
 func normalizeModelCall(ctx context.Context, store *storepkg.Store, parsed event, rawEventID string) (bool, error) {
 	eventType := strings.ReplaceAll(strings.ToLower(parsed.EventType), "_", ".")
 	if eventType != "model.call" {
@@ -276,8 +292,13 @@ func normalizeModelCall(ctx context.Context, store *storepkg.Store, parsed event
 		CacheWriteTokens:       payload.CacheWriteTokens,
 		EstimatedCostUSDMicros: payload.EstimatedCostUSDMicros,
 		EstimatedCostEURMicros: payload.EstimatedCostEURMicros,
-		OccurredAt:             parsed.OccurredAt,
+		OccurredAt:             modelCallStartedAt(parsed.OccurredAt, payload.CreatedAt),
+		CompletedAt:            unixMillis(payload.CompletedAt),
 		CaptureQuality:         payload.CaptureQuality,
+	}
+	if !input.CompletedAt.IsZero() && !input.OccurredAt.IsZero() && !input.CompletedAt.Before(input.OccurredAt) {
+		duration := input.CompletedAt.Sub(input.OccurredAt).Milliseconds()
+		input.DurationMS = &duration
 	}
 	if payload.InteractionUpstreamID != "" {
 		interactionID, found, err := store.InteractionByUpstream(ctx, parsed.Source, parsed.SessionID, payload.InteractionUpstreamID)
