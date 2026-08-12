@@ -134,16 +134,17 @@ type Interaction struct {
 // ToolCallInput is deliberately metadata-only: tool arguments and results never
 // cross the normalization boundary.
 type ToolCallInput struct {
-	RawEventID     string
-	InteractionID  string
-	ProjectID      string
-	LocationID     string
-	WorkContextID  string
-	SessionID      string
-	ToolName       string
-	ToolType       string
-	OccurredAt     time.Time
-	CaptureQuality string
+	RawEventID            string
+	InteractionID         string
+	InteractionUpstreamID string
+	ProjectID             string
+	LocationID            string
+	WorkContextID         string
+	SessionID             string
+	ToolName              string
+	ToolType              string
+	OccurredAt            time.Time
+	CaptureQuality        string
 }
 
 // MetricInput is one explicitly emitted measurement. Absence is represented
@@ -973,6 +974,11 @@ func (s *Store) backfillInteractionChildren(ctx context.Context, interactionID, 
 	if err != nil {
 		return fmt.Errorf("backfill interaction model calls: %w", err)
 	}
+	_, err = s.db.ExecContext(ctx, `UPDATE tool_calls SET interaction_id = ?
+		WHERE interaction_id IS NULL AND session_id = ? AND interaction_upstream_id = ?`, interactionID, sessionID, upstreamID)
+	if err != nil {
+		return fmt.Errorf("backfill interaction tool calls: %w", err)
+	}
 	return nil
 }
 
@@ -1097,7 +1103,7 @@ func (s *Store) RecordToolCall(ctx context.Context, input ToolCallInput) (bool, 
 	if input.CaptureQuality == "" {
 		input.CaptureQuality = "lifecycle_only"
 	}
-	result, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO tool_calls (id, raw_event_id, interaction_id, primary_project_id, project_location_id, work_context_id, session_id, tool_name, tool_type, started_at, capture_quality, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, newID(), input.RawEventID, nullable(input.InteractionID), nullable(input.ProjectID), nullable(input.LocationID), nullable(input.WorkContextID), nullable(input.SessionID), input.ToolName, input.ToolType, timestamp(input.OccurredAt), input.CaptureQuality, timestamp(time.Now()))
+	result, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO tool_calls (id, raw_event_id, interaction_id, interaction_upstream_id, primary_project_id, project_location_id, work_context_id, session_id, tool_name, tool_type, started_at, capture_quality, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, newID(), input.RawEventID, nullable(input.InteractionID), input.InteractionUpstreamID, nullable(input.ProjectID), nullable(input.LocationID), nullable(input.WorkContextID), nullable(input.SessionID), input.ToolName, input.ToolType, timestamp(input.OccurredAt), input.CaptureQuality, timestamp(time.Now()))
 	if err != nil {
 		return false, fmt.Errorf("record tool call: %w", err)
 	}

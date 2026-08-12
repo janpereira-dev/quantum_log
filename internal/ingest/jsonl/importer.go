@@ -188,7 +188,7 @@ func normalizeToolCall(ctx context.Context, store *storepkg.Store, parsed event,
 			interactionID, _, _ = store.InteractionBySessionUpstream(ctx, parsed.SessionID, payload.InteractionUpstreamID)
 		}
 	}
-	return store.RecordToolCall(ctx, storepkg.ToolCallInput{RawEventID: rawEventID, InteractionID: interactionID, ProjectID: parsed.ProjectID, LocationID: parsed.ProjectLocationID, WorkContextID: parsed.WorkContextID, SessionID: parsed.SessionID, ToolName: payload.ToolName, ToolType: eventType, OccurredAt: parsed.OccurredAt, CaptureQuality: payload.CaptureQuality})
+	return store.RecordToolCall(ctx, storepkg.ToolCallInput{RawEventID: rawEventID, InteractionID: interactionID, InteractionUpstreamID: payload.InteractionUpstreamID, ProjectID: parsed.ProjectID, LocationID: parsed.ProjectLocationID, WorkContextID: parsed.WorkContextID, SessionID: parsed.SessionID, ToolName: payload.ToolName, ToolType: eventType, OccurredAt: parsed.OccurredAt, CaptureQuality: payload.CaptureQuality})
 }
 
 func normalizeInteraction(ctx context.Context, store *storepkg.Store, parsed event, rawEventID string) (bool, error) {
