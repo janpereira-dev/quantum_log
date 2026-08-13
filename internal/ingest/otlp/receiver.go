@@ -228,6 +228,11 @@ func (r Receiver) event(ctx context.Context, resource, span map[string]string, i
 	if isCopilotTelemetryCandidate(resource, span) {
 		return r.copilotSpanEvent(ctx, resource, span, input)
 	}
+	if strings.Contains(strings.ToLower(first(span, resource, "gen_ai.agent.name")), "copilot") {
+		// A Copilot name without a Copilot service identity is spoofed or
+		// incomplete telemetry, not a safe candidate for a Copilot ledger row.
+		return nil, errUnsupportedCopilotSpan
+	}
 	if isClaudeTelemetryCandidate(resource, span) {
 		return r.claudeSpanEvent(ctx, resource, span, input)
 	}
@@ -315,6 +320,10 @@ func (r Receiver) claudeSpanEvent(ctx context.Context, resource, attributes map[
 		payload[observation["name"].(string)] = observation["value"]
 	}
 	payload["metric_observations"] = observations
+	// A Claude turn may arrive through OTel before its lifecycle prompt hook.
+	// The trace is source-native and lets the importer create/backfill exactly
+	// one privacy-safe interaction root instead of leaving its usage orphaned.
+	payload["interaction_upstream_id"] = input.TraceID
 	resolved, err := r.service.ResolveProject(ctx, "", first(attributes, resource, "qlog.project"), first(attributes, resource, "process.cwd", "qlog.cwd"))
 	if err != nil {
 		return nil, err
@@ -337,13 +346,17 @@ func (r Receiver) claudeSpanEvent(ctx context.Context, resource, attributes map[
 }
 
 func (r Receiver) copilotSpanEvent(ctx context.Context, resource, attributes map[string]string, input span) (map[string]any, error) {
-	serviceName := resource["service.name"]
+	serviceName := strings.ToLower(resource["service.name"])
 	agentName := attributes["gen_ai.agent.name"]
-	if input.TraceID == "" || input.SpanID == "" || (serviceName != "copilot-chat" && serviceName != "github-copilot") || (serviceName == "copilot-chat" && agentName != "GitHub Copilot Chat") {
+	if input.TraceID == "" || input.SpanID == "" || !strings.Contains(serviceName, "copilot") || (agentName != "" && !strings.Contains(strings.ToLower(agentName), "copilot")) {
 		return nil, errUnsupportedCopilotSpan
 	}
 	if agentName == "" {
-		agentName = "GitHub Copilot CLI"
+		if strings.Contains(serviceName, "chat") {
+			agentName = "GitHub Copilot Chat"
+		} else {
+			agentName = "GitHub Copilot CLI"
+		}
 	}
 	interactionRoot := isInteractionRoot(input.Name, attributes)
 	model := first(attributes, resource, "gen_ai.response.model", "gen_ai.request.model")
@@ -472,6 +485,9 @@ func (r Receiver) codexLogEvent(ctx context.Context, resource, record map[string
 		"codex_response_completed": true,
 		"input_tokens":             inputTokens,
 		"output_tokens":            outputTokens,
+		// Codex does not always expose a prompt hook. Its OTLP trace is the
+		// stable turn identity used for a privacy-safe interaction root.
+		"interaction_upstream_id": input.TraceID,
 	}
 	observations := []map[string]any{
 		{"name": "input_tokens", "value": inputTokens, "source": "otel", "raw_key": "input_tokens", "confidence": "reported"},
@@ -511,7 +527,9 @@ func (r Receiver) codexLogEvent(ctx context.Context, resource, record map[string
 }
 
 func isCopilotTelemetryCandidate(resource, attributes map[string]string) bool {
-	return strings.Contains(strings.ToLower(resource["service.name"]), "copilot") || strings.Contains(strings.ToLower(attributes["gen_ai.agent.name"]), "copilot")
+	// Do not let an arbitrary process impersonate Copilot merely by adding an
+	// agent-name attribute. The service identity is the trusted discriminator.
+	return strings.Contains(strings.ToLower(resource["service.name"]), "copilot")
 }
 
 func isClaudeTelemetryCandidate(resource, attributes map[string]string) bool {

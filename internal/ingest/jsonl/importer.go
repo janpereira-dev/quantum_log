@@ -210,11 +210,11 @@ func normalizeInteraction(ctx context.Context, store *storepkg.Store, parsed eve
 		AgentName             string `json:"agent_name"`
 	}
 	_ = json.Unmarshal(parsed.Payload, &payload)
-	if !isInteractionEvent(parsed.EventType) && !isCodexResponseRoot(parsed) && !isCopilotTraceInteraction(parsed, payload.InteractionUpstreamID, payload.AgentName) {
+	if !isInteractionEvent(parsed.EventType) && !isCodexResponseRoot(parsed) && !isAgentTraceInteraction(parsed, payload.InteractionUpstreamID, payload.AgentName) {
 		return false, nil
 	}
 	upstreamID := parsed.IngestionIdentity
-	if isCopilotTraceInteraction(parsed, payload.InteractionUpstreamID, payload.AgentName) {
+	if isAgentTraceInteraction(parsed, payload.InteractionUpstreamID, payload.AgentName) {
 		upstreamID = payload.InteractionUpstreamID
 	}
 	_, created, err := store.RecordInteraction(ctx, storepkg.InteractionInput{
@@ -231,14 +231,18 @@ func isCodexResponseRoot(parsed event) bool {
 	return parsed.Source == "codex-app-server" && strings.EqualFold(parsed.EventType, "model.call")
 }
 
-func isCopilotTraceInteraction(parsed event, interactionUpstreamID, agentName string) bool {
+func isAgentTraceInteraction(parsed event, interactionUpstreamID, agentName string) bool {
 	if parsed.Source != "otlp-http" || interactionUpstreamID == "" {
 		return false
 	}
 	if isInteractionEvent(parsed.EventType) {
 		return true
 	}
-	return strings.EqualFold(parsed.EventType, "model.call") && strings.HasPrefix(agentName, "GitHub Copilot")
+	if !strings.EqualFold(parsed.EventType, "model.call") {
+		return false
+	}
+	name := strings.ToLower(agentName)
+	return strings.HasPrefix(name, "github copilot") || name == "claude-code" || name == "codex"
 }
 
 func firstNonEmpty(values ...string) string {

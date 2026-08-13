@@ -1998,7 +1998,10 @@ func (s *Store) Usage(ctx context.Context, query UsageQuery) (UsageReport, error
 	allocationQuery := query
 	allocationQuery.ProjectSlug = ""
 	where, args := usageWindow(allocationQuery)
-	rows, err := s.db.QueryContext(ctx, `SELECT c.id, a.id, COALESCE(p.slug, 'unattributed'), c.agent_name, c.provider, c.model_id, c.capture_quality, c.input_tokens, c.output_tokens, c.reasoning_tokens, c.cached_input_tokens, c.cache_write_tokens, c.total_tokens, c.estimated_cost_usd_micros, a.allocation_basis_points FROM model_calls c JOIN usage_allocations a ON a.subject_type = 'model_call' AND a.subject_id = c.id LEFT JOIN projects p ON p.id = a.project_id`+where+` ORDER BY c.id, a.id`, args...)
+	// Calls without an allocation are still ledger evidence. Report them once as
+	// unattributed (or under their direct project when legacy data has one),
+	// rather than silently omitting their tokens from rows.
+	rows, err := s.db.QueryContext(ctx, `SELECT c.id, COALESCE(a.id, ''), COALESCE(allocated.slug, direct.slug, 'unattributed'), c.agent_name, c.provider, c.model_id, c.capture_quality, c.input_tokens, c.output_tokens, c.reasoning_tokens, c.cached_input_tokens, c.cache_write_tokens, c.total_tokens, c.estimated_cost_usd_micros, COALESCE(a.allocation_basis_points, 10000) FROM model_calls c LEFT JOIN usage_allocations a ON a.subject_type = 'model_call' AND a.subject_id = c.id LEFT JOIN projects allocated ON allocated.id = a.project_id LEFT JOIN projects direct ON direct.id = c.primary_project_id`+where+` ORDER BY c.id, a.id`, args...)
 	if err != nil {
 		return UsageReport{}, err
 	}
