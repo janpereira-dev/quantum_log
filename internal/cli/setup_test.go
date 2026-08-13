@@ -185,14 +185,14 @@ func TestSetupRestoresCollectorAfterLedgerInitializationFailure(t *testing.T) {
 	}
 }
 
-func TestSetupStopsReachableCollectorWhenTaskStateIsLocalized(t *testing.T) {
+func TestSetupDoesNotStopCollectorForUntrustedHealthEndpoint(t *testing.T) {
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
 	manager := &reachableCollectorManager{}
 	if _, err := bootstrapSupportedAdapters(context.Background(), t.TempDir(), temporaryDurableExecutable(t), true, false, adapters.Default(), manager); err != nil {
 		t.Fatal(err)
 	}
-	if !manager.stopped {
-		t.Fatal("reachable collector was not stopped before ledger initialization")
+	if manager.stopped {
+		t.Fatal("setup stopped a collector based only on an untrusted health endpoint")
 	}
 }
 

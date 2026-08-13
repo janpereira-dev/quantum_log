@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -135,7 +136,7 @@ func newCollectorMux(home string) *http.ServeMux {
 		writer.Header().Set("Content-Type", "application/json")
 		writer.WriteHeader(http.StatusOK)
 		if request.Method == http.MethodGet {
-			_, _ = writer.Write([]byte(`{"status":"ok"}`))
+			_, _ = writer.Write([]byte(`{"service":"quantum-log-collector","status":"ok"}`))
 		}
 	})
 	return mux
@@ -144,25 +145,27 @@ func newCollectorMux(home string) *http.ServeMux {
 type collectorHealth struct {
 	Reachable bool
 	Running   bool
+	Managed   bool
 	Health    string
 }
 
 // CollectorStatus separates persistent-service state from collector health.
 type CollectorStatus struct {
-	Installed bool     `json:"installed"`
-	Running   bool     `json:"running"`
-	Reachable bool     `json:"reachable"`
-	Mode      string   `json:"mode"`
-	Listen    string   `json:"listen"`
-	ServiceID string   `json:"service_id"`
-	StatePath string   `json:"state_path"`
-	LogPath   string   `json:"log_path"`
-	Message   string   `json:"message"`
-	Health    string   `json:"health,omitempty"`
-	Home      string   `json:"home,omitempty"`
-	Database  string   `json:"database,omitempty"`
-	Endpoints []string `json:"endpoints,omitempty"`
-	Scope     string   `json:"scope,omitempty"`
+	Installed     bool     `json:"installed"`
+	Running       bool     `json:"running"`
+	Reachable     bool     `json:"reachable"`
+	Mode          string   `json:"mode"`
+	Listen        string   `json:"listen"`
+	ServiceID     string   `json:"service_id"`
+	StatePath     string   `json:"state_path"`
+	LogPath       string   `json:"log_path"`
+	Message       string   `json:"message"`
+	Health        string   `json:"health,omitempty"`
+	Home          string   `json:"home,omitempty"`
+	Database      string   `json:"database,omitempty"`
+	Endpoints     []string `json:"endpoints,omitempty"`
+	Scope         string   `json:"scope,omitempty"`
+	ManagedHealth bool     `json:"-"`
 }
 
 func probeCollectorHealth(ctx context.Context, listen string) collectorHealth {
@@ -180,15 +183,21 @@ func probeCollectorHealth(ctx context.Context, listen string) collectorHealth {
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return collectorHealth{Health: response.Status}
 	}
-	return collectorHealth{Reachable: true, Running: true, Health: "ok"}
+	health := collectorHealth{Reachable: true, Running: true, Health: "ok"}
+	var payload struct {
+		Service string `json:"service"`
+		Status  string `json:"status"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&payload); err == nil && payload.Service == "quantum-log-collector" && payload.Status == "ok" {
+		health.Managed = true
+	}
+	return health
 }
 
 func collectorStatusWithHealth(status CollectorStatus, health collectorHealth) CollectorStatus {
 	status.Reachable = health.Reachable
+	status.ManagedHealth = health.Managed
 	status.Health = health.Health
-	if health.Reachable {
-		status.Running = true
-	}
 	switch {
 	case !status.Installed && !health.Reachable:
 		status.Message = "collector is not installed; run qlog collector install or qlog setup --yes"

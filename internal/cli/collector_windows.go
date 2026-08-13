@@ -253,11 +253,18 @@ func (windowsCollectorManager) Install(home, listen string) (CollectorStatus, er
 	if err != nil {
 		return CollectorStatus{}, err
 	}
-	if err := writeWindowsCollectorTaskDefinition(collectorTaskDefinitionPath(), executable, home, listen, userID, collectorLogPath()); err != nil {
+	// Keep the currently registered task's settings readable until /Create
+	// succeeds. A failed replacement must not overwrite the recovery source.
+	stagedDefinition := collectorTaskDefinitionPath() + ".next"
+	if err := writeWindowsCollectorTaskDefinition(stagedDefinition, executable, home, listen, userID, collectorLogPath()); err != nil {
 		return CollectorStatus{}, err
 	}
-	if err := createWindowsCollectorTask(collectorTaskDefinitionPath()); err != nil {
+	defer func() { _ = os.Remove(stagedDefinition) }()
+	if err := createWindowsCollectorTask(stagedDefinition); err != nil {
 		return CollectorStatus{}, err
+	}
+	if err := os.Rename(stagedDefinition, collectorTaskDefinitionPath()); err != nil {
+		return CollectorStatus{}, fmt.Errorf("persist installed collector task definition: %w", err)
 	}
 	status, err := windowsCollectorStatus(context.Background(), listen)
 	if err != nil {

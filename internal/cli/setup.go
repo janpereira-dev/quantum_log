@@ -246,7 +246,10 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 
 func stopCollectorForLedgerInitialization(ctx context.Context, manager collectorManager, listen string) (bool, error) {
 	status, err := manager.Status(ctx, listen)
-	if err != nil || (!status.Running && !status.Reachable) {
+	// Reachability alone is not proof that the managed collector owns the
+	// endpoint: another local process can answer /healthz. Only stop and later
+	// restore a collector whose managed lifecycle reports it as running.
+	if err != nil || (!status.Running && !status.ManagedHealth) {
 		return false, nil
 	}
 	if _, err := manager.Stop(); err != nil {
