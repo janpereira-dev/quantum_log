@@ -59,6 +59,9 @@ type RawEventInput struct {
 	SourceVersion              string
 	SessionID                  string
 	EventType                  string
+	TraceID                    string
+	SpanID                     string
+	ParentSpanID               string
 	Payload                    []byte
 	OccurredAt                 time.Time
 	OmitOccurredAtFromIdentity bool
@@ -906,7 +909,7 @@ func (s *Store) AppendRawEvent(ctx context.Context, input RawEventInput) (RawEve
 	}
 	canonical := canonicalEvent(input, payload)
 	event := audit.NewRecord(chainKey(input.Source, input.SessionID), canonical, previousHash)
-	_, err = tx.ExecContext(ctx, `INSERT INTO raw_events (id, source, source_version, event_type, occurred_at, received_at, project_id, project_location_id, work_context_id, session_id, project_resolution_method, project_resolution_confidence, project_resolution_evidence_json, payload_json_sanitized, previous_event_hash, event_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, input.Source, strings.TrimSpace(input.SourceVersion), input.EventType, timestamp(input.OccurredAt), now, nullable(input.ProjectID), nullable(input.ProjectLocationID), nullable(input.WorkContextID), nullable(input.SessionID), input.ResolutionMethod, input.ResolutionConfidence, input.EvidenceJSON, string(payload), previousHash, event.Hash, now)
+	_, err = tx.ExecContext(ctx, `INSERT INTO raw_events (id, source, source_version, event_type, occurred_at, received_at, trace_id, span_id, parent_span_id, project_id, project_location_id, work_context_id, session_id, project_resolution_method, project_resolution_confidence, project_resolution_evidence_json, payload_json_sanitized, previous_event_hash, event_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, input.Source, strings.TrimSpace(input.SourceVersion), input.EventType, timestamp(input.OccurredAt), now, input.TraceID, input.SpanID, input.ParentSpanID, nullable(input.ProjectID), nullable(input.ProjectLocationID), nullable(input.WorkContextID), nullable(input.SessionID), input.ResolutionMethod, input.ResolutionConfidence, input.EvidenceJSON, string(payload), previousHash, event.Hash, now)
 	if err != nil {
 		return RawEventAppendResult{}, fmt.Errorf("insert raw event: %w", err)
 	}
@@ -1593,6 +1596,53 @@ func (s *Store) RecordModelCall(ctx context.Context, input ModelCallInput) (stri
 		return "", err
 	}
 	return id, nil
+}
+
+// ReconcileOTLPUsage excludes an ancestor call from consumption totals only
+// when a descendant in the same persisted trace reports exactly the same
+// source-native dimensions. Raw events preserve the full span graph, so this
+// also works when exporters flush parent and child in separate requests.
+func (s *Store) ReconcileOTLPUsage(ctx context.Context, rawEventID string) error {
+	if rawEventID == "" {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `WITH RECURSIVE ancestry(ancestor_event_id, descendant_event_id) AS (
+		SELECT parent.id, child.id
+		FROM raw_events parent
+		JOIN raw_events child ON child.trace_id = parent.trace_id AND child.parent_span_id = parent.span_id
+		WHERE parent.trace_id <> '' AND parent.span_id <> ''
+		UNION
+		SELECT ancestry.ancestor_event_id, child.id
+		FROM ancestry
+		JOIN raw_events previous ON previous.id = ancestry.descendant_event_id
+		JOIN raw_events child ON child.trace_id = previous.trace_id AND child.parent_span_id = previous.span_id
+	)
+	UPDATE model_calls
+	SET usage_reconciled = 1
+	WHERE raw_event_id IN (
+		SELECT parent_call.raw_event_id
+		FROM ancestry
+		JOIN model_calls parent_call ON parent_call.raw_event_id = ancestry.ancestor_event_id
+		JOIN model_calls child_call ON child_call.raw_event_id = ancestry.descendant_event_id
+		WHERE ancestry.ancestor_event_id <> ancestry.descendant_event_id
+			AND NOT EXISTS (
+				SELECT 1 FROM ancestry reverse
+				WHERE reverse.ancestor_event_id = ancestry.descendant_event_id
+					AND reverse.descendant_event_id = ancestry.ancestor_event_id
+			)
+			AND parent_call.provider = child_call.provider
+			AND parent_call.model_id = child_call.model_id
+			AND parent_call.input_tokens = child_call.input_tokens
+			AND parent_call.output_tokens = child_call.output_tokens
+			AND parent_call.reasoning_tokens = child_call.reasoning_tokens
+			AND parent_call.cached_input_tokens = child_call.cached_input_tokens
+			AND parent_call.cache_write_tokens = child_call.cache_write_tokens
+			AND parent_call.total_tokens = child_call.total_tokens
+	)`)
+	if err != nil {
+		return fmt.Errorf("reconcile OTLP aggregate usage: %w", err)
+	}
+	return nil
 }
 
 func validMetricName(name string) bool {
@@ -2565,7 +2615,7 @@ func validateGroupBy(groupBy []string) error {
 }
 
 func usageWindow(query UsageQuery) (string, []any) {
-	where := " WHERE 1 = 1"
+	where := " WHERE c.usage_reconciled = 0"
 	args := []any{}
 	if !query.From.IsZero() {
 		where += " AND c.started_at >= ?"

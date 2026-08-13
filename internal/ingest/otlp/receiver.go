@@ -290,6 +290,9 @@ func (r Receiver) event(ctx context.Context, resource, span map[string]string, i
 		"project_resolution_method":     string(resolved.Resolution.Method),
 		"project_resolution_confidence": string(resolved.Resolution.Confidence),
 		"project_resolution_evidence":   map[string]string{"source": "central-project-resolver"},
+		"trace_id":                      input.TraceID,
+		"span_id":                       input.SpanID,
+		"parent_span_id":                input.ParentSpanID,
 		"payload":                       payload,
 	}
 	if upstreamEventID := otlpUpstreamEventID(input); upstreamEventID != "" {
@@ -341,6 +344,9 @@ func (r Receiver) claudeSpanEvent(ctx context.Context, resource, attributes map[
 		"project_id": resolved.ProjectID, "project_location_id": resolved.LocationID,
 		"project_resolution_method": string(resolved.Resolution.Method), "project_resolution_confidence": string(resolved.Resolution.Confidence),
 		"project_resolution_evidence": map[string]string{"source": "central-project-resolver"},
+		"trace_id":                    input.TraceID,
+		"span_id":                     input.SpanID,
+		"parent_span_id":              input.ParentSpanID,
 		"upstream_event_id":           input.TraceID + "/" + input.SpanID, "payload": payload,
 	}, nil
 }
@@ -360,8 +366,13 @@ func (r Receiver) copilotSpanEvent(ctx context.Context, resource, attributes map
 	}
 	interactionRoot := isInteractionRoot(input.Name, attributes)
 	model := first(attributes, resource, "gen_ai.response.model", "gen_ai.request.model")
-	if model == "" && !interactionRoot {
-		return nil, errUnsupportedCopilotSpan
+	eventType := "model.call"
+	if interactionRoot {
+		eventType = "interaction.prompt"
+	} else if model == "" {
+		// Keep a tokenless but valid span as raw lineage. A later child can then
+		// be reconciled through it even if this wrapper has no usage itself.
+		eventType = "otel.span"
 	}
 	payload := map[string]any{
 		"provider":        first(attributes, resource, "gen_ai.provider.name", "gen_ai.system"),
@@ -380,8 +391,9 @@ func (r Receiver) copilotSpanEvent(ctx context.Context, resource, attributes map
 		{name: "cache_write_tokens", keys: []string{"gen_ai.usage.cache_creation.input_tokens"}},
 		{name: "total_tokens", keys: []string{"gen_ai.usage.total_tokens"}},
 	})
-	if len(observations) == 0 && !interactionRoot {
-		return nil, errUnsupportedCopilotSpan
+	if len(observations) == 0 && eventType == "model.call" {
+		// A model-labelled wrapper without usage is lineage, not a billable call.
+		eventType = "otel.span"
 	}
 	for _, observation := range observations {
 		payload[observation["name"].(string)] = observation["value"]
@@ -408,10 +420,8 @@ func (r Receiver) copilotSpanEvent(ctx context.Context, resource, attributes map
 	// every exported span. It creates a single privacy-safe root even when a
 	// CLI hook is disabled or an exporter omits invoke_agent.
 	payload["interaction_upstream_id"] = input.TraceID
-	eventType := "model.call"
 	upstreamEventID := input.TraceID + "/" + input.SpanID
-	if interactionRoot {
-		eventType = "interaction.prompt"
+	if eventType == "interaction.prompt" {
 		upstreamEventID = input.TraceID
 		payload["prompt_available"] = false
 		payload["prompt_capture_mode"] = "hash"
@@ -427,6 +437,9 @@ func (r Receiver) copilotSpanEvent(ctx context.Context, resource, attributes map
 		"project_resolution_method":     string(resolved.Resolution.Method),
 		"project_resolution_confidence": string(resolved.Resolution.Confidence),
 		"project_resolution_evidence":   map[string]string{"source": "central-project-resolver"},
+		"trace_id":                      input.TraceID,
+		"span_id":                       input.SpanID,
+		"parent_span_id":                input.ParentSpanID,
 		"upstream_event_id":             upstreamEventID,
 		"payload":                       payload,
 	}, nil
@@ -521,6 +534,8 @@ func (r Receiver) codexLogEvent(ctx context.Context, resource, record map[string
 		"project_resolution_method":     string(resolved.Resolution.Method),
 		"project_resolution_confidence": string(resolved.Resolution.Confidence),
 		"project_resolution_evidence":   map[string]string{"source": "central-project-resolver"},
+		"trace_id":                      input.TraceID,
+		"span_id":                       input.SpanID,
 		"upstream_event_id":             codexLogIdentity(record, input),
 		"payload":                       payload,
 	}, true, nil
