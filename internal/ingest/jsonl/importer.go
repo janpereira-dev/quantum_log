@@ -20,6 +20,9 @@ type event struct {
 	SourceVersion        string          `json:"source_version"`
 	SessionID            string          `json:"session_id"`
 	EventType            string          `json:"event_type"`
+	TraceID              string          `json:"trace_id"`
+	SpanID               string          `json:"span_id"`
+	ParentSpanID         string          `json:"parent_span_id"`
 	OccurredAt           time.Time       `json:"occurred_at"`
 	ProjectID            string          `json:"project_id"`
 	ProjectLocationID    string          `json:"project_location_id"`
@@ -111,7 +114,7 @@ func importWithTrustAndPromptCapture(ctx context.Context, store *storepkg.Store,
 		if parsed.EvidenceJSON != nil {
 			evidence = string(parsed.EvidenceJSON)
 		}
-		appendResult, err := store.AppendRawEvent(ctx, storepkg.RawEventInput{IngestionIdentity: parsed.IngestionIdentity, Source: parsed.Source, SourceVersion: parsed.SourceVersion, SessionID: parsed.SessionID, EventType: parsed.EventType, Payload: parsed.Payload, OccurredAt: parsed.OccurredAt, ProjectID: parsed.ProjectID, ProjectLocationID: parsed.ProjectLocationID, WorkContextID: parsed.WorkContextID, ResolutionMethod: parsed.ResolutionMethod, ResolutionConfidence: parsed.ResolutionConfidence, EvidenceJSON: evidence})
+		appendResult, err := store.AppendRawEvent(ctx, storepkg.RawEventInput{IngestionIdentity: parsed.IngestionIdentity, Source: parsed.Source, SourceVersion: parsed.SourceVersion, SessionID: parsed.SessionID, EventType: parsed.EventType, TraceID: parsed.TraceID, SpanID: parsed.SpanID, ParentSpanID: parsed.ParentSpanID, Payload: parsed.Payload, OccurredAt: parsed.OccurredAt, ProjectID: parsed.ProjectID, ProjectLocationID: parsed.ProjectLocationID, WorkContextID: parsed.WorkContextID, ResolutionMethod: parsed.ResolutionMethod, ResolutionConfidence: parsed.ResolutionConfidence, EvidenceJSON: evidence})
 		if err != nil {
 			return count, fmt.Errorf("import NDJSON line %d: %w", line, err)
 		}
@@ -349,8 +352,14 @@ func normalizeModelCall(ctx context.Context, store *storepkg.Store, parsed event
 		input.DurationMS = &duration
 	}
 	if linked {
-		return true, store.UpdateLinkedModelCallTiming(ctx, input.RawEventID, input.OccurredAt, input.CompletedAt)
+		if err := store.UpdateLinkedModelCallTiming(ctx, input.RawEventID, input.OccurredAt, input.CompletedAt); err != nil {
+			return true, err
+		}
+		return true, store.ReconcileOTLPUsage(ctx, input.RawEventID)
 	}
 	_, err = store.RecordModelCall(ctx, input)
-	return err == nil, err
+	if err != nil {
+		return false, err
+	}
+	return true, store.ReconcileOTLPUsage(ctx, input.RawEventID)
 }

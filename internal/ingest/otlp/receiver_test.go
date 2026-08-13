@@ -416,6 +416,35 @@ func TestReceiverImportsValidCopilotOTLPWithReportedTokensAndReplayIdentity(t *t
 	}
 }
 
+func TestReceiverDoesNotDoubleCountAggregateAndChildUsageSpans(t *testing.T) {
+	ctx := context.Background()
+	service, err := app.Initialize(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	payload := `{
+  "resourceSpans": [
+    {"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"general-purpose"}}]},"scopeSpans":[{"spans":[{"traceId":"trace-aggregate","spanId":"parent","startTimeUnixNano":"1763294400000000000","attributes":[{"key":"gen_ai.provider.name","value":{"stringValue":"github"}},{"key":"gen_ai.agent.name","value":{"stringValue":"general-purpose"}},{"key":"gen_ai.request.model","value":{"stringValue":"gpt-5.5"}},{"key":"gen_ai.usage.input_tokens","value":{"intValue":"10"}},{"key":"gen_ai.usage.output_tokens","value":{"intValue":"4"}}]}]}]},
+    {"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"github-copilot"}}]},"scopeSpans":[{"spans":[{"traceId":"trace-aggregate","spanId":"child","parentSpanId":"parent","startTimeUnixNano":"1763294401000000000","attributes":[{"key":"gen_ai.provider.name","value":{"stringValue":"github"}},{"key":"gen_ai.agent.name","value":{"stringValue":"GitHub Copilot CLI"}},{"key":"gen_ai.request.model","value":{"stringValue":"gpt-5.5"}},{"key":"gen_ai.usage.input_tokens","value":{"intValue":"10"}},{"key":"gen_ai.usage.output_tokens","value":{"intValue":"4"}}]}]}]}
+  ]
+}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/traces", bytes.NewBufferString(payload))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	NewHandler(service).ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+	}
+	report, err := service.Store.Usage(ctx, storepkg.UsageQuery{GroupBy: []string{"agent", "provider", "model"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Rows) != 1 || report.Rows[0].AgentName != "GitHub Copilot CLI" || report.Rows[0].TotalTokens != 14 {
+		t.Fatalf("usage rows = %#v, want only child usage", report.Rows)
+	}
+}
+
 func TestCopilotUsesConversationIDBeforeWindowSessionAndVerifiedGitContext(t *testing.T) {
 	ctx := context.Background()
 	service, err := app.Initialize(ctx, t.TempDir())

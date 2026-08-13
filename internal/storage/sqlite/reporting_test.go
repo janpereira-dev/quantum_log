@@ -181,6 +181,54 @@ func TestUsageIncludesUnattributedModelCalls(t *testing.T) {
 	}
 }
 
+func TestUsageReconcilesOnlyMatchingAcyclicOTLPAggregates(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	appendEvent := func(id, spanID, parentSpanID string) string {
+		result, err := store.AppendRawEvent(ctx, RawEventInput{IngestionIdentity: id, Source: "otlp-http", EventType: "model.call", TraceID: "trace-1", SpanID: spanID, ParentSpanID: parentSpanID, Payload: []byte(`{"capture_quality":"otel_reported"}`), OccurredAt: time.Now().UTC()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result.ID
+	}
+	parent := appendEvent("parent", "parent", "")
+	child := appendEvent("child", "child", "parent")
+	for _, rawEventID := range []string{parent, child} {
+		if _, err := store.RecordModelCall(ctx, ModelCallInput{RawEventID: rawEventID, AgentName: "copilot", Provider: "github", ModelID: "gpt-5.5", InputTokens: 10, OutputTokens: 4, CaptureQuality: "otel_reported"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.ReconcileOTLPUsage(ctx, child); err != nil {
+		t.Fatal(err)
+	}
+	report, err := store.Usage(ctx, UsageQuery{GroupBy: []string{"project", "agent", "provider", "model", "capture_quality"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Rows) != 1 || report.Rows[0].TotalTokens != 14 {
+		t.Fatalf("reconciled usage = %#v", report.Rows)
+	}
+
+	mismatch := appendEvent("mismatch", "mismatch", "child")
+	if _, err := store.RecordModelCall(ctx, ModelCallInput{RawEventID: mismatch, AgentName: "copilot", Provider: "github", ModelID: "gpt-5.5", InputTokens: 1, OutputTokens: 2, CaptureQuality: "otel_reported"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReconcileOTLPUsage(ctx, mismatch); err != nil {
+		t.Fatal(err)
+	}
+	report, err = store.Usage(ctx, UsageQuery{GroupBy: []string{"project", "agent", "provider", "model", "capture_quality"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Rows) != 1 || report.Rows[0].TotalTokens != 17 {
+		t.Fatalf("mismatched child was suppressed: %#v", report.Rows)
+	}
+}
+
 func TestUsageSeparatesReportedLifecycleAndEstimatedMeasurements(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))
