@@ -345,8 +345,9 @@ func (r Receiver) copilotSpanEvent(ctx context.Context, resource, attributes map
 	if agentName == "" {
 		agentName = "GitHub Copilot CLI"
 	}
+	interactionRoot := isInteractionRoot(input.Name, attributes)
 	model := first(attributes, resource, "gen_ai.response.model", "gen_ai.request.model")
-	if model == "" {
+	if model == "" && !interactionRoot {
 		return nil, errUnsupportedCopilotSpan
 	}
 	payload := map[string]any{
@@ -366,13 +367,15 @@ func (r Receiver) copilotSpanEvent(ctx context.Context, resource, attributes map
 		{name: "cache_write_tokens", keys: []string{"gen_ai.usage.cache_creation.input_tokens"}},
 		{name: "total_tokens", keys: []string{"gen_ai.usage.total_tokens"}},
 	})
-	if len(observations) == 0 {
+	if len(observations) == 0 && !interactionRoot {
 		return nil, errUnsupportedCopilotSpan
 	}
 	for _, observation := range observations {
 		payload[observation["name"].(string)] = observation["value"]
 	}
-	payload["metric_observations"] = observations
+	if len(observations) > 0 {
+		payload["metric_observations"] = observations
+	}
 	resolved, err := r.resolveCopilotProject(ctx, resource, attributes)
 	if err != nil {
 		return nil, err
@@ -388,22 +391,33 @@ func (r Receiver) copilotSpanEvent(ctx context.Context, resource, attributes map
 	if windowSessionID := first(attributes, resource, "session.id"); windowSessionID != "" && windowSessionID != sessionID {
 		payload["copilot_window_session_id"] = windowSessionID
 	}
+	// Copilot's trace is the only transport-independent turn identity present on
+	// every exported span. It creates a single privacy-safe root even when a
+	// CLI hook is disabled or an exporter omits invoke_agent.
+	payload["interaction_upstream_id"] = input.TraceID
+	eventType := "model.call"
+	upstreamEventID := input.TraceID + "/" + input.SpanID
+	if interactionRoot {
+		eventType = "interaction.prompt"
+		upstreamEventID = input.TraceID
+		payload["prompt_available"] = false
+		payload["prompt_capture_mode"] = "hash"
+	}
 	return map[string]any{
 		"source":                        "otlp-http",
 		"source_version":                first(resource, attributes, "service.version"),
 		"session_id":                    sessionID,
-		"event_type":                    "model.call",
+		"event_type":                    eventType,
 		"occurred_at":                   occurredAt,
 		"project_id":                    resolved.ProjectID,
 		"project_location_id":           resolved.LocationID,
 		"project_resolution_method":     string(resolved.Resolution.Method),
 		"project_resolution_confidence": string(resolved.Resolution.Confidence),
 		"project_resolution_evidence":   map[string]string{"source": "central-project-resolver"},
-		"upstream_event_id":             input.TraceID + "/" + input.SpanID,
+		"upstream_event_id":             upstreamEventID,
 		"payload":                       payload,
 	}, nil
 }
-
 func (r Receiver) resolveCopilotProject(ctx context.Context, resource, attributes map[string]string) (app.ResolvedProject, error) {
 	if adapterProject := first(attributes, resource, "qlog.project"); adapterProject != "" {
 		return r.service.ResolveProject(ctx, "", adapterProject, "")
@@ -554,6 +568,7 @@ type span struct {
 	Name              string     `json:"name"`
 	TraceID           string     `json:"traceId"`
 	SpanID            string     `json:"spanId"`
+	ParentSpanID      string     `json:"parentSpanId"`
 	StartTimeUnixNano string     `json:"startTimeUnixNano"`
 	Attributes        []keyValue `json:"attributes"`
 }
@@ -583,6 +598,7 @@ func fromProto(input *collectortracepb.ExportTraceServiceRequest) exportTraceSer
 					Name:              protoSpan.GetName(),
 					TraceID:           fmt.Sprintf("%x", protoSpan.GetTraceId()),
 					SpanID:            fmt.Sprintf("%x", protoSpan.GetSpanId()),
+					ParentSpanID:      fmt.Sprintf("%x", protoSpan.GetParentSpanId()),
 					StartTimeUnixNano: strconv.FormatUint(protoSpan.GetStartTimeUnixNano(), 10),
 					Attributes:        fromProtoAttributes(protoSpan.GetAttributes()),
 				})

@@ -34,3 +34,21 @@ func TestCopilotCLIHookEventRejectsUnknownEvents(t *testing.T) {
 		t.Fatal("unknown event was accepted")
 	}
 }
+
+func TestCopilotCLIHookEventDerivesPromptIdentityWithoutEventID(t *testing.T) {
+	input := []byte(`{"sessionId":"session-1","cwd":"/repo","timestamp":1763294400000,"prompt":"hello"}`)
+	first, err := copilotCLIHookEvent(input, "userPromptSubmitted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := copilotCLIHookEvent(input, "userPromptSubmitted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.EventType != "interaction.prompt" || first.UpstreamEventID == "" || first.UpstreamEventID != second.UpstreamEventID {
+		t.Fatalf("prompt identity = %#v / %#v", first, second)
+	}
+	if got := first.OccurredAt.UnixMilli(); got != 1763294400000 {
+		t.Fatalf("occurred at = %d", got)
+	}
+}

@@ -198,21 +198,27 @@ func normalizeInteraction(ctx context.Context, store *storepkg.Store, parsed eve
 	// each interactive turn but not the prompt body. Treat that source-native
 	// response identity as a privacy-safe interaction root rather than dropping
 	// the prompt count altogether.
-	if !isInteractionEvent(parsed.EventType) && !isCodexResponseRoot(parsed) {
-		return false, nil
-	}
 	if parsed.IngestionIdentity == "" {
 		return false, nil
 	}
 	var payload struct {
-		PromptHash      string `json:"prompt_hash"`
-		InteractionHash string `json:"interaction_hash"`
-		Redacted        string `json:"interaction_redacted"`
-		CaptureMode     string `json:"prompt_capture_mode"`
+		PromptHash            string `json:"prompt_hash"`
+		InteractionHash       string `json:"interaction_hash"`
+		Redacted              string `json:"interaction_redacted"`
+		CaptureMode           string `json:"prompt_capture_mode"`
+		InteractionUpstreamID string `json:"interaction_upstream_id"`
+		AgentName             string `json:"agent_name"`
 	}
 	_ = json.Unmarshal(parsed.Payload, &payload)
+	if !isInteractionEvent(parsed.EventType) && !isCodexResponseRoot(parsed) && !isCopilotTraceInteraction(parsed, payload.InteractionUpstreamID, payload.AgentName) {
+		return false, nil
+	}
+	upstreamID := parsed.IngestionIdentity
+	if isCopilotTraceInteraction(parsed, payload.InteractionUpstreamID, payload.AgentName) {
+		upstreamID = payload.InteractionUpstreamID
+	}
 	_, created, err := store.RecordInteraction(ctx, storepkg.InteractionInput{
-		RawEventID: rawEventID, Source: parsed.Source, SessionID: parsed.SessionID, UpstreamID: parsed.IngestionIdentity,
+		RawEventID: rawEventID, Source: parsed.Source, SessionID: parsed.SessionID, UpstreamID: upstreamID,
 		ProjectID: parsed.ProjectID, ProjectLocationID: parsed.ProjectLocationID, WorkContextID: parsed.WorkContextID,
 		PromptHash: firstNonEmpty(payload.InteractionHash, payload.PromptHash), PromptRedacted: payload.Redacted,
 		PromptCaptureMode: payload.CaptureMode,
@@ -223,6 +229,16 @@ func normalizeInteraction(ctx context.Context, store *storepkg.Store, parsed eve
 
 func isCodexResponseRoot(parsed event) bool {
 	return parsed.Source == "codex-app-server" && strings.EqualFold(parsed.EventType, "model.call")
+}
+
+func isCopilotTraceInteraction(parsed event, interactionUpstreamID, agentName string) bool {
+	if parsed.Source != "otlp-http" || interactionUpstreamID == "" {
+		return false
+	}
+	if isInteractionEvent(parsed.EventType) {
+		return true
+	}
+	return strings.EqualFold(parsed.EventType, "model.call") && strings.HasPrefix(agentName, "GitHub Copilot")
 }
 
 func firstNonEmpty(values ...string) string {

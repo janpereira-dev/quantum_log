@@ -37,4 +37,4 @@ release:
   footer: |
     Full project history: https://github.com/janpereira-dev/quantum_log/blob/{{ .Tag }}/CHANGELOG.md
 snapshot:
-  version_template: "0.4.0-rc.3"
+  version_template: "0.4.0-rc.4"
