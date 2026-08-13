@@ -150,7 +150,7 @@ func newSetupCommand(home *string) *cobra.Command {
 	return command
 }
 
-func bootstrapSupportedAdapters(ctx context.Context, home, executable string, yes, dryRun bool, registry *adapters.Registry, manager collectorManager) (BootstrapResult, error) {
+func bootstrapSupportedAdapters(ctx context.Context, home, executable string, yes, dryRun bool, registry *adapters.Registry, manager collectorManager) (result BootstrapResult, resultErr error) {
 	paths, err := config.Resolve(home)
 	if err != nil {
 		return BootstrapResult{}, err
@@ -164,7 +164,7 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 	if err != nil {
 		return BootstrapResult{}, err
 	}
-	result := BootstrapResult{Consent: yes, PlanOnly: !yes || dryRun, Adapters: plans}
+	result = BootstrapResult{Consent: yes, PlanOnly: !yes || dryRun, Adapters: plans}
 	if !yes || dryRun {
 		if dryRun {
 			result.Collector.Actions = []string{"dry run: collector install and start skipped"}
@@ -175,10 +175,20 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 	if err != nil {
 		return BootstrapResult{}, err
 	}
-	if stopped, err := stopCollectorForLedgerInitialization(ctx, manager); err != nil {
+	collectorStopped, err := stopCollectorForLedgerInitialization(ctx, manager)
+	if err != nil {
 		return BootstrapResult{}, err
-	} else if stopped {
+	}
+	if collectorStopped {
 		result.Collector.Actions = append(result.Collector.Actions, "collector stopped temporarily for ledger initialization")
+		defer func() {
+			if resultErr == nil {
+				return
+			}
+			if _, restartErr := restartCollectorAfterSchedulerDenied(manager, paths.Home, defaultCollectorListen); restartErr != nil {
+				resultErr = fmt.Errorf("%w; restore collector after setup failure: %v", resultErr, restartErr)
+			}
+		}()
 	}
 	service, err := app.Initialize(ctx, paths.Home)
 	if err != nil {
@@ -232,7 +242,7 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 
 func stopCollectorForLedgerInitialization(ctx context.Context, manager collectorManager) (bool, error) {
 	status, err := manager.Status(ctx, defaultCollectorListen)
-	if err != nil || !status.Running {
+	if err != nil || (!status.Running && !status.Reachable) {
 		return false, nil
 	}
 	if _, err := manager.Stop(); err != nil {

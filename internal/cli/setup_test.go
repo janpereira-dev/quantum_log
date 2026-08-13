@@ -166,6 +166,32 @@ func TestSetupStopsActiveCollectorBeforeLedgerInitialization(t *testing.T) {
 	}
 }
 
+func TestSetupRestoresCollectorAfterLedgerInitializationFailure(t *testing.T) {
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
+	home := filepath.Join(t.TempDir(), "blocked-home")
+	if err := os.WriteFile(home, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("create blocked home: %v", err)
+	}
+	manager := &activeCollectorManager{}
+	if _, err := bootstrapSupportedAdapters(context.Background(), home, temporaryDurableExecutable(t), true, false, adapters.Default(), manager); err == nil {
+		t.Fatal("setup succeeded with an invalid ledger home")
+	}
+	if !manager.stopped || !manager.started {
+		t.Fatalf("collector lifecycle = %#v, want stopped then restored", manager)
+	}
+}
+
+func TestSetupStopsReachableCollectorWhenTaskStateIsLocalized(t *testing.T) {
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
+	manager := &reachableCollectorManager{}
+	if _, err := bootstrapSupportedAdapters(context.Background(), t.TempDir(), temporaryDurableExecutable(t), true, false, adapters.Default(), manager); err != nil {
+		t.Fatal(err)
+	}
+	if !manager.stopped {
+		t.Fatal("reachable collector was not stopped before ledger initialization")
+	}
+}
+
 func TestSetupYesInitializesLedgerBeforeCollectorInstall(t *testing.T) {
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
 	home := t.TempDir()
@@ -338,6 +364,12 @@ type genericAccessDeniedCollectorManager struct{ fakeCollectorManager }
 type activeCollectorManager struct {
 	fakeCollectorManager
 	stopped bool
+}
+
+type reachableCollectorManager struct{ activeCollectorManager }
+
+func (m *reachableCollectorManager) Status(_ context.Context, listen string) (CollectorStatus, error) {
+	return CollectorStatus{Installed: true, Running: false, Reachable: !m.stopped, Listen: listen, Message: "localized task state"}, nil
 }
 
 func (m *activeCollectorManager) Status(_ context.Context, listen string) (CollectorStatus, error) {
