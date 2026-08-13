@@ -175,7 +175,11 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 	if err != nil {
 		return BootstrapResult{}, err
 	}
-	collectorStopped, err := stopCollectorForLedgerInitialization(ctx, manager)
+	// Setup can be invoked with a new home while a collector already owns a
+	// different ledger. Resolve its persisted settings before stopping it so an
+	// initialization failure restores that exact collector instead of moving it.
+	activeCollectorHome, activeCollectorListen := resolveManagedCollectorSettings(manager, paths.Home, defaultCollectorListen, false, false)
+	collectorStopped, err := stopCollectorForLedgerInitialization(ctx, manager, activeCollectorListen)
 	if err != nil {
 		return BootstrapResult{}, err
 	}
@@ -185,7 +189,7 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 			if resultErr == nil {
 				return
 			}
-			if _, restartErr := restartCollectorAfterSchedulerDenied(manager, paths.Home, defaultCollectorListen); restartErr != nil {
+			if _, restartErr := restartCollectorAfterSchedulerDenied(manager, activeCollectorHome, activeCollectorListen); restartErr != nil {
 				resultErr = fmt.Errorf("%w; restore collector after setup failure: %v", resultErr, restartErr)
 			}
 		}()
@@ -240,8 +244,8 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 	return result, nil
 }
 
-func stopCollectorForLedgerInitialization(ctx context.Context, manager collectorManager) (bool, error) {
-	status, err := manager.Status(ctx, defaultCollectorListen)
+func stopCollectorForLedgerInitialization(ctx context.Context, manager collectorManager, listen string) (bool, error) {
+	status, err := manager.Status(ctx, listen)
 	if err != nil || (!status.Running && !status.Reachable) {
 		return false, nil
 	}
