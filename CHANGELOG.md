@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.0-rc.6 - 2026-08-13
+
+- Reconciled OTLP aggregate model spans with their usage-emitting children so the same token total is not counted twice.
+
 ## 0.4.0-rc.5 - 2026-08-13
 
 - Materialized privacy-safe canonical interaction roots from Copilot, Claude Code, and Codex telemetry traces when a prompt hook is unavailable.
@@ -79,3 +83,4 @@
 - Added canonical prompt interactions with durable upstream deduplication and model-call linkage.
 - Added versioned embedded OpenCode plugin source and interaction log commands.
 - Preserved historical model and tool rows as legacy-unlinked during SQLite migration.
+
