@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.0-rc.4 - 2026-08-13
+
+- Fixed Copilot OTLP capture to derive one canonical interaction per telemetry trace when hook or root spans are absent.
+- Linked Copilot model calls to the trace interaction and derived hook identities from documented prompt payloads without event IDs.
+
 ## 0.4.0-rc.3 - 2026-08-13
 
 - Fixed `qlog setup --yes` when a running managed collector owns the ledger writer lock.
