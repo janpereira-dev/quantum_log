@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.0-rc.5 - 2026-08-13
+
+- Materialized privacy-safe canonical interaction roots from Copilot, Claude Code, and Codex telemetry traces when a prompt hook is unavailable.
+- Included unallocated model calls in usage rows as `unattributed` instead of hiding their reported consumption.
+
 ## 0.4.0-rc.4 - 2026-08-13
 
 - Fixed Copilot OTLP capture to derive one canonical interaction per telemetry trace when hook or root spans are absent.
