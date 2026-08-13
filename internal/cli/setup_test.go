@@ -155,6 +155,47 @@ func TestSetupPlansNoUnavailableAdapters(t *testing.T) {
 	}
 }
 
+func TestSetupStopsActiveCollectorBeforeLedgerInitialization(t *testing.T) {
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
+	manager := &activeCollectorManager{}
+	if _, err := bootstrapSupportedAdapters(context.Background(), t.TempDir(), temporaryDurableExecutable(t), true, false, adapters.Default(), manager); err != nil {
+		t.Fatal(err)
+	}
+	if !manager.stopped || !manager.started {
+		t.Fatalf("collector lifecycle = %#v, want stopped then restarted", manager)
+	}
+}
+
+func TestSetupRestoresCollectorAfterLedgerInitializationFailure(t *testing.T) {
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
+	home := filepath.Join(t.TempDir(), "blocked-home")
+	if err := os.WriteFile(home, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("create blocked home: %v", err)
+	}
+	previousHome := t.TempDir()
+	manager := &managedActiveCollectorManager{configuredHome: previousHome, configuredListen: "127.0.0.1:14318"}
+	if _, err := bootstrapSupportedAdapters(context.Background(), home, temporaryDurableExecutable(t), true, false, adapters.Default(), manager); err == nil {
+		t.Fatal("setup succeeded with an invalid ledger home")
+	}
+	if !manager.stopped || !manager.started {
+		t.Fatalf("collector lifecycle = %#v, want stopped then restored", manager)
+	}
+	if manager.startedHome != previousHome || manager.startedListen != manager.configuredListen {
+		t.Fatalf("collector restored with (%q, %q), want (%q, %q)", manager.startedHome, manager.startedListen, previousHome, manager.configuredListen)
+	}
+}
+
+func TestSetupDoesNotStopCollectorForUntrustedHealthEndpoint(t *testing.T) {
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
+	manager := &reachableCollectorManager{}
+	if _, err := bootstrapSupportedAdapters(context.Background(), t.TempDir(), temporaryDurableExecutable(t), true, false, adapters.Default(), manager); err != nil {
+		t.Fatal(err)
+	}
+	if manager.stopped {
+		t.Fatal("setup stopped a collector based only on an untrusted health endpoint")
+	}
+}
+
 func TestSetupYesInitializesLedgerBeforeCollectorInstall(t *testing.T) {
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
 	home := t.TempDir()
@@ -308,8 +349,10 @@ func canonicalExecutablePath(t *testing.T, path string) string {
 }
 
 type fakeCollectorManager struct {
-	installed bool
-	started   bool
+	installed     bool
+	started       bool
+	startedHome   string
+	startedListen string
 }
 
 type ledgerCheckingCollectorManager struct {
@@ -323,6 +366,49 @@ type policyDeniedCollectorManager struct {
 }
 
 type genericAccessDeniedCollectorManager struct{ fakeCollectorManager }
+
+type activeCollectorManager struct {
+	fakeCollectorManager
+	stopped bool
+}
+
+type reachableCollectorManager struct{ activeCollectorManager }
+
+type managedActiveCollectorManager struct {
+	activeCollectorManager
+	configuredHome   string
+	configuredListen string
+}
+
+func (m *managedActiveCollectorManager) ResolveManagedCollectorSettings(home, listen string, homeExplicit, listenExplicit bool) (string, string) {
+	if !homeExplicit {
+		home = m.configuredHome
+	}
+	if !listenExplicit {
+		listen = m.configuredListen
+	}
+	return home, listen
+}
+
+func (m *managedActiveCollectorManager) Status(_ context.Context, listen string) (CollectorStatus, error) {
+	if listen != m.configuredListen {
+		return CollectorStatus{Installed: true, Listen: listen, Message: "different collector listener"}, nil
+	}
+	return CollectorStatus{Installed: true, Running: !m.stopped, Reachable: m.started, Listen: listen, Message: "localized task state"}, nil
+}
+
+func (m *reachableCollectorManager) Status(_ context.Context, listen string) (CollectorStatus, error) {
+	return CollectorStatus{Installed: true, Running: false, Reachable: !m.stopped, Listen: listen, Message: "localized task state"}, nil
+}
+
+func (m *activeCollectorManager) Status(_ context.Context, listen string) (CollectorStatus, error) {
+	return CollectorStatus{Installed: true, Running: !m.stopped, Reachable: m.started, Listen: listen, Message: "ok"}, nil
+}
+
+func (m *activeCollectorManager) Stop() (CollectorStatus, error) {
+	m.stopped = true
+	return CollectorStatus{Installed: true, Message: "collector stopped"}, nil
+}
 
 func (*policyDeniedCollectorManager) Install(_, _ string) (CollectorStatus, error) {
 	return CollectorStatus{}, errors.New(`task scheduler operation /Create for task "QUANTUM_LOG Collector" failed: exit status 1: Error: Acceso denegado.`)
@@ -360,8 +446,10 @@ func (m *fakeCollectorManager) Install(_, listen string) (CollectorStatus, error
 	return CollectorStatus{Installed: true, Listen: listen, ServiceID: "test.collector", Message: "collector installed"}, nil
 }
 
-func (m *fakeCollectorManager) Start(_, listen string) (CollectorStatus, error) {
+func (m *fakeCollectorManager) Start(home, listen string) (CollectorStatus, error) {
 	m.started = true
+	m.startedHome = home
+	m.startedListen = listen
 	return CollectorStatus{Installed: true, Running: true, Listen: listen, Message: "collector started"}, nil
 }
 

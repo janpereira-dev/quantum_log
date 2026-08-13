@@ -86,6 +86,29 @@ func (*fakeCollectorManager) Status(_ context.Context, listen string) (Collector
 	return CollectorStatus{Listen: listen}, nil
 }
 
+func TestProbeCollectorHealthIdentifiesManagedCollector(t *testing.T) {
+	server := httptest.NewServer(newCollectorMux(t.TempDir()))
+	t.Cleanup(server.Close)
+
+	health := probeCollectorHealth(context.Background(), strings.TrimPrefix(server.URL, "http://"))
+	if !health.Reachable || !health.Managed {
+		t.Fatalf("health = %#v, want reachable managed collector", health)
+	}
+}
+
+func TestProbeCollectorHealthDoesNotIdentifyArbitraryHealthyEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte(`{"status":"ok"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	health := probeCollectorHealth(context.Background(), strings.TrimPrefix(server.URL, "http://"))
+	if !health.Reachable || health.Managed {
+		t.Fatalf("health = %#v, want reachable untrusted endpoint", health)
+	}
+}
+
 func TestProbeCollectorHealthRejectsUnhealthyHTTPStatus(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.WriteHeader(http.StatusServiceUnavailable)

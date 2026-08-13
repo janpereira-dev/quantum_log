@@ -253,11 +253,18 @@ func (windowsCollectorManager) Install(home, listen string) (CollectorStatus, er
 	if err != nil {
 		return CollectorStatus{}, err
 	}
-	if err := writeWindowsCollectorTaskDefinition(collectorTaskDefinitionPath(), executable, home, listen, userID, collectorLogPath()); err != nil {
+	// Keep the currently registered task's settings readable until /Create
+	// succeeds. A failed replacement must not overwrite the recovery source.
+	stagedDefinition := collectorTaskDefinitionPath() + ".next"
+	if err := writeWindowsCollectorTaskDefinition(stagedDefinition, executable, home, listen, userID, collectorLogPath()); err != nil {
 		return CollectorStatus{}, err
 	}
-	if err := createWindowsCollectorTask(collectorTaskDefinitionPath()); err != nil {
+	defer func() { _ = os.Remove(stagedDefinition) }()
+	if err := createWindowsCollectorTask(stagedDefinition); err != nil {
 		return CollectorStatus{}, err
+	}
+	if err := os.Rename(stagedDefinition, collectorTaskDefinitionPath()); err != nil {
+		return CollectorStatus{}, fmt.Errorf("persist installed collector task definition: %w", err)
 	}
 	status, err := windowsCollectorStatus(context.Background(), listen)
 	if err != nil {
@@ -471,15 +478,71 @@ func (manager windowsCollectorManager) Uninstall() (CollectorStatus, error) {
 }
 
 func (windowsCollectorManager) ResolveManagedCollectorSettings(home, listen string, homeExplicit, listenExplicit bool) (string, string) {
-	state, err := readWindowsCollectorFallbackState()
-	if err != nil {
+	if state, err := readWindowsCollectorFallbackState(); err == nil {
+		if !homeExplicit {
+			home = state.Home
+		}
+		if !listenExplicit {
+			listen = state.Listen
+		}
 		return home, listen
 	}
-	if !homeExplicit {
-		home = state.Home
-	}
-	if !listenExplicit {
-		listen = state.Listen
+	// Scheduler-backed collectors predate the fallback state file. The task XML
+	// is qlog-owned and contains the durable home/listen arguments. Reading it
+	// lets setup stop and recover a collector even when schtasks localizes state.
+	if taskHome, taskListen, err := readWindowsCollectorTaskSettings(); err == nil {
+		if !homeExplicit {
+			home = taskHome
+		}
+		if !listenExplicit {
+			listen = taskListen
+		}
 	}
 	return home, listen
+}
+
+func readWindowsCollectorTaskSettings() (string, string, error) {
+	contents, err := os.ReadFile(collectorTaskDefinitionPath())
+	if err != nil {
+		return "", "", err
+	}
+	if len(contents) < 2 || contents[0] != 0xFF || contents[1] != 0xFE || len(contents)%2 != 0 {
+		return "", "", fmt.Errorf("invalid collector task encoding")
+	}
+	codeUnits := make([]uint16, 0, (len(contents)-2)/2)
+	for offset := 2; offset < len(contents); offset += 2 {
+		codeUnits = append(codeUnits, uint16(contents[offset])|uint16(contents[offset+1])<<8)
+	}
+	definition := strings.Replace(string(utf16.Decode(codeUnits)), `encoding="UTF-16"`, `encoding="UTF-8"`, 1)
+	var task struct {
+		Actions struct {
+			Exec struct {
+				Arguments string `xml:"Arguments"`
+			} `xml:"Exec"`
+		} `xml:"Actions"`
+	}
+	if err := xml.Unmarshal([]byte(definition), &task); err != nil {
+		return "", "", fmt.Errorf("parse collector task definition: %w", err)
+	}
+	arguments := task.Actions.Exec.Arguments
+	const homePrefix = `--home "`
+	if !strings.HasPrefix(arguments, homePrefix) {
+		return "", "", fmt.Errorf("collector task has no quoted home")
+	}
+	remainder := strings.TrimPrefix(arguments, homePrefix)
+	endHome := strings.Index(remainder, `" collector serve --listen `)
+	if endHome < 0 {
+		return "", "", fmt.Errorf("collector task has invalid home arguments")
+	}
+	home := remainder[:endHome]
+	remainder = remainder[endHome+len(`" collector serve --listen `):]
+	endListen := strings.IndexByte(remainder, ' ')
+	if endListen < 0 {
+		return "", "", fmt.Errorf("collector task has no log-file argument")
+	}
+	listen := remainder[:endListen]
+	if !filepath.IsAbs(home) || validateCollectorListen(listen) != nil {
+		return "", "", fmt.Errorf("collector task has invalid managed settings")
+	}
+	return home, listen, nil
 }

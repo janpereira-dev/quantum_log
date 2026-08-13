@@ -69,6 +69,26 @@ func TestWindowsCollectorTaskDefinitionBoundsRestartOnFailure(t *testing.T) {
 	}
 }
 
+func TestReadWindowsCollectorTaskSettings(t *testing.T) {
+	stateDir := t.TempDir()
+	t.Setenv("LOCALAPPDATA", stateDir)
+	home := `C:\Users\alice\AppData\Local\QUANTUM_LOG`
+	listen := "127.0.0.1:14318"
+	if err := os.MkdirAll(collectorStateDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeWindowsCollectorTaskDefinition(collectorTaskDefinitionPath(), `C:\Program Files\QUANTUM_LOG\qlog.exe`, home, listen, `CONTOSO\alice`, `C:\Users\alice\AppData\Local\QUANTUM_LOG\collector\collector.log`); err != nil {
+		t.Fatal(err)
+	}
+	gotHome, gotListen, err := readWindowsCollectorTaskSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotHome != home || gotListen != listen {
+		t.Fatalf("settings = (%q, %q), want (%q, %q)", gotHome, gotListen, home, listen)
+	}
+}
+
 func TestWriteWindowsCollectorTaskDefinitionUsesUTF16LE(t *testing.T) {
 	executable := `C:\Program Files\QUANTUM_LOG\qlog.exe`
 	home := `C:\Users\alice\AppData\Local\QUANTUM_LOG`

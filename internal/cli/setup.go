@@ -150,7 +150,7 @@ func newSetupCommand(home *string) *cobra.Command {
 	return command
 }
 
-func bootstrapSupportedAdapters(ctx context.Context, home, executable string, yes, dryRun bool, registry *adapters.Registry, manager collectorManager) (BootstrapResult, error) {
+func bootstrapSupportedAdapters(ctx context.Context, home, executable string, yes, dryRun bool, registry *adapters.Registry, manager collectorManager) (result BootstrapResult, resultErr error) {
 	paths, err := config.Resolve(home)
 	if err != nil {
 		return BootstrapResult{}, err
@@ -164,7 +164,7 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 	if err != nil {
 		return BootstrapResult{}, err
 	}
-	result := BootstrapResult{Consent: yes, PlanOnly: !yes || dryRun, Adapters: plans}
+	result = BootstrapResult{Consent: yes, PlanOnly: !yes || dryRun, Adapters: plans}
 	if !yes || dryRun {
 		if dryRun {
 			result.Collector.Actions = []string{"dry run: collector install and start skipped"}
@@ -174,6 +174,25 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 	installOptions, err := setupInstallOptions(paths.Home, executable)
 	if err != nil {
 		return BootstrapResult{}, err
+	}
+	// Setup can be invoked with a new home while a collector already owns a
+	// different ledger. Resolve its persisted settings before stopping it so an
+	// initialization failure restores that exact collector instead of moving it.
+	activeCollectorHome, activeCollectorListen := resolveManagedCollectorSettings(manager, paths.Home, defaultCollectorListen, false, false)
+	collectorStopped, err := stopCollectorForLedgerInitialization(ctx, manager, activeCollectorListen)
+	if err != nil {
+		return BootstrapResult{}, err
+	}
+	if collectorStopped {
+		result.Collector.Actions = append(result.Collector.Actions, "collector stopped temporarily for ledger initialization")
+		defer func() {
+			if resultErr == nil {
+				return
+			}
+			if _, restartErr := restartCollectorAfterSchedulerDenied(manager, activeCollectorHome, activeCollectorListen); restartErr != nil {
+				resultErr = fmt.Errorf("%w; restore collector after setup failure: %v", resultErr, restartErr)
+			}
+		}()
 	}
 	service, err := app.Initialize(ctx, paths.Home)
 	if err != nil {
@@ -223,6 +242,20 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 		result.VerificationCommands = append(result.VerificationCommands, "qlog adapter verify "+adapter.Descriptor().ID)
 	}
 	return result, nil
+}
+
+func stopCollectorForLedgerInitialization(ctx context.Context, manager collectorManager, listen string) (bool, error) {
+	status, err := manager.Status(ctx, listen)
+	// Reachability alone is not proof that the managed collector owns the
+	// endpoint: another local process can answer /healthz. Only stop and later
+	// restore a collector whose managed lifecycle reports it as running.
+	if err != nil || (!status.Running && !status.ManagedHealth) {
+		return false, nil
+	}
+	if _, err := manager.Stop(); err != nil {
+		return false, fmt.Errorf("stop active collector for ledger initialization: %w", err)
+	}
+	return true, nil
 }
 
 func recordCollectorExternalPolicy(status *CollectorBootstrapStatus, err error) bool {
