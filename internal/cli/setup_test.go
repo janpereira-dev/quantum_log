@@ -155,6 +155,17 @@ func TestSetupPlansNoUnavailableAdapters(t *testing.T) {
 	}
 }
 
+func TestSetupStopsActiveCollectorBeforeLedgerInitialization(t *testing.T) {
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
+	manager := &activeCollectorManager{}
+	if _, err := bootstrapSupportedAdapters(context.Background(), t.TempDir(), temporaryDurableExecutable(t), true, false, adapters.Default(), manager); err != nil {
+		t.Fatal(err)
+	}
+	if !manager.stopped || !manager.started {
+		t.Fatalf("collector lifecycle = %#v, want stopped then restarted", manager)
+	}
+}
+
 func TestSetupYesInitializesLedgerBeforeCollectorInstall(t *testing.T) {
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
 	home := t.TempDir()
@@ -323,6 +334,20 @@ type policyDeniedCollectorManager struct {
 }
 
 type genericAccessDeniedCollectorManager struct{ fakeCollectorManager }
+
+type activeCollectorManager struct {
+	fakeCollectorManager
+	stopped bool
+}
+
+func (m *activeCollectorManager) Status(_ context.Context, listen string) (CollectorStatus, error) {
+	return CollectorStatus{Installed: true, Running: !m.stopped, Reachable: m.started, Listen: listen, Message: "ok"}, nil
+}
+
+func (m *activeCollectorManager) Stop() (CollectorStatus, error) {
+	m.stopped = true
+	return CollectorStatus{Installed: true, Message: "collector stopped"}, nil
+}
 
 func (*policyDeniedCollectorManager) Install(_, _ string) (CollectorStatus, error) {
 	return CollectorStatus{}, errors.New(`task scheduler operation /Create for task "QUANTUM_LOG Collector" failed: exit status 1: Error: Acceso denegado.`)

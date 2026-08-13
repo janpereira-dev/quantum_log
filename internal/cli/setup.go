@@ -175,6 +175,11 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 	if err != nil {
 		return BootstrapResult{}, err
 	}
+	if stopped, err := stopCollectorForLedgerInitialization(ctx, manager); err != nil {
+		return BootstrapResult{}, err
+	} else if stopped {
+		result.Collector.Actions = append(result.Collector.Actions, "collector stopped temporarily for ledger initialization")
+	}
 	service, err := app.Initialize(ctx, paths.Home)
 	if err != nil {
 		return BootstrapResult{}, fmt.Errorf("initialize ledger before collector setup: %w", err)
@@ -223,6 +228,17 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 		result.VerificationCommands = append(result.VerificationCommands, "qlog adapter verify "+adapter.Descriptor().ID)
 	}
 	return result, nil
+}
+
+func stopCollectorForLedgerInitialization(ctx context.Context, manager collectorManager) (bool, error) {
+	status, err := manager.Status(ctx, defaultCollectorListen)
+	if err != nil || !status.Running {
+		return false, nil
+	}
+	if _, err := manager.Stop(); err != nil {
+		return false, fmt.Errorf("stop active collector for ledger initialization: %w", err)
+	}
+	return true, nil
 }
 
 func recordCollectorExternalPolicy(status *CollectorBootstrapStatus, err error) bool {
