@@ -161,6 +161,26 @@ func TestUsageGroupsByProjectAgentProviderModelAndCaptureQuality(t *testing.T) {
 	}
 }
 
+func TestUsageIncludesUnattributedModelCalls(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if _, err := store.RecordModelCall(ctx, ModelCallInput{AgentName: "GitHub Copilot CLI", Provider: "github", ModelID: "gpt-5", InputTokens: 10, OutputTokens: 4, CaptureQuality: "otel_reported"}); err != nil {
+		t.Fatalf("RecordModelCall() error = %v", err)
+	}
+	report, err := store.Usage(ctx, UsageQuery{GroupBy: []string{"project", "agent", "provider", "model", "capture_quality"}})
+	if err != nil {
+		t.Fatalf("Usage() error = %v", err)
+	}
+	if len(report.Rows) != 1 || report.Rows[0].ProjectSlug != "unattributed" || report.Rows[0].TotalTokens != 14 {
+		t.Fatalf("usage rows = %#v, want one unattributed row", report.Rows)
+	}
+}
+
 func TestUsageSeparatesReportedLifecycleAndEstimatedMeasurements(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))

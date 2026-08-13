@@ -163,6 +163,10 @@ func TestReceiverImportsCodexResponseCompletedLogsAndDeduplicatesReplay(t *testi
 	if row.ProjectSlug != project.Slug || row.AgentName != "codex" || row.Provider != "openai" || row.Model != "gpt-5" || row.InputTokens != 41 || row.OutputTokens != 43 || row.CachedInputTokens != 47 || row.ReasoningTokens != 53 || row.TotalTokens != 184 || row.CaptureQuality != "otel_reported" {
 		t.Fatalf("usage row = %#v", row)
 	}
+	interactions, err := service.Store.InteractionCount(ctx, project.ID)
+	if err != nil || interactions != 1 {
+		t.Fatalf("interactions = %d, %v; want one Codex trace root", interactions, err)
+	}
 }
 
 func TestReceiverRejectsGenericOrSpoofedLogs(t *testing.T) {
@@ -689,6 +693,10 @@ func TestReceiverImportsDocumentedClaudeTraceTokenAttributes(t *testing.T) {
 	row := report.Rows[0]
 	if row.ProjectSlug != project.Slug || row.AgentName != "claude-code" || row.Provider != "anthropic" || row.Model != "claude-sonnet-4-6" || row.InputTokens != 0 || row.OutputTokens != 13 || row.CachedInputTokens != 7 || row.CaptureQuality != "otel_reported" {
 		t.Fatalf("usage row = %#v", row)
+	}
+	interactions, err := service.Store.InteractionCount(ctx, project.ID)
+	if err != nil || interactions != 1 {
+		t.Fatalf("interactions = %d, %v; want one Claude trace root", interactions, err)
 	}
 }
 
