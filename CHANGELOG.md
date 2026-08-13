@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.0-rc.3 - 2026-08-13
+
+- Fixed `qlog setup --yes` when a running managed collector owns the ledger writer lock.
+- Preserved the active collector's configured home and listener during setup recovery, including Windows scheduler-backed collectors.
+
 ## 0.4.0-rc.2 - 2026-08-12
 
 - Fixed Windows PowerShell profile backups to use the same OneDrive-compatible writer as the profile update.
