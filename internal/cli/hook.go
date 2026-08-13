@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -117,20 +118,32 @@ func copilotCLIHookEvent(input []byte, eventType string) (qlogevent.Event, error
 		SessionID string `json:"sessionId"`
 		CWD       string `json:"cwd"`
 		EventID   string `json:"eventId"`
+		Timestamp int64  `json:"timestamp"`
 		Prompt    string `json:"prompt"`
 	}
 	if err := json.Unmarshal(input, &raw); err != nil {
 		return qlogevent.Event{}, fmt.Errorf("decode Copilot CLI hook JSON: %w", err)
 	}
 	normalizedEvent := eventType
+	occurredAt := time.Now().UTC()
+	if raw.Timestamp > 0 {
+		occurredAt = time.UnixMilli(raw.Timestamp).UTC()
+	}
 	if eventType == "userPromptSubmitted" {
 		normalizedEvent = "interaction.prompt"
+		if raw.EventID == "" {
+			// Copilot's documented camelCase prompt payload has no event ID.
+			// The session/timestamp/prompt tuple is source-native and remains
+			// stable for a retried hook invocation without collapsing turns.
+			digest := sha256.Sum256([]byte(raw.SessionID + "\x00" + strconv.FormatInt(raw.Timestamp, 10) + "\x00" + raw.Prompt))
+			raw.EventID = "copilot-prompt:" + hex.EncodeToString(digest[:])
+		}
 	}
 	payload, err := json.Marshal(map[string]any{"agent_name": "copilot", "capture_quality": "lifecycle_only", "prompt": raw.Prompt})
 	if err != nil {
 		return qlogevent.Event{}, fmt.Errorf("encode Copilot CLI hook payload: %w", err)
 	}
-	return qlogevent.Event{Source: "copilot-cli-hook", SessionID: raw.SessionID, EventType: normalizedEvent, UpstreamEventID: raw.EventID, OccurredAt: time.Now().UTC(), ProjectHint: qlogevent.ProjectHint{CWD: raw.CWD}, Payload: payload}, nil
+	return qlogevent.Event{Source: "copilot-cli-hook", SessionID: raw.SessionID, EventType: normalizedEvent, UpstreamEventID: raw.EventID, OccurredAt: occurredAt, ProjectHint: qlogevent.ProjectHint{CWD: raw.CWD}, Payload: payload}, nil
 }
 
 func ingestOrForwardHook(command *cobra.Command, home *string, event qlogevent.Event) error {

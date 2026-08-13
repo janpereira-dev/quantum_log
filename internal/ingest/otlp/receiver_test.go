@@ -406,6 +406,10 @@ func TestReceiverImportsValidCopilotOTLPWithReportedTokensAndReplayIdentity(t *t
 	if row.InputTokens != 11 || row.OutputTokens != 13 || row.CachedInputTokens != 17 || row.CacheWriteTokens != 19 || row.ReasoningTokens != 23 || row.TotalTokens != 83 {
 		t.Fatalf("row tokens = %#v", row)
 	}
+	interactions, err := service.Store.InteractionCount(ctx, project.ID)
+	if err != nil || interactions != 1 {
+		t.Fatalf("interactions = %d, %v; want one trace root", interactions, err)
+	}
 }
 
 func TestCopilotUsesConversationIDBeforeWindowSessionAndVerifiedGitContext(t *testing.T) {
