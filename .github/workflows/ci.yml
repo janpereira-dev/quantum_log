@@ -40,7 +40,7 @@ jobs:
         if: runner.os == 'Windows'
       - run: cmd /c installers\uninstall.cmd --dry-run --install-dir "%RUNNER_TEMP%\qlog-bin" --no-modify-path
         if: runner.os == 'Windows'
-      - uses: golangci/golangci-lint-action@v8
+      - uses: golangci/golangci-lint-action@v9
         with:
           version: latest
   security:
