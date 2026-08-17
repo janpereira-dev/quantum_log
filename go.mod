@@ -2,7 +2,7 @@ module github.com/janpereira-dev/quantum_log
 
 go 1.26.0
 
-toolchain go1.26.5
+toolchain go1.26.6
 
 require (
 	github.com/charmbracelet/bubbletea v1.3.10
