@@ -22,7 +22,7 @@ cmd/qlog -> internal/cli -> internal/app -> domain services/resolver -> internal
 | `internal/audit` | Verifica cadenas SHA-256 append-only y anchors externos. |
 | `internal/tui`, `internal/mcpserver` | Vistas de terminal y MCP sobre mismos servicios de consulta. |
 
-Decisiones de diseño normativas viven en [registros de decisiones de arquitectura](../architecture/), especialmente [ADR-002](../architecture/ADR-002-project-first-attribution.md), [ADR-003](../architecture/ADR-003-local-ledger.md) y [ADR-004](../architecture/ADR-004-cooperative-sqlite-ownership.md).
+Decisiones de diseño normativas viven en [registros de decisiones de arquitectura](../architecture/), especialmente [ADR-002](../architecture/ADR-002-project-first-attribution.md), [ADR-003](../architecture/ADR-003-local-ledger.md), [ADR-004](../architecture/ADR-004-cooperative-sqlite-ownership.md) y [ADR-005](../architecture/ADR-005-collector-lifecycle.md).
 
 ## Resolución de proyecto
 
@@ -75,6 +75,15 @@ Implicación es operativa: usa comandos qlog, no editores SQLite externos ni ape
 Datos permanecen locales por defecto bajo `QLOG_HOME` o valores de plataforma. Proyecto usa `modernc.org/sqlite`, permitiendo builds sin CGo. Migraciones SQLite están embebidas y se aplican en orden léxico.
 
 Collector también prioriza lo local. Su listener por defecto es loopback y exposición fuera de loopback requiere flag deliberado. MCP se ejecuta por stdio. Ninguno de estos diseños reemplaza requisitos de seguridad de red si operador expone servicio más allá de máquina local.
+
+El collector es infraestructura de transporte, no el núcleo del ledger. Las
+fuentes OTLP push necesitan actualmente que permanezca disponible, mientras que
+hooks directos y MCP por stdio pueden usar un ciclo de vida bajo demanda gestionado
+por el proceso padre. En Windows, setup puede crear una tarea programada o, si su
+registro falla por acceso denegado, una entrada en la clave `Run` del usuario.
+[ADR-005](../architecture/ADR-005-collector-lifecycle.md) documenta por qué aparece
+en Aplicaciones de arranque, la deuda arquitectónica resultante, la limpieza segura
+y la dirección propuesta de opt-in explícito.
 
 ## Límite actual de entrega
 
