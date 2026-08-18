@@ -151,6 +151,74 @@ func TestCopilotCLIOTELLauncherUsesOfficialEnvironmentWithoutGlobalMutation(t *t
 	}
 }
 
+func TestCopilotCLIPowerShellLauncherSelectsOneApplication(t *testing.T) {
+	config := copilotCLIProfileBlock()
+	for _, want := range []string{
+		"@(Get-Command copilot -CommandType Application -ErrorAction Stop)[0].Path",
+		"& $qlogCopilotExecutable @args",
+	} {
+		if !strings.Contains(config, want) {
+			t.Fatalf("Copilot CLI PowerShell launcher missing %q:\n%s", want, config)
+		}
+	}
+	for _, forbidden := range []string{
+		"(Get-Command copilot -CommandType Application -ErrorAction Stop).Source",
+		`Microsoft\WinGet\Links\copilot.exe`,
+	} {
+		if strings.Contains(config, forbidden) {
+			t.Fatalf("Copilot CLI PowerShell launcher contains non-portable or ambiguous resolution %q:\n%s", forbidden, config)
+		}
+	}
+}
+
+func TestCopilotCLIPowerShellLauncherInvokesOnlyFirstApplication(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("requires Windows PowerShell")
+	}
+	powershell, err := exec.LookPath("powershell.exe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	first := filepath.Join(dir, "copilot-first.cmd")
+	second := filepath.Join(dir, "copilot-second.cmd")
+	if err := os.WriteFile(first, []byte("@echo off\r\necho first:%*\r\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(second, []byte("@echo off\r\necho second:%*\r\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := `function global:Get-Command {
+  [CmdletBinding()]
+  param(
+    [Parameter(Position=0)][string[]]$Name,
+    [System.Management.Automation.CommandTypes]$CommandType
+  )
+  if ($Name -eq 'copilot' -and $CommandType -eq [System.Management.Automation.CommandTypes]::Function) { return }
+  if ($Name -eq 'copilot' -and $CommandType -eq [System.Management.Automation.CommandTypes]::Application) {
+    [pscustomobject]@{ Path = $env:QLOG_TEST_FIRST_COPILOT; Source = $env:QLOG_TEST_FIRST_COPILOT }
+    [pscustomobject]@{ Path = $env:QLOG_TEST_SECOND_COPILOT; Source = $env:QLOG_TEST_SECOND_COPILOT }
+    return
+  }
+  Microsoft.PowerShell.Core\Get-Command @PSBoundParameters
+}
+` + copilotCLIProfileBlock() + "copilot marker\n"
+	scriptPath := filepath.Join(dir, "profile-test.ps1")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(powershell, "-NoProfile", "-NonInteractive", "-File", scriptPath)
+	command.Env = append(os.Environ(), "QLOG_TEST_FIRST_COPILOT="+first, "QLOG_TEST_SECOND_COPILOT="+second)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("PowerShell launcher failed: %v\n%s", err, output)
+	}
+	got := string(output)
+	if !strings.Contains(got, "first:marker") || strings.Contains(got, "second:marker") {
+		t.Fatalf("PowerShell launcher output = %q, want only first application", got)
+	}
+}
+
 func TestCopilotCLIInstallConfiguresDiscoveredOneDrivePowerShellProfile(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Windows-only PowerShell profile behavior")
