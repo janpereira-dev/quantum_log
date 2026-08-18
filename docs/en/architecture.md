@@ -22,7 +22,7 @@ cmd/qlog -> internal/cli -> internal/app -> domain services/resolver -> internal
 | `internal/audit` | Verifies append-only SHA-256 chains and external anchors. |
 | `internal/tui`, `internal/mcpserver` | Terminal and MCP views over the same query services. |
 
-Normative design decisions live in [architecture decision records](../architecture/), especially [ADR-002](../architecture/ADR-002-project-first-attribution.md), [ADR-003](../architecture/ADR-003-local-ledger.md), and [ADR-004](../architecture/ADR-004-cooperative-sqlite-ownership.md).
+Normative design decisions live in [architecture decision records](../architecture/), especially [ADR-002](../architecture/ADR-002-project-first-attribution.md), [ADR-003](../architecture/ADR-003-local-ledger.md), [ADR-004](../architecture/ADR-004-cooperative-sqlite-ownership.md), and [ADR-005](../architecture/ADR-005-collector-lifecycle.md).
 
 ## Project resolution
 
@@ -75,6 +75,14 @@ The implication is operational: use qlog commands, not external SQLite editors o
 Data stays local by default under `QLOG_HOME` or platform defaults. The project uses `modernc.org/sqlite`, supporting CGo-free builds. SQLite migrations are embedded and applied in lexical order.
 
 The collector is local-first too. Its default listener is loopback, and non-loopback exposure requires a deliberate flag. MCP runs over stdio. Neither design replaces network security requirements if an operator explicitly exposes a service beyond the local machine.
+
+The collector is transport infrastructure, not the ledger core. Push-based OTLP
+sources currently need it to remain reachable, while direct hooks and MCP over
+stdio can use a parent-owned, on-demand lifecycle. On Windows, setup can create a
+scheduled task or an access-denied fallback under the current-user `Run` registry
+key. [ADR-005](../architecture/ADR-005-collector-lifecycle.md) documents why this
+appears in Startup apps, the resulting architectural debt, safe cleanup, and the
+proposed explicit opt-in direction.
 
 ## Current delivery boundary
 
