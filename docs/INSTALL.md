@@ -1,6 +1,9 @@
 # Install QUANTUM_LOG
 
-Install `qlog`, then initialize a local ledger. Current candidate is `v0.3.2-rc.3`; existing P0 evidence covers the prior candidate only, not a public release acceptance.
+Install `qlog`, then initialize a local ledger. The source CLI currently declares
+`v0.4.0-rc.6`. The npm distribution package still declares `v0.3.2-rc.3`; it has
+not yet been aligned with the current CLI candidate. Existing P0 evidence covers
+prior candidates only, not a public release acceptance.
 
 ## One-command RC install
 
@@ -10,7 +13,11 @@ Requires Node.js 18 or later.
 cmd /c "set QLOG_INSTALL_LOCAL_ARTIFACT_DIR=C:\path\to\dist&& npm install --prefix C:\qlog-install .\packaging\npm"
 ```
 
-Run from repository root. `C:\path\to\dist` must contain generated `checksums.txt` and exact host `v0.3.2-rc.3` archive. The installer selects matching platform/architecture artifact, verifies SHA-256, and extracts only `qlog` or `qlog.exe`. It uses no telemetry.
+Run from repository root. This legacy package path still expects generated
+`checksums.txt` and the exact host `v0.3.2-rc.3` archive. The installer selects the
+matching platform/architecture artifact, verifies SHA-256, and extracts only
+`qlog` or `qlog.exe`. It uses no telemetry. Do not use this path as evidence that
+`v0.4.0-rc.6` was installed until npm packaging, tests, and artifacts are aligned.
 
 Confirm installed binary:
 
@@ -41,7 +48,7 @@ $env:QLOG_HOME = "$env:LOCALAPPDATA\QUANTUM_LOG"
 & $qlog setup --dry-run --json
 ```
 
-On P0 Windows host, Task Scheduler denied managed collector creation with `Acceso denegado`. Setup still configured detected integrations and recorded collector health. Use foreground fallback in [Auto-capture](AUTOCAPTURE.md#scheduler-policy-fallback).
+On P0 Windows host, Task Scheduler denied managed collector creation with `Acceso denegado`. Setup still configured detected integrations and recorded collector health. See [collector recovery](AUTOCAPTURE.md#collector-recovery) and [ADR-005](architecture/ADR-005-collector-lifecycle.md) before changing persistent collector state.
 
 ## Cleanup
 
