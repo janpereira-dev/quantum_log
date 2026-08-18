@@ -27,6 +27,15 @@ qlog usage project <project-slug> --json
 
 The collector listens on loopback and is installed as a user-level service. On Windows, qlog falls back to a user process when Task Scheduler policy denies registration. Hooks and plugins are best-effort and never fail the agent; the next event retries normal ingestion.
 
+This installation is persistent. On Windows, the access-denied fallback writes
+the qlog-owned `QUANTUM_LOG Collector` value under
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, which makes `qlog.exe`
+visible in Startup apps. Removing it while an OTLP-only adapter remains configured
+causes silent gaps in future capture. See
+[ADR-005: collector lifecycle](architecture/ADR-005-collector-lifecycle.md) for
+the current requirement, cleanup contract, architectural debt, and proposed
+explicit opt-in direction.
+
 ## Support matrix
 
 | Adapter | Interaction | Prompt | Tokens | Cache | Cost | Duration | Tools |
