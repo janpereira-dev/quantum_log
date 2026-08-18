@@ -19,7 +19,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26.6'
       - run: go mod tidy
@@ -40,14 +40,14 @@ jobs:
         if: runner.os == 'Windows'
       - run: cmd /c installers\uninstall.cmd --dry-run --install-dir "%RUNNER_TEMP%\qlog-bin" --no-modify-path
         if: runner.os == 'Windows'
-      - uses: golangci/golangci-lint-action@v8
+      - uses: golangci/golangci-lint-action@v9
         with:
           version: latest
   security:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26.6'
       - run: go install golang.org/x/vuln/cmd/govulncheck@latest
