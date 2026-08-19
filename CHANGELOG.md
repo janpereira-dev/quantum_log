@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0-rc.7 - 2026-08-19
+
+- Fixed managed PowerShell Copilot launchers to resolve one `copilot` application while preserving `PATH` precedence, preventing multiple candidate paths from being invoked as one command (#45).
+- Added Dependabot coverage for GitHub Actions, npm, pip, and Go modules, and updated CI to Go 1.26.6 (#35).
+- Updated GitHub Actions used by CI and release automation: checkout to v7, setup-go to v7, GoReleaser action to v7, and golangci-lint action to v9 (#36, #37, #39, #40).
+- Updated Go dependencies: `google.golang.org/protobuf` to 1.36.12, `github.com/pelletier/go-toml/v2` to 2.4.3, and `go.opentelemetry.io/proto/otlp` to 1.11.0 (#41, #42, #44).
+- The unpublished npm thin distributor remains intentionally pinned to `0.3.2-rc.3`; it is a legacy local packaging-validation path and is not evidence of an rc.7 npm publication.
+
 ## 0.4.0-rc.6 - 2026-08-13
 
 - Reconciled OTLP aggregate spans durably across requests and excluded only exact parent/child usage duplicates from consumption totals.
@@ -83,4 +91,3 @@
 - Added canonical prompt interactions with durable upstream deduplication and model-call linkage.
 - Added versioned embedded OpenCode plugin source and interaction log commands.
 - Preserved historical model and tool rows as legacy-unlinked during SQLite migration.
-
