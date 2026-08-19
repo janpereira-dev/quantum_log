@@ -1,7 +1,7 @@
 # Install QUANTUM_LOG
 
 Install `qlog`, then initialize a local ledger. The source CLI currently declares
-`v0.4.0-rc.6`. The npm distribution package still declares `v0.3.2-rc.3`; it has
+`v0.4.0-rc.7`. The npm distribution package still declares `v0.3.2-rc.3`; it has
 not yet been aligned with the current CLI candidate. Existing P0 evidence covers
 prior candidates only, not a public release acceptance.
 
@@ -17,7 +17,7 @@ Run from repository root. This legacy package path still expects generated
 `checksums.txt` and the exact host `v0.3.2-rc.3` archive. The installer selects the
 matching platform/architecture artifact, verifies SHA-256, and extracts only
 `qlog` or `qlog.exe`. It uses no telemetry. Do not use this path as evidence that
-`v0.4.0-rc.6` was installed until npm packaging, tests, and artifacts are aligned.
+`v0.4.0-rc.7` was installed until npm packaging, tests, and artifacts are aligned.
 
 Confirm installed binary:
 
