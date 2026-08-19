@@ -34,6 +34,7 @@ changelog:
       - '^docs:'
       - '^test:'
 release:
+  prerelease: auto
   footer: |
     Full project history: https://github.com/janpereira-dev/quantum_log/blob/{{ .Tag }}/CHANGELOG.md
 snapshot:
