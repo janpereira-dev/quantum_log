@@ -110,6 +110,16 @@ func TestCollectorRestartDoesNotCreateFallbackAfterSchedulerPolicyDenial(t *test
 	}
 }
 
+func TestCollectorRestartResumesExistingTaskWithoutProvisioning(t *testing.T) {
+	manager := &stoppedPolicyDeniedCollectorManager{}
+	if _, err := restartManagedCollector(manager, t.TempDir(), defaultCollectorListen); err != nil {
+		t.Fatalf("restartManagedCollector() error = %v", err)
+	}
+	if !manager.restored {
+		t.Fatal("restart did not resume the existing collector")
+	}
+}
+
 func TestSetupRestoresStoppedCollectorAfterSchedulerPolicyDenial(t *testing.T) {
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
 	manager := &stoppedPolicyDeniedCollectorManager{}
@@ -124,6 +134,20 @@ func TestSetupRestoresStoppedCollectorAfterSchedulerPolicyDenial(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(result.Collector.Actions, "\n"), "existing collector restored after Scheduler policy denial") {
 		t.Fatalf("collector actions = %#v", result.Collector.Actions)
+	}
+}
+
+func TestSetupFailsAfterRestoringCollectorAtDifferentTarget(t *testing.T) {
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
+	manager := &differentTargetPolicyDeniedCollectorManager{configuredHome: filepath.Join(t.TempDir(), "different-home")}
+	manager.started = true
+
+	_, err := bootstrapSupportedAdapters(context.Background(), t.TempDir(), temporaryDurableExecutable(t), true, false, adapters.Default(), manager)
+	if err == nil || !strings.Contains(err.Error(), "cannot configure adapters for different home") {
+		t.Fatalf("bootstrapSupportedAdapters() error = %v", err)
+	}
+	if !manager.restored || manager.stopped {
+		t.Fatalf("manager = %#v, want original collector restored", manager)
 	}
 }
 
@@ -377,6 +401,11 @@ type stoppedPolicyDeniedCollectorManager struct {
 	restored bool
 }
 
+type differentTargetPolicyDeniedCollectorManager struct {
+	stoppedPolicyDeniedCollectorManager
+	configuredHome string
+}
+
 type genericAccessDeniedCollectorManager struct{ fakeCollectorManager }
 
 type activeCollectorManager struct {
@@ -439,6 +468,16 @@ func (m *stoppedPolicyDeniedCollectorManager) RestartExisting(listen string) (Co
 	m.stopped = false
 	m.started = true
 	return CollectorStatus{Installed: true, Running: true, Reachable: true, Listen: listen, Message: "existing collector restarted"}, nil
+}
+
+func (m *differentTargetPolicyDeniedCollectorManager) ResolveManagedCollectorSettings(home, listen string, homeExplicit, listenExplicit bool) (string, string) {
+	if !homeExplicit {
+		home = m.configuredHome
+	}
+	if !listenExplicit {
+		listen = "127.0.0.1:14318"
+	}
+	return home, listen
 }
 
 func (*genericAccessDeniedCollectorManager) Install(_, _ string) (CollectorStatus, error) {

@@ -431,6 +431,9 @@ func (manager windowsCollectorManager) RestartExisting(listen string) (Collector
 	if !status.Installed {
 		return CollectorStatus{}, fmt.Errorf("existing collector is not installed")
 	}
+	if status.Running {
+		return status, nil
+	}
 	if status.Mode == windowsCollectorFallbackMode {
 		return manager.Start("", status.Listen)
 	}

@@ -185,7 +185,7 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 			if resultErr == nil || !collectorStopped {
 				return
 			}
-			if _, restartErr := restartManagedCollector(manager, activeCollectorHome, activeCollectorListen); restartErr != nil {
+			if _, restartErr := restartStoppedCollector(manager, activeCollectorHome, activeCollectorListen); restartErr != nil {
 				resultErr = fmt.Errorf("%w; restore collector after setup failure: %v", resultErr, restartErr)
 			}
 		}()
@@ -228,6 +228,9 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 		result.Collector.Installed = restored.Installed
 		result.Collector.Started = restored.Running
 		result.Collector.Actions = append(result.Collector.Actions, "existing collector restored after Scheduler policy denial: "+restored.Message)
+		if activeCollectorHome != paths.Home || activeCollectorListen != defaultCollectorListen {
+			return BootstrapResult{}, fmt.Errorf("collector restored at existing home %q and listener %q; cannot configure adapters for different home %q or listener %q after Scheduler policy denial", activeCollectorHome, activeCollectorListen, paths.Home, defaultCollectorListen)
+		}
 	}
 	recordCollectorHealth(ctx, &result.Collector, manager)
 
@@ -271,7 +274,17 @@ func isWindowsSchedulerPolicyDenial(err error) bool {
 }
 
 func restartManagedCollector(manager collectorManager, home, listen string) (CollectorStatus, error) {
+	if restarter, ok := manager.(collectorExistingRestarter); ok {
+		return restarter.RestartExisting(listen)
+	}
 	return manager.Restart(home, listen)
+}
+
+func restartStoppedCollector(manager collectorManager, home, listen string) (CollectorStatus, error) {
+	if restarter, ok := manager.(collectorExistingRestarter); ok {
+		return restarter.RestartExisting(listen)
+	}
+	return restartManagedCollector(manager, home, listen)
 }
 
 func restartExistingCollector(manager collectorManager, listen string) (CollectorStatus, error) {
