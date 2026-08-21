@@ -18,6 +18,10 @@ const defaultCollectorListen = "127.0.0.1:4318"
 
 var newSetupCollectorManager = newCollectorManager
 
+type collectorExistingRestarter interface {
+	RestartExisting(listen string) (CollectorStatus, error)
+}
+
 // BootstrapResult reports the consented collector and adapter setup actions.
 type BootstrapResult struct {
 	Consent              bool                     `json:"consent"`
@@ -178,7 +182,7 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 	if collectorStopped {
 		result.Collector.Actions = append(result.Collector.Actions, "collector stopped temporarily for ledger initialization")
 		defer func() {
-			if resultErr == nil {
+			if resultErr == nil || !collectorStopped {
 				return
 			}
 			if _, restartErr := restartManagedCollector(manager, activeCollectorHome, activeCollectorListen); restartErr != nil {
@@ -194,11 +198,13 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 		return BootstrapResult{}, fmt.Errorf("close initialized ledger: %w", err)
 	}
 
+	collectorPolicyBlocked := false
 	installed, err := manager.Install(paths.Home, defaultCollectorListen)
 	if err != nil {
 		if !recordCollectorExternalPolicy(&result.Collector, err) {
 			return BootstrapResult{}, err
 		}
+		collectorPolicyBlocked = true
 	} else {
 		result.Collector.Installed = true
 		result.Collector.Actions = append(result.Collector.Actions, installed.Message)
@@ -207,10 +213,21 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 			if !recordCollectorExternalPolicy(&result.Collector, startErr) {
 				return BootstrapResult{}, startErr
 			}
+			collectorPolicyBlocked = true
 		} else {
 			result.Collector.Started = true
 			result.Collector.Actions = append(result.Collector.Actions, started.Message)
 		}
+	}
+	if collectorStopped && collectorPolicyBlocked {
+		restored, restoreErr := restartExistingCollector(manager, activeCollectorListen)
+		if restoreErr != nil {
+			return BootstrapResult{}, fmt.Errorf("restore existing collector after Scheduler policy denial: %w", restoreErr)
+		}
+		collectorStopped = false
+		result.Collector.Installed = restored.Installed
+		result.Collector.Started = restored.Running
+		result.Collector.Actions = append(result.Collector.Actions, "existing collector restored after Scheduler policy denial: "+restored.Message)
 	}
 	recordCollectorHealth(ctx, &result.Collector, manager)
 
@@ -255,6 +272,14 @@ func isWindowsSchedulerPolicyDenial(err error) bool {
 
 func restartManagedCollector(manager collectorManager, home, listen string) (CollectorStatus, error) {
 	return manager.Restart(home, listen)
+}
+
+func restartExistingCollector(manager collectorManager, listen string) (CollectorStatus, error) {
+	restarter, ok := manager.(collectorExistingRestarter)
+	if !ok {
+		return CollectorStatus{}, fmt.Errorf("existing collector cannot be restarted without provisioning a new service")
+	}
+	return restarter.RestartExisting(listen)
 }
 
 func recordCollectorHealth(ctx context.Context, status *CollectorBootstrapStatus, manager collectorManager) {

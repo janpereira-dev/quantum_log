@@ -418,6 +418,32 @@ func (manager windowsCollectorManager) Restart(home, listen string) (CollectorSt
 	return manager.Start(home, listen)
 }
 
+// RestartExisting starts a collector already owned by qlog without creating a
+// new Task Scheduler definition or a legacy Run-key fallback.
+func (manager windowsCollectorManager) RestartExisting(listen string) (CollectorStatus, error) {
+	if err := validateCollectorListen(listen); err != nil {
+		return CollectorStatus{}, err
+	}
+	status, err := windowsCollectorStatusFn(context.Background(), listen)
+	if err != nil {
+		return CollectorStatus{}, err
+	}
+	if !status.Installed {
+		return CollectorStatus{}, fmt.Errorf("existing collector is not installed")
+	}
+	if status.Mode == windowsCollectorFallbackMode {
+		return manager.Start("", status.Listen)
+	}
+	if _, err := runWindowsSchedulerCommand("/Run", "/TN", windowsCollectorTaskName); err != nil {
+		return CollectorStatus{}, err
+	}
+	status, err = windowsCollectorStatusFn(context.Background(), listen)
+	if err != nil {
+		return CollectorStatus{}, err
+	}
+	return windowsCollectorStartupStatus(status, listen)
+}
+
 func (manager windowsCollectorManager) RestartFallback(home, listen string) (CollectorStatus, error) {
 	status, err := windowsCollectorStatusFn(context.Background(), listen)
 	if err != nil {

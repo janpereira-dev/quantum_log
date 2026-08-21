@@ -110,6 +110,23 @@ func TestCollectorRestartDoesNotCreateFallbackAfterSchedulerPolicyDenial(t *test
 	}
 }
 
+func TestSetupRestoresStoppedCollectorAfterSchedulerPolicyDenial(t *testing.T) {
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
+	manager := &stoppedPolicyDeniedCollectorManager{}
+	manager.started = true
+
+	result, err := bootstrapSupportedAdapters(context.Background(), t.TempDir(), temporaryDurableExecutable(t), true, false, adapters.Default(), manager)
+	if err != nil {
+		t.Fatalf("bootstrapSupportedAdapters() error = %v", err)
+	}
+	if !manager.restored || manager.stopped || !result.Collector.Started {
+		t.Fatalf("collector = %#v manager = %#v, want stopped collector restored", result.Collector, manager)
+	}
+	if !strings.Contains(strings.Join(result.Collector.Actions, "\n"), "existing collector restored after Scheduler policy denial") {
+		t.Fatalf("collector actions = %#v", result.Collector.Actions)
+	}
+}
+
 func TestSetupFailsForGenericAccessDeniedCollectorError(t *testing.T) {
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
 	manager := &genericAccessDeniedCollectorManager{}
@@ -355,6 +372,11 @@ type policyDeniedCollectorManager struct {
 	fakeCollectorManager
 }
 
+type stoppedPolicyDeniedCollectorManager struct {
+	activeCollectorManager
+	restored bool
+}
+
 type genericAccessDeniedCollectorManager struct{ fakeCollectorManager }
 
 type activeCollectorManager struct {
@@ -406,6 +428,17 @@ func (*policyDeniedCollectorManager) Install(_, _ string) (CollectorStatus, erro
 
 func (m *policyDeniedCollectorManager) Restart(_, listen string) (CollectorStatus, error) {
 	return CollectorStatus{}, errors.New(`task scheduler operation /Create for task "QUANTUM_LOG Collector" failed: exit status 1: Error: Acceso denegado.`)
+}
+
+func (*stoppedPolicyDeniedCollectorManager) Install(_, _ string) (CollectorStatus, error) {
+	return CollectorStatus{}, errors.New(`task scheduler operation /Create for task "QUANTUM_LOG Collector" failed: exit status 1: Error: Acceso denegado.`)
+}
+
+func (m *stoppedPolicyDeniedCollectorManager) RestartExisting(listen string) (CollectorStatus, error) {
+	m.restored = true
+	m.stopped = false
+	m.started = true
+	return CollectorStatus{Installed: true, Running: true, Reachable: true, Listen: listen, Message: "existing collector restarted"}, nil
 }
 
 func (*genericAccessDeniedCollectorManager) Install(_, _ string) (CollectorStatus, error) {
