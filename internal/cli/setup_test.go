@@ -103,7 +103,6 @@ func TestSetupContinuesAfterCollectorExternalPolicyDenial(t *testing.T) {
 	}
 }
 
-
 func TestCollectorRestartDoesNotCreateFallbackAfterSchedulerPolicyDenial(t *testing.T) {
 	manager := &policyDeniedCollectorManager{}
 	if _, err := restartManagedCollector(manager, t.TempDir(), defaultCollectorListen); err == nil {
