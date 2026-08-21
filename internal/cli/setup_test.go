@@ -162,6 +162,19 @@ func TestSetupDoesNotStopForegroundCollector(t *testing.T) {
 	}
 }
 
+func TestSetupRefusesToReplaceForegroundCollector(t *testing.T) {
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
+	manager := &foregroundCollectorManager{}
+
+	_, err := bootstrapSupportedAdapters(context.Background(), t.TempDir(), temporaryDurableExecutable(t), true, false, adapters.Default(), manager)
+	if err == nil || !strings.Contains(err.Error(), "foreground collector already owns listener") {
+		t.Fatalf("bootstrapSupportedAdapters() error = %v", err)
+	}
+	if manager.stopCalled || manager.installed || manager.started {
+		t.Fatalf("foreground collector was replaced: %#v", manager)
+	}
+}
+
 func TestSetupFailsForGenericAccessDeniedCollectorError(t *testing.T) {
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
 	manager := &genericAccessDeniedCollectorManager{}
@@ -209,7 +222,7 @@ func TestSetupStopsActiveCollectorBeforeLedgerInitialization(t *testing.T) {
 	}
 }
 
-func TestSetupRestoresCollectorAfterLedgerInitializationFailure(t *testing.T) {
+func TestSetupRejectsDifferentTargetBeforeLedgerInitialization(t *testing.T) {
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
 	home := filepath.Join(t.TempDir(), "blocked-home")
 	if err := os.WriteFile(home, []byte("not a directory"), 0o600); err != nil {
@@ -217,14 +230,12 @@ func TestSetupRestoresCollectorAfterLedgerInitializationFailure(t *testing.T) {
 	}
 	previousHome := t.TempDir()
 	manager := &managedActiveCollectorManager{configuredHome: previousHome, configuredListen: "127.0.0.1:14318"}
-	if _, err := bootstrapSupportedAdapters(context.Background(), home, temporaryDurableExecutable(t), true, false, adapters.Default(), manager); err == nil {
-		t.Fatal("setup succeeded with an invalid ledger home")
+	_, err := bootstrapSupportedAdapters(context.Background(), home, temporaryDurableExecutable(t), true, false, adapters.Default(), manager)
+	if err == nil || !strings.Contains(err.Error(), "stop or uninstall it before configuring different home") {
+		t.Fatalf("bootstrapSupportedAdapters() error = %v", err)
 	}
-	if !manager.stopped || !manager.started {
-		t.Fatalf("collector lifecycle = %#v, want stopped then restored", manager)
-	}
-	if manager.startedHome != previousHome || manager.startedListen != manager.configuredListen {
-		t.Fatalf("collector restored with (%q, %q), want (%q, %q)", manager.startedHome, manager.startedListen, previousHome, manager.configuredListen)
+	if manager.stopped || manager.started {
+		t.Fatalf("collector lifecycle = %#v, want active collector untouched", manager)
 	}
 }
 

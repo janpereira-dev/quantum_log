@@ -419,7 +419,14 @@ func (manager windowsCollectorManager) Restart(home, listen string) (CollectorSt
 	if err == nil || !isWindowsSchedulerPolicyDenial(err) {
 		return status, err
 	}
-	return manager.RestartExisting(listen)
+	restored, restoreErr := manager.RestartExisting(listen)
+	if restoreErr != nil {
+		return CollectorStatus{}, fmt.Errorf("%w; resume existing collector: %v", err, restoreErr)
+	}
+	if windowsCollectorSettingsMatch(home, listen) {
+		return restored, nil
+	}
+	return restored, err
 }
 
 // RestartExisting starts a collector already owned by qlog without creating a
@@ -508,27 +515,52 @@ func (manager windowsCollectorManager) Uninstall() (CollectorStatus, error) {
 }
 
 func (windowsCollectorManager) ResolveManagedCollectorSettings(home, listen string, homeExplicit, listenExplicit bool) (string, string) {
-	if state, err := readWindowsCollectorFallbackState(); err == nil {
+	status, err := windowsCollectorStatusFn(context.Background(), listen)
+	if err != nil {
+		return home, listen
+	}
+	switch status.Mode {
+	case windowsCollectorSchedulerMode:
+		// The scheduled task is the active collector whenever it exists. A stale
+		// legacy fallback file must not redirect lifecycle commands away from it.
+		if taskHome, taskListen, err := readWindowsCollectorTaskSettings(); err == nil {
+			if !homeExplicit {
+				home = taskHome
+			}
+			if !listenExplicit {
+				listen = taskListen
+			}
+		}
+	case windowsCollectorFallbackMode:
+		state, err := readWindowsCollectorFallbackState()
+		if err != nil {
+			break
+		}
 		if !homeExplicit {
 			home = state.Home
 		}
 		if !listenExplicit {
 			listen = state.Listen
 		}
-		return home, listen
-	}
-	// Scheduler-backed collectors predate the fallback state file. The task XML
-	// is qlog-owned and contains the durable home/listen arguments. Reading it
-	// lets setup stop and recover a collector even when schtasks localizes state.
-	if taskHome, taskListen, err := readWindowsCollectorTaskSettings(); err == nil {
-		if !homeExplicit {
-			home = taskHome
-		}
-		if !listenExplicit {
-			listen = taskListen
-		}
 	}
 	return home, listen
+}
+
+func windowsCollectorSettingsMatch(home, listen string) bool {
+	status, err := windowsCollectorStatusFn(context.Background(), listen)
+	if err != nil {
+		return false
+	}
+	switch status.Mode {
+	case windowsCollectorSchedulerMode:
+		configuredHome, configuredListen, err := readWindowsCollectorTaskSettings()
+		return err == nil && strings.EqualFold(filepath.Clean(configuredHome), filepath.Clean(home)) && configuredListen == listen
+	case windowsCollectorFallbackMode:
+		state, err := readWindowsCollectorFallbackState()
+		return err == nil && strings.EqualFold(filepath.Clean(state.Home), filepath.Clean(home)) && state.Listen == listen
+	default:
+		return false
+	}
 }
 
 func readWindowsCollectorTaskSettings() (string, string, error) {

@@ -89,6 +89,51 @@ func TestReadWindowsCollectorTaskSettings(t *testing.T) {
 	}
 }
 
+func TestWindowsCollectorResolveSettingsPrefersActiveScheduledTask(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	if err := os.MkdirAll(collectorStateDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeWindowsCollectorTaskDefinition(collectorTaskDefinitionPath(), `C:\Program Files\QUANTUM_LOG\qlog.exe`, `C:\active-ledger`, "127.0.0.1:14318", `CONTOSO\alice`, `C:\collector.log`); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeWindowsCollectorFallbackState(windowsCollectorFallbackState{Home: `C:\stale-ledger`, Listen: "127.0.0.1:4318"}); err != nil {
+		t.Fatal(err)
+	}
+	originalStatus := windowsCollectorStatusFn
+	t.Cleanup(func() { windowsCollectorStatusFn = originalStatus })
+	windowsCollectorStatusFn = func(context.Context, string) (CollectorStatus, error) {
+		return CollectorStatus{Installed: true, Mode: windowsCollectorSchedulerMode}, nil
+	}
+
+	home, listen := (windowsCollectorManager{}).ResolveManagedCollectorSettings(`C:\default-ledger`, "127.0.0.1:4318", false, false)
+	if home != `C:\active-ledger` || listen != "127.0.0.1:14318" {
+		t.Fatalf("settings = (%q, %q), want active task settings", home, listen)
+	}
+}
+
+func TestWindowsCollectorSettingsMatchRequiresSameTaskTarget(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	if err := os.MkdirAll(collectorStateDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeWindowsCollectorTaskDefinition(collectorTaskDefinitionPath(), `C:\Program Files\QUANTUM_LOG\qlog.exe`, `C:\active-ledger`, "127.0.0.1:4318", `CONTOSO\alice`, `C:\collector.log`); err != nil {
+		t.Fatal(err)
+	}
+	originalStatus := windowsCollectorStatusFn
+	t.Cleanup(func() { windowsCollectorStatusFn = originalStatus })
+	windowsCollectorStatusFn = func(context.Context, string) (CollectorStatus, error) {
+		return CollectorStatus{Installed: true, Mode: windowsCollectorSchedulerMode}, nil
+	}
+
+	if !windowsCollectorSettingsMatch(`C:\active-ledger`, "127.0.0.1:4318") {
+		t.Fatal("matching scheduled task was rejected")
+	}
+	if windowsCollectorSettingsMatch(`C:\different-ledger`, "127.0.0.1:4318") {
+		t.Fatal("different scheduled task target was accepted")
+	}
+}
+
 func TestWriteWindowsCollectorTaskDefinitionUsesUTF16LE(t *testing.T) {
 	executable := `C:\Program Files\QUANTUM_LOG\qlog.exe`
 	home := `C:\Users\alice\AppData\Local\QUANTUM_LOG`

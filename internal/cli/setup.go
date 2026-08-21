@@ -178,6 +178,9 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 	if err := rejectActiveCollectorTargetChange(ctx, manager, activeCollectorHome, activeCollectorListen, paths.Home, defaultCollectorListen); err != nil {
 		return BootstrapResult{}, err
 	}
+	if err := rejectForegroundCollectorReplacement(ctx, manager, defaultCollectorListen); err != nil {
+		return BootstrapResult{}, err
+	}
 	collectorStopped, err := stopCollectorForLedgerInitialization(ctx, manager, activeCollectorListen)
 	if err != nil {
 		return BootstrapResult{}, err
@@ -294,6 +297,14 @@ func rejectActiveCollectorTargetChange(ctx context.Context, manager collectorMan
 		return nil
 	}
 	return fmt.Errorf("active managed collector uses home %q and listener %q; stop or uninstall it before configuring different home %q or listener %q", activeHome, activeListen, targetHome, targetListen)
+}
+
+func rejectForegroundCollectorReplacement(ctx context.Context, manager collectorManager, listen string) error {
+	status, err := manager.Status(ctx, listen)
+	if err != nil || status.Installed || !status.Reachable || !status.ManagedHealth {
+		return nil
+	}
+	return fmt.Errorf("foreground collector already owns listener %q; stop it before installing a managed collector", listen)
 }
 
 func recordCollectorHealth(ctx context.Context, status *CollectorBootstrapStatus, manager collectorManager) {
