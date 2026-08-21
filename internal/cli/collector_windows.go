@@ -415,7 +415,11 @@ func (manager windowsCollectorManager) Restart(home, listen string) (CollectorSt
 	if _, err := manager.Stop(); err != nil {
 		return CollectorStatus{}, err
 	}
-	return manager.Start(home, listen)
+	status, err := manager.Start(home, listen)
+	if err == nil || !isWindowsSchedulerPolicyDenial(err) {
+		return status, err
+	}
+	return manager.RestartExisting(listen)
 }
 
 // RestartExisting starts a collector already owned by qlog without creating a
@@ -430,9 +434,6 @@ func (manager windowsCollectorManager) RestartExisting(listen string) (Collector
 	}
 	if !status.Installed {
 		return CollectorStatus{}, fmt.Errorf("existing collector is not installed")
-	}
-	if status.Running {
-		return status, nil
 	}
 	if status.Mode == windowsCollectorFallbackMode {
 		return manager.Start("", status.Listen)

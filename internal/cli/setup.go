@@ -175,6 +175,9 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 	// different ledger. Resolve its persisted settings before stopping it so an
 	// initialization failure restores that exact collector instead of moving it.
 	activeCollectorHome, activeCollectorListen := resolveManagedCollectorSettings(manager, paths.Home, defaultCollectorListen, false, false)
+	if err := rejectActiveCollectorTargetChange(ctx, manager, activeCollectorHome, activeCollectorListen, paths.Home, defaultCollectorListen); err != nil {
+		return BootstrapResult{}, err
+	}
 	collectorStopped, err := stopCollectorForLedgerInitialization(ctx, manager, activeCollectorListen)
 	if err != nil {
 		return BootstrapResult{}, err
@@ -185,7 +188,7 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 			if resultErr == nil || !collectorStopped {
 				return
 			}
-			if _, restartErr := restartStoppedCollector(manager, activeCollectorHome, activeCollectorListen); restartErr != nil {
+			if _, restartErr := restartManagedCollector(manager, activeCollectorHome, activeCollectorListen); restartErr != nil {
 				resultErr = fmt.Errorf("%w; restore collector after setup failure: %v", resultErr, restartErr)
 			}
 		}()
@@ -228,9 +231,6 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 		result.Collector.Installed = restored.Installed
 		result.Collector.Started = restored.Running
 		result.Collector.Actions = append(result.Collector.Actions, "existing collector restored after Scheduler policy denial: "+restored.Message)
-		if activeCollectorHome != paths.Home || activeCollectorListen != defaultCollectorListen {
-			return BootstrapResult{}, fmt.Errorf("collector restored at existing home %q and listener %q; cannot configure adapters for different home %q or listener %q after Scheduler policy denial", activeCollectorHome, activeCollectorListen, paths.Home, defaultCollectorListen)
-		}
 	}
 	recordCollectorHealth(ctx, &result.Collector, manager)
 
@@ -250,7 +250,7 @@ func stopCollectorForLedgerInitialization(ctx context.Context, manager collector
 	// Reachability alone is not proof that the managed collector owns the
 	// endpoint: another local process can answer /healthz. Only stop and later
 	// restore a collector whose managed lifecycle reports it as running.
-	if err != nil || (!status.Running && !status.ManagedHealth) {
+	if err != nil || !status.Installed || (!status.Running && !status.ManagedHealth) {
 		return false, nil
 	}
 	if _, err := manager.Stop(); err != nil {
@@ -274,17 +274,7 @@ func isWindowsSchedulerPolicyDenial(err error) bool {
 }
 
 func restartManagedCollector(manager collectorManager, home, listen string) (CollectorStatus, error) {
-	if restarter, ok := manager.(collectorExistingRestarter); ok {
-		return restarter.RestartExisting(listen)
-	}
 	return manager.Restart(home, listen)
-}
-
-func restartStoppedCollector(manager collectorManager, home, listen string) (CollectorStatus, error) {
-	if restarter, ok := manager.(collectorExistingRestarter); ok {
-		return restarter.RestartExisting(listen)
-	}
-	return restartManagedCollector(manager, home, listen)
 }
 
 func restartExistingCollector(manager collectorManager, listen string) (CollectorStatus, error) {
@@ -293,6 +283,17 @@ func restartExistingCollector(manager collectorManager, listen string) (Collecto
 		return CollectorStatus{}, fmt.Errorf("existing collector cannot be restarted without provisioning a new service")
 	}
 	return restarter.RestartExisting(listen)
+}
+
+func rejectActiveCollectorTargetChange(ctx context.Context, manager collectorManager, activeHome, activeListen, targetHome, targetListen string) error {
+	status, err := manager.Status(ctx, activeListen)
+	if err != nil || !status.Installed || (!status.Running && !status.ManagedHealth) {
+		return nil
+	}
+	if activeHome == targetHome && activeListen == targetListen {
+		return nil
+	}
+	return fmt.Errorf("active managed collector uses home %q and listener %q; stop or uninstall it before configuring different home %q or listener %q", activeHome, activeListen, targetHome, targetListen)
 }
 
 func recordCollectorHealth(ctx context.Context, status *CollectorBootstrapStatus, manager collectorManager) {

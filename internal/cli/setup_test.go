@@ -112,8 +112,8 @@ func TestCollectorRestartDoesNotCreateFallbackAfterSchedulerPolicyDenial(t *test
 
 func TestCollectorRestartResumesExistingTaskWithoutProvisioning(t *testing.T) {
 	manager := &stoppedPolicyDeniedCollectorManager{}
-	if _, err := restartManagedCollector(manager, t.TempDir(), defaultCollectorListen); err != nil {
-		t.Fatalf("restartManagedCollector() error = %v", err)
+	if _, err := restartExistingCollector(manager, defaultCollectorListen); err != nil {
+		t.Fatalf("restartExistingCollector() error = %v", err)
 	}
 	if !manager.restored {
 		t.Fatal("restart did not resume the existing collector")
@@ -137,17 +137,28 @@ func TestSetupRestoresStoppedCollectorAfterSchedulerPolicyDenial(t *testing.T) {
 	}
 }
 
-func TestSetupFailsAfterRestoringCollectorAtDifferentTarget(t *testing.T) {
+func TestSetupRejectsDifferentTargetForActiveManagedCollector(t *testing.T) {
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
 	manager := &differentTargetPolicyDeniedCollectorManager{configuredHome: filepath.Join(t.TempDir(), "different-home")}
 	manager.started = true
 
 	_, err := bootstrapSupportedAdapters(context.Background(), t.TempDir(), temporaryDurableExecutable(t), true, false, adapters.Default(), manager)
-	if err == nil || !strings.Contains(err.Error(), "cannot configure adapters for different home") {
+	if err == nil || !strings.Contains(err.Error(), "stop or uninstall it before configuring different home") {
 		t.Fatalf("bootstrapSupportedAdapters() error = %v", err)
 	}
-	if !manager.restored || manager.stopped {
-		t.Fatalf("manager = %#v, want original collector restored", manager)
+	if manager.restored || manager.stopped {
+		t.Fatalf("manager = %#v, want active collector left untouched", manager)
+	}
+}
+
+func TestSetupDoesNotStopForegroundCollector(t *testing.T) {
+	manager := &foregroundCollectorManager{}
+	stopped, err := stopCollectorForLedgerInitialization(context.Background(), manager, defaultCollectorListen)
+	if err != nil {
+		t.Fatalf("stopCollectorForLedgerInitialization() error = %v", err)
+	}
+	if stopped || manager.stopCalled {
+		t.Fatalf("foreground collector was treated as managed: %#v", manager)
 	}
 }
 
@@ -406,6 +417,11 @@ type differentTargetPolicyDeniedCollectorManager struct {
 	configuredHome string
 }
 
+type foregroundCollectorManager struct {
+	fakeCollectorManager
+	stopCalled bool
+}
+
 type genericAccessDeniedCollectorManager struct{ fakeCollectorManager }
 
 type activeCollectorManager struct {
@@ -478,6 +494,15 @@ func (m *differentTargetPolicyDeniedCollectorManager) ResolveManagedCollectorSet
 		listen = "127.0.0.1:14318"
 	}
 	return home, listen
+}
+
+func (*foregroundCollectorManager) Status(_ context.Context, listen string) (CollectorStatus, error) {
+	return CollectorStatus{Installed: false, Running: true, ManagedHealth: true, Reachable: true, Listen: listen, Message: "foreground collector"}, nil
+}
+
+func (m *foregroundCollectorManager) Stop() (CollectorStatus, error) {
+	m.stopCalled = true
+	return CollectorStatus{}, nil
 }
 
 func (*genericAccessDeniedCollectorManager) Install(_, _ string) (CollectorStatus, error) {

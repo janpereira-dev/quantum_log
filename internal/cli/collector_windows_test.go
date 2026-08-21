@@ -292,29 +292,6 @@ func TestWindowsCollectorStartDoesNotDuplicateRunningFallback(t *testing.T) {
 	}
 }
 
-func TestWindowsCollectorRestartExistingLeavesRunningTaskUntouched(t *testing.T) {
-	originalStatus := windowsCollectorStatusFn
-	originalRun := runWindowsSchedulerCommand
-	t.Cleanup(func() {
-		windowsCollectorStatusFn = originalStatus
-		runWindowsSchedulerCommand = originalRun
-	})
-	windowsCollectorStatusFn = func(context.Context, string) (CollectorStatus, error) {
-		return CollectorStatus{Installed: true, Running: true, Reachable: true, Mode: windowsCollectorSchedulerMode, Listen: "127.0.0.1:4318", ServiceID: windowsCollectorTaskName, Message: "already running"}, nil
-	}
-	runWindowsSchedulerCommand = func(...string) ([]byte, error) {
-		return nil, errors.New("running task must not be started again")
-	}
-
-	status, err := (windowsCollectorManager{}).RestartExisting("127.0.0.1:4318")
-	if err != nil {
-		t.Fatalf("RestartExisting() error = %v", err)
-	}
-	if !status.Running || status.Message != "already running" {
-		t.Fatalf("RestartExisting() status = %#v", status)
-	}
-}
-
 func TestWindowsCollectorUninstallStopsAndUnregistersFallbackWhenSchedulerWins(t *testing.T) {
 	t.Setenv("LOCALAPPDATA", t.TempDir())
 	state := windowsCollectorFallbackState{
