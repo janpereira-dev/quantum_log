@@ -112,7 +112,7 @@ func TestWindowsCollectorResolveSettingsPrefersActiveScheduledTask(t *testing.T)
 	}
 }
 
-func TestWindowsCollectorSettingsMatchRequiresSameTaskTarget(t *testing.T) {
+func TestWindowsCollectorTaskTargetMatchesRequiresSameTaskTarget(t *testing.T) {
 	t.Setenv("LOCALAPPDATA", t.TempDir())
 	if err := os.MkdirAll(collectorStateDir(), 0o700); err != nil {
 		t.Fatal(err)
@@ -126,11 +126,15 @@ func TestWindowsCollectorSettingsMatchRequiresSameTaskTarget(t *testing.T) {
 		return CollectorStatus{Installed: true, Mode: windowsCollectorSchedulerMode}, nil
 	}
 
-	if !windowsCollectorSettingsMatch(`C:\active-ledger`, "127.0.0.1:4318") {
+	executable := `C:\Program Files\QUANTUM_LOG\qlog.exe`
+	if !windowsCollectorTaskTargetMatches(`C:\active-ledger`, "127.0.0.1:4318", executable) {
 		t.Fatal("matching scheduled task was rejected")
 	}
-	if windowsCollectorSettingsMatch(`C:\different-ledger`, "127.0.0.1:4318") {
+	if windowsCollectorTaskTargetMatches(`C:\different-ledger`, "127.0.0.1:4318", executable) {
 		t.Fatal("different scheduled task target was accepted")
+	}
+	if windowsCollectorTaskTargetMatches(`C:\active-ledger`, "127.0.0.1:4318", `C:\Program Files\QUANTUM_LOG\qlog-next.exe`) {
+		t.Fatal("different collector executable was accepted")
 	}
 }
 

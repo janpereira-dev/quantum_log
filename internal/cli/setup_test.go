@@ -143,7 +143,7 @@ func TestSetupRejectsDifferentTargetForActiveManagedCollector(t *testing.T) {
 	manager.started = true
 
 	_, err := bootstrapSupportedAdapters(context.Background(), t.TempDir(), temporaryDurableExecutable(t), true, false, adapters.Default(), manager)
-	if err == nil || !strings.Contains(err.Error(), "stop or uninstall it before configuring different home") {
+	if err == nil || !strings.Contains(err.Error(), "uninstall it before configuring different home") {
 		t.Fatalf("bootstrapSupportedAdapters() error = %v", err)
 	}
 	if manager.restored || manager.stopped {
@@ -156,11 +156,28 @@ func TestSetupRejectsDifferentTargetForStoppedManagedCollector(t *testing.T) {
 	manager := &differentTargetPolicyDeniedCollectorManager{configuredHome: filepath.Join(t.TempDir(), "different-home")}
 
 	_, err := bootstrapSupportedAdapters(context.Background(), t.TempDir(), temporaryDurableExecutable(t), true, false, adapters.Default(), manager)
-	if err == nil || !strings.Contains(err.Error(), "stop or uninstall it before configuring different home") {
+	if err == nil || !strings.Contains(err.Error(), "uninstall it before configuring different home") {
 		t.Fatalf("bootstrapSupportedAdapters() error = %v", err)
 	}
 	if manager.stopped || manager.installed || manager.started {
 		t.Fatalf("manager = %#v, want persisted collector left untouched", manager)
+	}
+}
+
+func TestSetupReportsStoppedCollectorStillInstalledAfterSchedulerPolicyDenial(t *testing.T) {
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
+	manager := &stoppedPolicyDeniedCollectorManager{}
+	manager.stopped = true
+
+	result, err := bootstrapSupportedAdapters(context.Background(), t.TempDir(), temporaryDurableExecutable(t), true, false, adapters.Default(), manager)
+	if err != nil {
+		t.Fatalf("bootstrapSupportedAdapters() error = %v", err)
+	}
+	if !result.Collector.Installed || result.Collector.Started {
+		t.Fatalf("collector = %#v, want installed but stopped existing collector", result.Collector)
+	}
+	if !strings.Contains(strings.Join(result.Collector.Actions, "\n"), "existing collector remains installed") {
+		t.Fatalf("collector actions = %#v", result.Collector.Actions)
 	}
 }
 
@@ -251,7 +268,7 @@ func TestSetupRejectsDifferentTargetBeforeLedgerInitialization(t *testing.T) {
 	previousHome := t.TempDir()
 	manager := &managedActiveCollectorManager{configuredHome: previousHome, configuredListen: "127.0.0.1:14318"}
 	_, err := bootstrapSupportedAdapters(context.Background(), home, temporaryDurableExecutable(t), true, false, adapters.Default(), manager)
-	if err == nil || !strings.Contains(err.Error(), "stop or uninstall it before configuring different home") {
+	if err == nil || !strings.Contains(err.Error(), "uninstall it before configuring different home") {
 		t.Fatalf("bootstrapSupportedAdapters() error = %v", err)
 	}
 	if manager.stopped || manager.started {

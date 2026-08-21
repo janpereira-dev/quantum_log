@@ -546,30 +546,58 @@ func (windowsCollectorManager) ResolveManagedCollectorSettings(home, listen stri
 	return home, listen
 }
 
+type windowsCollectorTaskSettings struct {
+	Executable string
+	Home       string
+	Listen     string
+}
+
 func windowsCollectorSettingsMatch(home, listen string) bool {
+	executable, err := durableExecutablePath("")
+	if err != nil {
+		return false
+	}
+	return windowsCollectorTaskTargetMatches(home, listen, executable)
+}
+
+func windowsCollectorTaskTargetMatches(home, listen, executable string) bool {
 	status, err := windowsCollectorStatusFn(context.Background(), listen)
 	if err != nil {
 		return false
 	}
 	switch status.Mode {
 	case windowsCollectorSchedulerMode:
-		configuredHome, configuredListen, err := readWindowsCollectorTaskSettings()
-		return err == nil && strings.EqualFold(filepath.Clean(configuredHome), filepath.Clean(home)) && configuredListen == listen
+		settings, err := readWindowsCollectorTaskDefinitionSettings()
+		return err == nil &&
+			strings.EqualFold(filepath.Clean(settings.Executable), filepath.Clean(executable)) &&
+			strings.EqualFold(filepath.Clean(settings.Home), filepath.Clean(home)) &&
+			settings.Listen == listen
 	case windowsCollectorFallbackMode:
 		state, err := readWindowsCollectorFallbackState()
-		return err == nil && strings.EqualFold(filepath.Clean(state.Home), filepath.Clean(home)) && state.Listen == listen
+		return err == nil &&
+			strings.EqualFold(filepath.Clean(state.Executable), filepath.Clean(executable)) &&
+			strings.EqualFold(filepath.Clean(state.Home), filepath.Clean(home)) &&
+			state.Listen == listen
 	default:
 		return false
 	}
 }
 
 func readWindowsCollectorTaskSettings() (string, string, error) {
-	contents, err := os.ReadFile(collectorTaskDefinitionPath())
+	settings, err := readWindowsCollectorTaskDefinitionSettings()
 	if err != nil {
 		return "", "", err
 	}
+	return settings.Home, settings.Listen, nil
+}
+
+func readWindowsCollectorTaskDefinitionSettings() (windowsCollectorTaskSettings, error) {
+	contents, err := os.ReadFile(collectorTaskDefinitionPath())
+	if err != nil {
+		return windowsCollectorTaskSettings{}, err
+	}
 	if len(contents) < 2 || contents[0] != 0xFF || contents[1] != 0xFE || len(contents)%2 != 0 {
-		return "", "", fmt.Errorf("invalid collector task encoding")
+		return windowsCollectorTaskSettings{}, fmt.Errorf("invalid collector task encoding")
 	}
 	codeUnits := make([]uint16, 0, (len(contents)-2)/2)
 	for offset := 2; offset < len(contents); offset += 2 {
@@ -579,32 +607,34 @@ func readWindowsCollectorTaskSettings() (string, string, error) {
 	var task struct {
 		Actions struct {
 			Exec struct {
+				Command   string `xml:"Command"`
 				Arguments string `xml:"Arguments"`
 			} `xml:"Exec"`
 		} `xml:"Actions"`
 	}
 	if err := xml.Unmarshal([]byte(definition), &task); err != nil {
-		return "", "", fmt.Errorf("parse collector task definition: %w", err)
+		return windowsCollectorTaskSettings{}, fmt.Errorf("parse collector task definition: %w", err)
 	}
+	executable := task.Actions.Exec.Command
 	arguments := task.Actions.Exec.Arguments
 	const homePrefix = `--home "`
 	if !strings.HasPrefix(arguments, homePrefix) {
-		return "", "", fmt.Errorf("collector task has no quoted home")
+		return windowsCollectorTaskSettings{}, fmt.Errorf("collector task has no quoted home")
 	}
 	remainder := strings.TrimPrefix(arguments, homePrefix)
 	endHome := strings.Index(remainder, `" collector serve --listen `)
 	if endHome < 0 {
-		return "", "", fmt.Errorf("collector task has invalid home arguments")
+		return windowsCollectorTaskSettings{}, fmt.Errorf("collector task has invalid home arguments")
 	}
 	home := remainder[:endHome]
 	remainder = remainder[endHome+len(`" collector serve --listen `):]
 	endListen := strings.IndexByte(remainder, ' ')
 	if endListen < 0 {
-		return "", "", fmt.Errorf("collector task has no log-file argument")
+		return windowsCollectorTaskSettings{}, fmt.Errorf("collector task has no log-file argument")
 	}
 	listen := remainder[:endListen]
-	if !filepath.IsAbs(home) || validateCollectorListen(listen) != nil {
-		return "", "", fmt.Errorf("collector task has invalid managed settings")
+	if !filepath.IsAbs(executable) || !filepath.IsAbs(home) || validateCollectorListen(listen) != nil {
+		return windowsCollectorTaskSettings{}, fmt.Errorf("collector task has invalid managed settings")
 	}
-	return home, listen, nil
+	return windowsCollectorTaskSettings{Executable: executable, Home: home, Listen: listen}, nil
 }

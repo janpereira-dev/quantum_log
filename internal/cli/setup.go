@@ -211,6 +211,7 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 		if !recordCollectorExternalPolicy(&result.Collector, err) {
 			return BootstrapResult{}, err
 		}
+		recordExistingCollectorInstallation(ctx, &result.Collector, manager, activeCollectorListen)
 		collectorPolicyBlocked = true
 	} else {
 		result.Collector.Installed = true
@@ -297,7 +298,7 @@ func rejectActiveCollectorTargetChange(ctx context.Context, manager collectorMan
 	if sameCollectorTarget(activeHome, activeListen, targetHome, targetListen) {
 		return nil
 	}
-	return fmt.Errorf("active managed collector uses home %q and listener %q; stop or uninstall it before configuring different home %q or listener %q", activeHome, activeListen, targetHome, targetListen)
+	return fmt.Errorf("installed collector uses home %q and listener %q; uninstall it before configuring different home %q or listener %q", activeHome, activeListen, targetHome, targetListen)
 }
 
 func sameCollectorTarget(activeHome, activeListen, targetHome, targetListen string) bool {
@@ -318,6 +319,15 @@ func rejectForegroundCollectorReplacement(ctx context.Context, manager collector
 		return nil
 	}
 	return fmt.Errorf("foreground collector already owns listener %q; stop it before installing a managed collector", listen)
+}
+
+func recordExistingCollectorInstallation(ctx context.Context, result *CollectorBootstrapStatus, manager collectorManager, listen string) {
+	status, err := manager.Status(ctx, listen)
+	if err != nil || !status.Installed {
+		return
+	}
+	result.Installed = true
+	result.Actions = append(result.Actions, "existing collector remains installed after Scheduler policy denial: "+status.Message)
 }
 
 func recordCollectorHealth(ctx context.Context, status *CollectorBootstrapStatus, manager collectorManager) {
