@@ -1,6 +1,6 @@
 # ADR-005: The collector is transport infrastructure, not the ledger core
 
-Status: current-state record; replacement direction proposed
+Status: current-state record; direct ingestion and agent-managed MCP remain proposed
 
 ## Product boundary
 
@@ -34,11 +34,11 @@ Therefore a persistent collector is technically required for sources whose only
 supported transport is push-based OTLP. It is not inherently required for a hook,
 plugin, wrapper, or MCP integration that can start qlog on demand.
 
-## Why `qlog.exe` appears in Windows startup applications
+## Historical Windows Startup fallback
 
-`qlog setup --yes` currently attempts to install the loopback collector as a
-per-user scheduled task named `QUANTUM_LOG Collector`. When Windows denies task
-creation specifically with an access-denied result, qlog installs a per-user
+Earlier versions of `qlog setup --yes` attempted to install the loopback collector
+as a per-user scheduled task named `QUANTUM_LOG Collector`. When Windows denied
+task creation specifically with an access-denied result, they installed a per-user
 fallback at:
 
 ```text
@@ -47,10 +47,12 @@ QUANTUM_LOG Collector = "...\qlog.exe" collector serve ...
 ```
 
 That registry value is the `qlog.exe` entry shown by Windows under Startup apps.
-The fallback also starts the collector immediately and persists qlog-owned state
-so status, restart, and uninstall can identify the managed process.
+The fallback started the collector immediately and persisted qlog-owned state so
+status, restart, and uninstall could identify the managed process. New setup no
+longer provisions this fallback: a Task Scheduler policy denial is reported and
+the user may run a foreground collector for the active OTLP session.
 
-This behavior entered in [PR #22](https://github.com/janpereira-dev/quantum_log/pull/22),
+This historical behavior entered in [PR #22](https://github.com/janpereira-dev/quantum_log/pull/22),
 commit [`9b69f8a`](https://github.com/janpereira-dev/quantum_log/commit/9b69f8a3125308245050aad2020f05e2862a5fa6),
 to keep collection running when Task Scheduler policy blocked registration.
 [PR #28](https://github.com/janpereira-dev/quantum_log/pull/28) subsequently had
@@ -75,11 +77,11 @@ keep the receiver alive, followed by more infrastructure to control the lifecycl
 and locking consequences of that receiver. The complexity is real product debt,
 not a core ledger capability.
 
-There is also a consent problem. `qlog setup --yes` currently initializes the
-ledger, configures adapters, installs a background process, creates a scheduled
-task or registry fallback, starts a process, and verifies health. Those side
-effects must remain explicit in documentation while this behavior exists. A user
-must not discover persistence only through Windows Startup apps.
+There is also a consent problem. `qlog setup --yes` initializes the ledger,
+configures adapters, and may install a managed background process through the
+platform service mechanism. It must not create a Windows Startup entry as an
+implicit recovery mechanism. A user must not discover persistence only through
+Windows Startup apps.
 
 ## Which integrations need a persistent process
 
@@ -110,8 +112,8 @@ Until a replacement is implemented:
 1. The collector remains the receiver for integrations that require OTLP HTTP.
 2. Startup persistence and its cleanup must be documented as visible setup side
    effects.
-3. Task Scheduler remains preferred on Windows. The `Run` key remains only the
-   access-denied fallback, not a second independently selected service mechanism.
+3. Task Scheduler is the only Windows managed mechanism. An access-denied result
+   does not create a detached process or a `Run`-key fallback.
 4. Capture failures remain best-effort and never break the upstream agent.
 5. Collector health proves only receiver availability, not real-agent token
    capture.
@@ -137,7 +139,7 @@ The intended operating contract is:
 - make default setup disclose planned persistence and avoid installing startup
   entries unless that consent was explicit;
 - keep one managed mechanism per installation and never add an automatic fallback
-  for errors other than the narrowly defined Task Scheduler access denial;
+  after a Task Scheduler denial;
 - keep SQLite opens short for direct writes and preserve cooperative locking, WAL,
   and bounded busy-timeout behavior.
 
@@ -156,11 +158,11 @@ qlog collector logs
 qlog collector uninstall --json
 ```
 
-On Windows, uninstall removes the qlog-owned scheduled task or only the
-`QUANTUM_LOG Collector` registry value and its managed state. It must not remove
-unrelated startup entries. Removing the collector while an OTLP-only adapter
-remains configured causes silent gaps in future capture; disable or replace that
-adapter transport first.
+On Windows, uninstall removes the qlog-owned scheduled task and also removes the
+legacy `QUANTUM_LOG Collector` registry value and managed state if an older version
+created them. It must not remove unrelated startup entries. Removing the collector
+while an OTLP-only adapter remains configured causes silent gaps in future capture;
+disable or replace that adapter transport first.
 
 ## Consequences
 

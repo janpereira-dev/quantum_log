@@ -83,9 +83,6 @@ func TestSetupPlanDoesNotRequireDurableExecutable(t *testing.T) {
 }
 
 func TestSetupContinuesAfterCollectorExternalPolicyDenial(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("requires Windows Task Scheduler policy diagnostics")
-	}
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
 	manager := &policyDeniedCollectorManager{}
 
@@ -93,29 +90,24 @@ func TestSetupContinuesAfterCollectorExternalPolicyDenial(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bootstrapSupportedAdapters() error = %v", err)
 	}
-	if !result.Collector.Installed || !result.Collector.Started {
-		t.Fatalf("collector = %#v, want installed and started user fallback", result.Collector)
+	if result.Collector.Installed || result.Collector.Started || result.Collector.Healthy {
+		t.Fatalf("collector = %#v, want scheduler-blocked collector without a fallback", result.Collector)
 	}
-	for _, want := range []string{"Acceso denegado", "user fallback installed and started"} {
+	for _, want := range []string{"Acceso denegado", "collector activation blocked by external policy"} {
 		if !strings.Contains(strings.Join(result.Collector.Actions, "\n"), want) {
 			t.Fatalf("collector actions = %q, want %q", result.Collector.Actions, want)
 		}
 	}
+	if got := adapterIDs(result.Adapters); !slices.Equal(got, []string{"claude-code", "codex", "copilot", "copilot-vscode", "opencode"}) {
+		t.Fatalf("adapters = %v, want setup to continue after policy denial", got)
+	}
 }
 
-func TestSetupSchedulerDeniedFallbackRemainsRestartable(t *testing.T) {
-	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
-	manager := &policyDeniedCollectorManager{}
 
-	result, err := bootstrapSupportedAdapters(context.Background(), t.TempDir(), temporaryDurableExecutable(t), true, false, adapters.Default(), manager)
-	if err != nil {
-		t.Fatalf("bootstrapSupportedAdapters() error = %v", err)
-	}
-	if _, err := restartCollectorAfterSchedulerDenied(manager, t.TempDir(), defaultCollectorListen); err != nil {
-		t.Fatalf("restart after Scheduler denial: %v", err)
-	}
-	if !result.Collector.Installed || !manager.restartedFallback {
-		t.Fatalf("collector=%#v manager=%#v, want installed restarted fallback", result.Collector, manager)
+func TestCollectorRestartDoesNotCreateFallbackAfterSchedulerPolicyDenial(t *testing.T) {
+	manager := &policyDeniedCollectorManager{}
+	if _, err := restartManagedCollector(manager, t.TempDir(), defaultCollectorListen); err == nil {
+		t.Fatal("restart unexpectedly recovered from Scheduler policy denial")
 	}
 }
 
@@ -362,7 +354,6 @@ type ledgerCheckingCollectorManager struct {
 
 type policyDeniedCollectorManager struct {
 	fakeCollectorManager
-	restartedFallback bool
 }
 
 type genericAccessDeniedCollectorManager struct{ fakeCollectorManager }
@@ -414,19 +405,8 @@ func (*policyDeniedCollectorManager) Install(_, _ string) (CollectorStatus, erro
 	return CollectorStatus{}, errors.New(`task scheduler operation /Create for task "QUANTUM_LOG Collector" failed: exit status 1: Error: Acceso denegado.`)
 }
 
-func (m *policyDeniedCollectorManager) InstallFallback(_, listen string) (CollectorStatus, error) {
-	m.installed = true
-	m.started = true
-	return CollectorStatus{Installed: true, Running: true, Listen: listen, Message: "user fallback installed and started"}, nil
-}
-
 func (m *policyDeniedCollectorManager) Restart(_, listen string) (CollectorStatus, error) {
 	return CollectorStatus{}, errors.New(`task scheduler operation /Create for task "QUANTUM_LOG Collector" failed: exit status 1: Error: Acceso denegado.`)
-}
-
-func (m *policyDeniedCollectorManager) RestartFallback(_, listen string) (CollectorStatus, error) {
-	m.restartedFallback = true
-	return CollectorStatus{Installed: true, Running: true, Listen: listen, Message: "user fallback restarted"}, nil
 }
 
 func (*genericAccessDeniedCollectorManager) Install(_, _ string) (CollectorStatus, error) {

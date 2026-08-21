@@ -79,11 +79,12 @@ Collector también prioriza lo local. Su listener por defecto es loopback y expo
 El collector es infraestructura de transporte, no el núcleo del ledger. Las
 fuentes OTLP push necesitan actualmente que permanezca disponible, mientras que
 hooks directos y MCP por stdio pueden usar un ciclo de vida bajo demanda gestionado
-por el proceso padre. En Windows, setup puede crear una tarea programada o, si su
-registro falla por acceso denegado, una entrada en la clave `Run` del usuario.
-[ADR-005](../architecture/ADR-005-collector-lifecycle.md) documenta por qué aparece
-en Aplicaciones de arranque, la deuda arquitectónica resultante, la limpieza segura
-y la dirección propuesta de opt-in explícito.
+por el proceso padre. En Windows, setup puede crear una tarea programada cuando la
+política lo permite. Un acceso denegado no crea un proceso ni una entrada en la
+clave `Run` del usuario; para esa sesión OTLP debe iniciarse un collector en primer
+plano. [ADR-005](../architecture/ADR-005-collector-lifecycle.md) documenta la
+entrada histórica en Aplicaciones de arranque, la limpieza segura heredada y la
+dirección propuesta de opt-in explícito.
 
 ## Límite actual de entrega
 

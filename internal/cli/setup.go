@@ -36,14 +36,6 @@ type CollectorBootstrapStatus struct {
 	Actions   []string `json:"actions"`
 }
 
-type collectorFallbackInstaller interface {
-	InstallFallback(home, listen string) (CollectorStatus, error)
-}
-
-type collectorFallbackRestarter interface {
-	RestartFallback(home, listen string) (CollectorStatus, error)
-}
-
 func newSetupCommand(home *string) *cobra.Command {
 	registry := adapters.Default()
 	var all, yes, dryRun, jsonOutput bool
@@ -189,7 +181,7 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 			if resultErr == nil {
 				return
 			}
-			if _, restartErr := restartCollectorAfterSchedulerDenied(manager, activeCollectorHome, activeCollectorListen); restartErr != nil {
+			if _, restartErr := restartManagedCollector(manager, activeCollectorHome, activeCollectorListen); restartErr != nil {
 				resultErr = fmt.Errorf("%w; restore collector after setup failure: %v", resultErr, restartErr)
 			}
 		}()
@@ -207,17 +199,6 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 		if !recordCollectorExternalPolicy(&result.Collector, err) {
 			return BootstrapResult{}, err
 		}
-		fallback, ok := manager.(collectorFallbackInstaller)
-		if !ok {
-			return BootstrapResult{}, fmt.Errorf("install Windows user fallback collector: unsupported collector manager")
-		}
-		fallbackStatus, fallbackErr := fallback.InstallFallback(paths.Home, defaultCollectorListen)
-		if fallbackErr != nil {
-			return BootstrapResult{}, fmt.Errorf("install Windows user fallback collector: %w", fallbackErr)
-		}
-		result.Collector.Installed = fallbackStatus.Installed
-		result.Collector.Started = fallbackStatus.Running
-		result.Collector.Actions = append(result.Collector.Actions, fallbackStatus.Message)
 	} else {
 		result.Collector.Installed = true
 		result.Collector.Actions = append(result.Collector.Actions, installed.Message)
@@ -272,16 +253,8 @@ func isWindowsSchedulerPolicyDenial(err error) bool {
 	return strings.Contains(lower, "task scheduler operation /create") && (strings.Contains(lower, "access denied") || strings.Contains(lower, "acceso denegado"))
 }
 
-func restartCollectorAfterSchedulerDenied(manager collectorManager, home, listen string) (CollectorStatus, error) {
-	status, err := manager.Restart(home, listen)
-	if err == nil || !isWindowsSchedulerPolicyDenial(err) {
-		return status, err
-	}
-	fallback, ok := manager.(collectorFallbackRestarter)
-	if !ok {
-		return CollectorStatus{}, err
-	}
-	return fallback.RestartFallback(home, listen)
+func restartManagedCollector(manager collectorManager, home, listen string) (CollectorStatus, error) {
+	return manager.Restart(home, listen)
 }
 
 func recordCollectorHealth(ctx context.Context, status *CollectorBootstrapStatus, manager collectorManager) {
