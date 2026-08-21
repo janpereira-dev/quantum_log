@@ -151,6 +151,26 @@ func TestSetupRejectsDifferentTargetForActiveManagedCollector(t *testing.T) {
 	}
 }
 
+func TestSetupRejectsDifferentTargetForStoppedManagedCollector(t *testing.T) {
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
+	manager := &differentTargetPolicyDeniedCollectorManager{configuredHome: filepath.Join(t.TempDir(), "different-home")}
+
+	_, err := bootstrapSupportedAdapters(context.Background(), t.TempDir(), temporaryDurableExecutable(t), true, false, adapters.Default(), manager)
+	if err == nil || !strings.Contains(err.Error(), "stop or uninstall it before configuring different home") {
+		t.Fatalf("bootstrapSupportedAdapters() error = %v", err)
+	}
+	if manager.stopped || manager.installed || manager.started {
+		t.Fatalf("manager = %#v, want persisted collector left untouched", manager)
+	}
+}
+
+func TestSameCollectorTargetCleansEquivalentHomes(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "ledger")
+	if !sameCollectorTarget(home, defaultCollectorListen, filepath.Join(home, "."), defaultCollectorListen) {
+		t.Fatal("equivalent collector homes were treated as different")
+	}
+}
+
 func TestSetupDoesNotStopForegroundCollector(t *testing.T) {
 	manager := &foregroundCollectorManager{}
 	stopped, err := stopCollectorForLedgerInitialization(context.Background(), manager, defaultCollectorListen)

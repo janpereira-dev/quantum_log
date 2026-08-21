@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -290,13 +291,25 @@ func restartExistingCollector(manager collectorManager, listen string) (Collecto
 
 func rejectActiveCollectorTargetChange(ctx context.Context, manager collectorManager, activeHome, activeListen, targetHome, targetListen string) error {
 	status, err := manager.Status(ctx, activeListen)
-	if err != nil || !status.Installed || (!status.Running && !status.ManagedHealth) {
+	if err != nil || !status.Installed {
 		return nil
 	}
-	if activeHome == targetHome && activeListen == targetListen {
+	if sameCollectorTarget(activeHome, activeListen, targetHome, targetListen) {
 		return nil
 	}
 	return fmt.Errorf("active managed collector uses home %q and listener %q; stop or uninstall it before configuring different home %q or listener %q", activeHome, activeListen, targetHome, targetListen)
+}
+
+func sameCollectorTarget(activeHome, activeListen, targetHome, targetListen string) bool {
+	if activeListen != targetListen {
+		return false
+	}
+	activeHome = filepath.Clean(activeHome)
+	targetHome = filepath.Clean(targetHome)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(activeHome, targetHome)
+	}
+	return activeHome == targetHome
 }
 
 func rejectForegroundCollectorReplacement(ctx context.Context, manager collectorManager, listen string) error {
