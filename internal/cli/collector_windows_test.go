@@ -133,6 +133,29 @@ func TestWindowsCollectorStatusUsesPersistedTaskWhenSchedulerQueryFails(t *testi
 	}
 }
 
+func TestWindowsCollectorStatusIgnoresPersistedTaskWhenSchedulerReportsMissing(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	if err := os.MkdirAll(collectorStateDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeWindowsCollectorTaskDefinition(collectorTaskDefinitionPath(), `C:\Program Files\QUANTUM_LOG\qlog.exe`, `C:\stale-ledger`, "127.0.0.1:14318", `CONTOSO\alice`, `C:\collector.log`); err != nil {
+		t.Fatal(err)
+	}
+	originalQuery := queryWindowsCollectorTask
+	t.Cleanup(func() { queryWindowsCollectorTask = originalQuery })
+	queryWindowsCollectorTask = func(context.Context) ([]byte, error) {
+		return []byte("ERROR: The system cannot find the file specified.\r\n"), errors.New("task not found")
+	}
+
+	status, err := windowsCollectorStatus(context.Background(), "127.0.0.1:4318")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Installed || status.Mode != windowsCollectorNoMode || status.Listen != "127.0.0.1:4318" {
+		t.Fatalf("status = %#v, want missing task", status)
+	}
+}
+
 func TestWindowsCollectorTaskTargetMatchesRequiresSameTaskTarget(t *testing.T) {
 	t.Setenv("LOCALAPPDATA", t.TempDir())
 	if err := os.MkdirAll(collectorStateDir(), 0o700); err != nil {

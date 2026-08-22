@@ -80,24 +80,38 @@ func windowsCollectorStatus(ctx context.Context, listen string) (CollectorStatus
 		status.Installed = true
 		status.Running = strings.Contains(string(output), "Running")
 		status.Mode = windowsCollectorSchedulerMode
-	} else if settings, settingsErr := readWindowsCollectorTaskDefinitionSettings(); settingsErr == nil {
-		// A local qlog-owned definition remains the only durable description of a
-		// task whose Scheduler ACL or policy no longer permits /Query. Treat it as
-		// installed conservatively so setup cannot redirect a surviving task.
-		status.Installed = true
-		status.Mode = windowsCollectorSchedulerMode
-		status.Listen = settings.Listen
-		status.Message = "collector task status unavailable; using persisted task settings"
-	} else if fallback, fallbackErr := readWindowsCollectorFallbackState(); fallbackErr == nil && windowsCollectorFallbackRegistered(fallback) {
-		status.Installed = true
-		status.Mode = windowsCollectorFallbackMode
-		status.ServiceID = windowsCollectorRunValue
-		status.Listen = fallback.Listen
-		status.LogPath = fallback.LogPath
-		status.Running = windowsCollectorFallbackRunning(fallback)
+	} else if !windowsCollectorTaskMissing(output) {
+		settings, settingsErr := readWindowsCollectorTaskDefinitionSettings()
+		if settingsErr == nil {
+			// A local qlog-owned definition remains the only durable description of a
+			// task whose Scheduler ACL or policy no longer permits /Query. Treat it as
+			// installed conservatively so setup cannot redirect a surviving task.
+			status.Installed = true
+			status.Mode = windowsCollectorSchedulerMode
+			status.Listen = settings.Listen
+			status.Message = "collector task status unavailable; using persisted task settings"
+		}
+	}
+	if status.Mode == windowsCollectorNoMode {
+		if fallback, fallbackErr := readWindowsCollectorFallbackState(); fallbackErr == nil && windowsCollectorFallbackRegistered(fallback) {
+			status.Installed = true
+			status.Mode = windowsCollectorFallbackMode
+			status.ServiceID = windowsCollectorRunValue
+			status.Listen = fallback.Listen
+			status.LogPath = fallback.LogPath
+			status.Running = windowsCollectorFallbackRunning(fallback)
+		}
 	}
 	health := probeCollectorHealth(ctx, status.Listen)
 	return collectorStatusWithHealth(status, health), nil
+}
+
+func windowsCollectorTaskMissing(output []byte) bool {
+	// schtasks has no machine-readable "not found" result. This is the stable
+	// Windows system message used when the named task does not exist; access and
+	// Scheduler policy errors deliberately remain conservative and use the saved
+	// qlog task definition instead.
+	return strings.Contains(strings.ToLower(string(output)), "cannot find the file specified")
 }
 
 func windowsCollectorRunCommand(state windowsCollectorFallbackState) string {
