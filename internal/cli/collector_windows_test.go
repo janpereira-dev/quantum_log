@@ -121,8 +121,13 @@ func TestWindowsCollectorStatusUsesPersistedTaskWhenSchedulerQueryFails(t *testi
 		t.Fatal(err)
 	}
 	originalQuery := queryWindowsCollectorTask
-	t.Cleanup(func() { queryWindowsCollectorTask = originalQuery })
+	originalExists := windowsCollectorTaskExists
+	t.Cleanup(func() {
+		queryWindowsCollectorTask = originalQuery
+		windowsCollectorTaskExists = originalExists
+	})
 	queryWindowsCollectorTask = func(context.Context) ([]byte, error) { return nil, errors.New("access denied") }
+	windowsCollectorTaskExists = func() (bool, error) { return true, nil }
 
 	status, err := windowsCollectorStatus(context.Background(), "127.0.0.1:4318")
 	if err != nil {
