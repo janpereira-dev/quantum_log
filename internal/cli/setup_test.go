@@ -181,6 +181,19 @@ func TestSetupReportsStoppedCollectorStillInstalledAfterSchedulerPolicyDenial(t 
 	}
 }
 
+func TestSetupRejectsLegacyWindowsFallback(t *testing.T) {
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
+	manager := &legacyFallbackCollectorManager{}
+
+	_, err := bootstrapSupportedAdapters(context.Background(), t.TempDir(), temporaryDurableExecutable(t), true, false, adapters.Default(), manager)
+	if err == nil || !strings.Contains(err.Error(), "legacy Windows Run-key fallback") {
+		t.Fatalf("bootstrapSupportedAdapters() error = %v", err)
+	}
+	if manager.installed || manager.started {
+		t.Fatalf("legacy fallback was replaced: %#v", manager)
+	}
+}
+
 func TestSameCollectorTargetCleansEquivalentHomes(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "ledger")
 	if !sameCollectorTarget(home, defaultCollectorListen, filepath.Join(home, "."), defaultCollectorListen) {
@@ -470,6 +483,8 @@ type foregroundCollectorManager struct {
 	stopCalled bool
 }
 
+type legacyFallbackCollectorManager struct{ fakeCollectorManager }
+
 type genericAccessDeniedCollectorManager struct{ fakeCollectorManager }
 
 type activeCollectorManager struct {
@@ -546,6 +561,10 @@ func (m *differentTargetPolicyDeniedCollectorManager) ResolveManagedCollectorSet
 
 func (*foregroundCollectorManager) Status(_ context.Context, listen string) (CollectorStatus, error) {
 	return CollectorStatus{Installed: false, Running: true, ManagedHealth: true, Reachable: true, Listen: listen, Message: "foreground collector"}, nil
+}
+
+func (*legacyFallbackCollectorManager) Status(_ context.Context, listen string) (CollectorStatus, error) {
+	return CollectorStatus{Installed: true, Mode: "user_fallback", Listen: listen, Message: "legacy fallback"}, nil
 }
 
 func (m *foregroundCollectorManager) Stop() (CollectorStatus, error) {

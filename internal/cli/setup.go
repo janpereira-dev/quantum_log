@@ -176,6 +176,9 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 	// different ledger. Resolve its persisted settings before stopping it so an
 	// initialization failure restores that exact collector instead of moving it.
 	activeCollectorHome, activeCollectorListen := resolveManagedCollectorSettings(manager, paths.Home, defaultCollectorListen, false, false)
+	if err := rejectLegacyWindowsFallback(ctx, manager, activeCollectorListen); err != nil {
+		return BootstrapResult{}, err
+	}
 	if err := rejectActiveCollectorTargetChange(ctx, manager, activeCollectorHome, activeCollectorListen, paths.Home, defaultCollectorListen); err != nil {
 		return BootstrapResult{}, err
 	}
@@ -319,6 +322,14 @@ func rejectForegroundCollectorReplacement(ctx context.Context, manager collector
 		return nil
 	}
 	return fmt.Errorf("foreground collector already owns listener %q; stop it before installing a managed collector", listen)
+}
+
+func rejectLegacyWindowsFallback(ctx context.Context, manager collectorManager, listen string) error {
+	status, err := manager.Status(ctx, listen)
+	if err != nil || !status.Installed || status.Mode != "user_fallback" {
+		return nil
+	}
+	return fmt.Errorf("legacy Windows Run-key fallback is installed; run qlog collector uninstall before setup")
 }
 
 func recordExistingCollectorInstallation(ctx context.Context, result *CollectorBootstrapStatus, manager collectorManager, listen string) {

@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"unicode/utf16"
 
 	"golang.org/x/sys/windows"
@@ -27,7 +26,6 @@ const (
 	windowsCollectorNoMode        = "none"
 	windowsCollectorRunKey        = `Software\Microsoft\Windows\CurrentVersion\Run`
 	windowsCollectorRunValue      = "QUANTUM_LOG Collector"
-	windowsDetachedProcess        = 0x00000008
 )
 
 type windowsCollectorManager struct{}
@@ -36,24 +34,13 @@ var runWindowsSchedulerCommand = func(args ...string) ([]byte, error) {
 	return exec.Command("schtasks.exe", args...).CombinedOutput()
 }
 
+var queryWindowsCollectorTask = func(ctx context.Context) ([]byte, error) {
+	return exec.CommandContext(ctx, "schtasks.exe", "/Query", "/TN", windowsCollectorTaskName, "/FO", "LIST", "/V").CombinedOutput()
+}
+
 var windowsCollectorStatusFn = windowsCollectorStatus
 var stopWindowsCollectorFallbackFn = stopWindowsCollectorFallback
 var unregisterWindowsCollectorFallbackFn = unregisterWindowsCollectorFallback
-
-var startWindowsFallbackCollector = func(executable, home, listen, logPath string) (int, int64, error) {
-	command := exec.Command(executable, "--home", home, "collector", "serve", "--listen", listen, "--log-file", logPath, "--fallback-state", collectorFallbackStatePath())
-	command.SysProcAttr = &syscall.SysProcAttr{CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP | windowsDetachedProcess}
-	if err := command.Start(); err != nil {
-		return 0, 0, err
-	}
-	pid := command.Process.Pid
-	startedAt, err := windowsProcessStartedAt(pid)
-	_ = command.Process.Release()
-	if err != nil {
-		return 0, 0, err
-	}
-	return pid, startedAt, nil
-}
 
 func newCollectorManager() collectorManager { return windowsCollectorManager{} }
 
@@ -88,11 +75,19 @@ type windowsCollectorFallbackState struct {
 
 func windowsCollectorStatus(ctx context.Context, listen string) (CollectorStatus, error) {
 	status := CollectorStatus{Listen: listen, Mode: windowsCollectorNoMode, ServiceID: windowsCollectorTaskName, StatePath: collectorStateDir(), LogPath: collectorLogPath()}
-	output, err := exec.CommandContext(ctx, "schtasks.exe", "/Query", "/TN", windowsCollectorTaskName, "/FO", "LIST", "/V").CombinedOutput()
+	output, err := queryWindowsCollectorTask(ctx)
 	if err == nil {
 		status.Installed = true
 		status.Running = strings.Contains(string(output), "Running")
 		status.Mode = windowsCollectorSchedulerMode
+	} else if settings, settingsErr := readWindowsCollectorTaskDefinitionSettings(); settingsErr == nil {
+		// A local qlog-owned definition remains the only durable description of a
+		// task whose Scheduler ACL or policy no longer permits /Query. Treat it as
+		// installed conservatively so setup cannot redirect a surviving task.
+		status.Installed = true
+		status.Mode = windowsCollectorSchedulerMode
+		status.Listen = settings.Listen
+		status.Message = "collector task status unavailable; using persisted task settings"
 	} else if fallback, fallbackErr := readWindowsCollectorFallbackState(); fallbackErr == nil && windowsCollectorFallbackRegistered(fallback) {
 		status.Installed = true
 		status.Mode = windowsCollectorFallbackMode
@@ -105,55 +100,8 @@ func windowsCollectorStatus(ctx context.Context, listen string) (CollectorStatus
 	return collectorStatusWithHealth(status, health), nil
 }
 
-func (windowsCollectorManager) InstallFallback(home, listen string) (CollectorStatus, error) {
-	if err := validateCollectorListen(listen); err != nil {
-		return CollectorStatus{}, err
-	}
-	if err := os.MkdirAll(collectorStateDir(), 0o700); err != nil {
-		return CollectorStatus{}, err
-	}
-	executable, err := durableExecutablePath("")
-	if err != nil {
-		return CollectorStatus{}, err
-	}
-	state := windowsCollectorFallbackState{Mode: windowsCollectorFallbackMode, Executable: executable, Home: home, Listen: listen, LogPath: collectorLogPath()}
-	state.Command = windowsCollectorRunCommand(state)
-	if err := registerWindowsCollectorFallback(state.Command); err != nil {
-		return CollectorStatus{}, err
-	}
-	if err := writeWindowsCollectorFallbackState(state); err != nil {
-		_ = unregisterWindowsCollectorFallback()
-		return CollectorStatus{}, err
-	}
-	pid, startedAt, err := startWindowsFallbackCollector(state.Executable, state.Home, state.Listen, state.LogPath)
-	if err != nil {
-		_ = os.Remove(collectorFallbackStatePath())
-		_ = unregisterWindowsCollectorFallback()
-		return CollectorStatus{}, fmt.Errorf("start Windows user fallback collector: %w", err)
-	}
-	state.PID, state.StartedAt = pid, startedAt
-	if err := writeWindowsCollectorFallbackState(state); err != nil {
-		_ = stopWindowsCollectorFallback(state)
-		_ = unregisterWindowsCollectorFallback()
-		return CollectorStatus{}, err
-	}
-	return CollectorStatus{Installed: true, Running: true, Listen: listen, Mode: windowsCollectorFallbackMode, ServiceID: windowsCollectorRunValue, StatePath: collectorStateDir(), LogPath: state.LogPath, Message: "user fallback installed and started"}, nil
-}
-
 func windowsCollectorRunCommand(state windowsCollectorFallbackState) string {
 	return windowsCommandLineQuote(state.Executable) + " --home " + windowsCommandLineQuote(state.Home) + " collector serve --listen " + state.Listen + " --log-file " + windowsCommandLineQuote(state.LogPath) + " --fallback-state " + windowsCommandLineQuote(collectorFallbackStatePath())
-}
-
-func registerWindowsCollectorFallback(command string) error {
-	key, _, err := registry.CreateKey(registry.CURRENT_USER, windowsCollectorRunKey, registry.SET_VALUE)
-	if err != nil {
-		return fmt.Errorf("open user Run key: %w", err)
-	}
-	defer func() { _ = key.Close() }()
-	if err := key.SetStringValue(windowsCollectorRunValue, command); err != nil {
-		return fmt.Errorf("register user collector fallback: %w", err)
-	}
-	return nil
 }
 
 func unregisterWindowsCollectorFallback() error {
@@ -338,27 +286,7 @@ func (windowsCollectorManager) Start(home, listen string) (CollectorStatus, erro
 		return CollectorStatus{}, err
 	}
 	if status.Mode == windowsCollectorFallbackMode {
-		if status.Running {
-			return windowsCollectorStartupStatus(status, status.Listen)
-		}
-		state, err := readWindowsCollectorFallbackState()
-		if err != nil {
-			return CollectorStatus{}, err
-		}
-		pid, startedAt, err := startWindowsFallbackCollector(state.Executable, state.Home, state.Listen, state.LogPath)
-		if err != nil {
-			return CollectorStatus{}, fmt.Errorf("start Windows user fallback collector: %w", err)
-		}
-		state.PID, state.StartedAt = pid, startedAt
-		if err := writeWindowsCollectorFallbackState(state); err != nil {
-			_ = stopWindowsCollectorFallbackFn(state)
-			return CollectorStatus{}, err
-		}
-		status.Running = true
-		status.Listen = state.Listen
-		status.LogPath = state.LogPath
-		status.ServiceID = windowsCollectorRunValue
-		return windowsCollectorStartupStatus(status, state.Listen)
+		return CollectorStatus{}, legacyWindowsFallbackError()
 	}
 	if _, err := (windowsCollectorManager{}).Install(home, listen); err != nil {
 		return CollectorStatus{}, err
@@ -412,6 +340,13 @@ func (windowsCollectorManager) Stop() (CollectorStatus, error) {
 }
 
 func (manager windowsCollectorManager) Restart(home, listen string) (CollectorStatus, error) {
+	current, err := windowsCollectorStatusFn(context.Background(), listen)
+	if err != nil {
+		return CollectorStatus{}, err
+	}
+	if current.Mode == windowsCollectorFallbackMode {
+		return CollectorStatus{}, legacyWindowsFallbackError()
+	}
 	if _, err := manager.Stop(); err != nil {
 		return CollectorStatus{}, err
 	}
@@ -443,7 +378,7 @@ func (manager windowsCollectorManager) RestartExisting(listen string) (Collector
 		return CollectorStatus{}, fmt.Errorf("existing collector is not installed")
 	}
 	if status.Mode == windowsCollectorFallbackMode {
-		return manager.Start("", status.Listen)
+		return CollectorStatus{}, legacyWindowsFallbackError()
 	}
 	if _, err := runWindowsSchedulerCommand("/Run", "/TN", windowsCollectorTaskName); err != nil {
 		return CollectorStatus{}, err
@@ -455,22 +390,15 @@ func (manager windowsCollectorManager) RestartExisting(listen string) (Collector
 	return windowsCollectorStartupStatus(status, listen)
 }
 
-func (manager windowsCollectorManager) RestartFallback(home, listen string) (CollectorStatus, error) {
-	status, err := windowsCollectorStatusFn(context.Background(), listen)
-	if err != nil {
-		return CollectorStatus{}, err
-	}
-	if status.Mode == windowsCollectorFallbackMode {
-		return manager.Restart(home, listen)
-	}
-	return manager.InstallFallback(home, listen)
-}
-
 func (windowsCollectorManager) Status(ctx context.Context, listen string) (CollectorStatus, error) {
 	if err := validateCollectorListen(listen); err != nil {
 		return CollectorStatus{}, err
 	}
 	return windowsCollectorStatus(ctx, listen)
+}
+
+func legacyWindowsFallbackError() error {
+	return fmt.Errorf("legacy Windows Run-key fallback is installed; run qlog collector uninstall before installing or starting a managed collector")
 }
 
 func (windowsCollectorManager) Logs() (string, error) {
