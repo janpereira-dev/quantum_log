@@ -22,7 +22,7 @@ Capture quality is explicit. Provider-reported, agent-reported, lifecycle-only, 
 
 ## Auto-capture ledger
 
-Run `qlog setup --yes`, restart configured agents, and use them normally. The collector is managed as a user-level loopback service and hooks/plugins use the installed absolute qlog binary. Every native prompt creates one canonical interaction; model and tool calls are linked children.
+Run `qlog setup --yes`, restart configured agents, and use them normally. The collector is managed as a user-level loopback service when the platform manager permits it; hooks/plugins use the installed absolute qlog binary. On Windows, a Task Scheduler policy denial does not create a Startup-app fallback: use an explicit foreground collector for OTLP capture. Every native prompt creates one canonical interaction; model and tool calls are linked children.
 
 | Agent | Interaction | Prompt | Tokens | Cache | Cost | Duration | Tools |
 | --- | --- | --- | --- | --- | --- | --- | --- |
