@@ -44,7 +44,7 @@ var windowsCollectorTaskExists = func() (bool, error) {
 		root = os.Getenv("WINDIR")
 	}
 	if root == "" {
-		return false, fmt.Errorf("Windows system root is unavailable")
+		return false, fmt.Errorf("windows system root is unavailable")
 	}
 	_, err := os.Stat(filepath.Join(root, "System32", "Tasks", windowsCollectorTaskName))
 	if err == nil {
