@@ -23,6 +23,10 @@ type collectorExistingRestarter interface {
 	RestartExisting(listen string) (CollectorStatus, error)
 }
 
+type collectorTargetMatcher interface {
+	MatchesInstalledTarget(home, listen string) bool
+}
+
 // BootstrapResult reports the consented collector and adapter setup actions.
 type BootstrapResult struct {
 	Consent              bool                     `json:"consent"`
@@ -298,10 +302,15 @@ func rejectActiveCollectorTargetChange(ctx context.Context, manager collectorMan
 	if err != nil || !status.Installed {
 		return nil
 	}
-	if sameCollectorTarget(activeHome, activeListen, targetHome, targetListen) {
+	if sameCollectorTarget(activeHome, activeListen, targetHome, targetListen) && collectorTargetMatches(manager, targetHome, targetListen) {
 		return nil
 	}
-	return fmt.Errorf("installed collector uses home %q and listener %q; uninstall it before configuring different home %q or listener %q", activeHome, activeListen, targetHome, targetListen)
+	return fmt.Errorf("installed collector does not match requested home %q, listener %q, and current qlog executable; uninstall it before replacing the managed collector", targetHome, targetListen)
+}
+
+func collectorTargetMatches(manager collectorManager, home, listen string) bool {
+	matcher, ok := manager.(collectorTargetMatcher)
+	return !ok || matcher.MatchesInstalledTarget(home, listen)
 }
 
 func sameCollectorTarget(activeHome, activeListen, targetHome, targetListen string) bool {

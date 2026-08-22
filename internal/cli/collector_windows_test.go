@@ -133,7 +133,7 @@ func TestWindowsCollectorStatusUsesPersistedTaskWhenSchedulerQueryFails(t *testi
 	}
 }
 
-func TestWindowsCollectorStatusIgnoresPersistedTaskWhenSchedulerReportsMissing(t *testing.T) {
+func TestWindowsCollectorStatusIgnoresPersistedTaskWhenSchedulerTaskIsMissing(t *testing.T) {
 	t.Setenv("LOCALAPPDATA", t.TempDir())
 	if err := os.MkdirAll(collectorStateDir(), 0o700); err != nil {
 		t.Fatal(err)
@@ -142,10 +142,15 @@ func TestWindowsCollectorStatusIgnoresPersistedTaskWhenSchedulerReportsMissing(t
 		t.Fatal(err)
 	}
 	originalQuery := queryWindowsCollectorTask
-	t.Cleanup(func() { queryWindowsCollectorTask = originalQuery })
+	originalExists := windowsCollectorTaskExists
+	t.Cleanup(func() {
+		queryWindowsCollectorTask = originalQuery
+		windowsCollectorTaskExists = originalExists
+	})
 	queryWindowsCollectorTask = func(context.Context) ([]byte, error) {
-		return []byte("ERROR: The system cannot find the file specified.\r\n"), errors.New("task not found")
+		return []byte("ERROR: No se puede encontrar el archivo especificado.\r\n"), errors.New("task not found")
 	}
+	windowsCollectorTaskExists = func() (bool, error) { return false, nil }
 
 	status, err := windowsCollectorStatus(context.Background(), "127.0.0.1:4318")
 	if err != nil {

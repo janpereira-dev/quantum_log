@@ -38,6 +38,24 @@ var queryWindowsCollectorTask = func(ctx context.Context) ([]byte, error) {
 	return exec.CommandContext(ctx, "schtasks.exe", "/Query", "/TN", windowsCollectorTaskName, "/FO", "LIST", "/V").CombinedOutput()
 }
 
+var windowsCollectorTaskExists = func() (bool, error) {
+	root := os.Getenv("SystemRoot")
+	if root == "" {
+		root = os.Getenv("WINDIR")
+	}
+	if root == "" {
+		return false, fmt.Errorf("Windows system root is unavailable")
+	}
+	_, err := os.Stat(filepath.Join(root, "System32", "Tasks", windowsCollectorTaskName))
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
+}
+
 var windowsCollectorStatusFn = windowsCollectorStatus
 var stopWindowsCollectorFallbackFn = stopWindowsCollectorFallback
 var unregisterWindowsCollectorFallbackFn = unregisterWindowsCollectorFallback
@@ -80,7 +98,7 @@ func windowsCollectorStatus(ctx context.Context, listen string) (CollectorStatus
 		status.Installed = true
 		status.Running = strings.Contains(string(output), "Running")
 		status.Mode = windowsCollectorSchedulerMode
-	} else if !windowsCollectorTaskMissing(output) {
+	} else if exists, existsErr := windowsCollectorTaskExists(); exists || existsErr != nil {
 		settings, settingsErr := readWindowsCollectorTaskDefinitionSettings()
 		if settingsErr == nil {
 			// A local qlog-owned definition remains the only durable description of a
@@ -104,14 +122,6 @@ func windowsCollectorStatus(ctx context.Context, listen string) (CollectorStatus
 	}
 	health := probeCollectorHealth(ctx, status.Listen)
 	return collectorStatusWithHealth(status, health), nil
-}
-
-func windowsCollectorTaskMissing(output []byte) bool {
-	// schtasks has no machine-readable "not found" result. This is the stable
-	// Windows system message used when the named task does not exist; access and
-	// Scheduler policy errors deliberately remain conservative and use the saved
-	// qlog task definition instead.
-	return strings.Contains(strings.ToLower(string(output)), "cannot find the file specified")
 }
 
 func windowsCollectorRunCommand(state windowsCollectorFallbackState) string {
@@ -500,6 +510,10 @@ func windowsCollectorSettingsMatch(home, listen string) bool {
 		return false
 	}
 	return windowsCollectorTaskTargetMatches(home, listen, executable)
+}
+
+func (windowsCollectorManager) MatchesInstalledTarget(home, listen string) bool {
+	return windowsCollectorSettingsMatch(home, listen)
 }
 
 func windowsCollectorTaskTargetMatches(home, listen, executable string) bool {

@@ -143,7 +143,7 @@ func TestSetupRejectsDifferentTargetForActiveManagedCollector(t *testing.T) {
 	manager.started = true
 
 	_, err := bootstrapSupportedAdapters(context.Background(), t.TempDir(), temporaryDurableExecutable(t), true, false, adapters.Default(), manager)
-	if err == nil || !strings.Contains(err.Error(), "uninstall it before configuring different home") {
+	if err == nil || !strings.Contains(err.Error(), "uninstall it before replacing") {
 		t.Fatalf("bootstrapSupportedAdapters() error = %v", err)
 	}
 	if manager.restored || manager.stopped {
@@ -156,7 +156,7 @@ func TestSetupRejectsDifferentTargetForStoppedManagedCollector(t *testing.T) {
 	manager := &differentTargetPolicyDeniedCollectorManager{configuredHome: filepath.Join(t.TempDir(), "different-home")}
 
 	_, err := bootstrapSupportedAdapters(context.Background(), t.TempDir(), temporaryDurableExecutable(t), true, false, adapters.Default(), manager)
-	if err == nil || !strings.Contains(err.Error(), "uninstall it before configuring different home") {
+	if err == nil || !strings.Contains(err.Error(), "uninstall it before replacing") {
 		t.Fatalf("bootstrapSupportedAdapters() error = %v", err)
 	}
 	if manager.stopped || manager.installed || manager.started {
@@ -198,6 +198,15 @@ func TestSameCollectorTargetCleansEquivalentHomes(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "ledger")
 	if !sameCollectorTarget(home, defaultCollectorListen, filepath.Join(home, "."), defaultCollectorListen) {
 		t.Fatal("equivalent collector homes were treated as different")
+	}
+}
+
+func TestSetupRejectsMatchingHomeAndListenerWhenInstalledExecutableDiffers(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "ledger")
+	manager := &executableMismatchCollectorManager{}
+	err := rejectActiveCollectorTargetChange(context.Background(), manager, home, defaultCollectorListen, home, defaultCollectorListen)
+	if err == nil || !strings.Contains(err.Error(), "uninstall it before") {
+		t.Fatalf("rejectActiveCollectorTargetChange() error = %v", err)
 	}
 }
 
@@ -281,7 +290,7 @@ func TestSetupRejectsDifferentTargetBeforeLedgerInitialization(t *testing.T) {
 	previousHome := t.TempDir()
 	manager := &managedActiveCollectorManager{configuredHome: previousHome, configuredListen: "127.0.0.1:14318"}
 	_, err := bootstrapSupportedAdapters(context.Background(), home, temporaryDurableExecutable(t), true, false, adapters.Default(), manager)
-	if err == nil || !strings.Contains(err.Error(), "uninstall it before configuring different home") {
+	if err == nil || !strings.Contains(err.Error(), "uninstall it before replacing") {
 		t.Fatalf("bootstrapSupportedAdapters() error = %v", err)
 	}
 	if manager.stopped || manager.started {
@@ -499,6 +508,14 @@ type managedActiveCollectorManager struct {
 	configuredHome   string
 	configuredListen string
 }
+
+type executableMismatchCollectorManager struct{ fakeCollectorManager }
+
+func (*executableMismatchCollectorManager) Status(_ context.Context, listen string) (CollectorStatus, error) {
+	return CollectorStatus{Installed: true, Listen: listen}, nil
+}
+
+func (*executableMismatchCollectorManager) MatchesInstalledTarget(_, _ string) bool { return false }
 
 func (m *managedActiveCollectorManager) ResolveManagedCollectorSettings(home, listen string, homeExplicit, listenExplicit bool) (string, string) {
 	if !homeExplicit {
