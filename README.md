@@ -40,7 +40,7 @@ Run `qlog setup --yes`, restart configured agents, and use them normally. The co
 cmd /c "set QLOG_INSTALL_LOCAL_ARTIFACT_DIR=C:\path\to\dist&& npm install --prefix C:\qlog-install .\packaging\npm"
 ```
 
-The source CLI currently declares `v0.4.0-rc.7`, but the local npm distribution
+The source CLI currently declares `v0.4.0-rc.8`, but the local npm distribution
 package still declares `v0.3.2-rc.3`. Therefore this npm command is a legacy
 packaging-validation path, not proof that rc.7 was installed. See the explicit
 version boundary in [Install](docs/INSTALL.md). For auto-capture and reports, use
