@@ -22,7 +22,7 @@ On Windows PowerShell:
 
 ```powershell
 Invoke-WebRequest https://raw.githubusercontent.com/janpereira-dev/quantum_log/v0.4.0-rc9/installers/install.ps1 -OutFile .\install.ps1
-.\install.ps1 --version v0.4.0-rc9
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 --version v0.4.0-rc9
 ```
 
 Use `--channel latest` only to evaluate the newest published candidate; it can
@@ -34,7 +34,7 @@ sh install.sh --channel latest
 ```
 
 ```powershell
-.\install.ps1 --channel latest
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 --channel latest
 ```
 
 The operator must first create and push the release tag (for example,

@@ -49,7 +49,9 @@ func newUninstallCommand(home *string) *cobra.Command {
 				result.Adapters[adapter.Descriptor().ID] = adapterResult
 			}
 
-			if !dryRun {
+			if dryRun {
+				result.Collector = CollectorStatus{Message: "dry run: collector uninstall skipped"}
+			} else {
 				collector, err := manager.Uninstall()
 				if err != nil {
 					failures = append(failures, fmt.Errorf("uninstall collector: %w", err))
@@ -140,10 +142,16 @@ func purgeUninstallData(command *cobra.Command, home string) error {
 	if err != nil {
 		return fmt.Errorf("refusing to purge data that is not an idle, valid qlog ledger: %w", err)
 	}
-	if err := guard.Close(); err != nil {
+	if err := guard.ReleaseForPurge(); err != nil {
+		if abortErr := guard.Abort(); abortErr != nil {
+			return errors.Join(fmt.Errorf("release qlog ledger purge guard: %w", err), fmt.Errorf("restore access to retained local data: %w", abortErr))
+		}
 		return fmt.Errorf("release qlog ledger purge guard: %w", err)
 	}
 	if err := removeUninstallDataDirectory(paths.Home); err != nil {
+		if abortErr := guard.Abort(); abortErr != nil {
+			return errors.Join(fmt.Errorf("remove local data directory: %w", err), fmt.Errorf("restore access to retained local data: %w", abortErr))
+		}
 		return fmt.Errorf("remove local data directory: %w", err)
 	}
 	return nil

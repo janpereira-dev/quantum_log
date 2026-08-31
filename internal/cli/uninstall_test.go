@@ -4,11 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/janpereira-dev/quantum_log/internal/app"
+	"github.com/janpereira-dev/quantum_log/internal/config"
+	"github.com/spf13/cobra"
 )
 
 func TestUninstallCommandRemovesAllQlogOwnedSetup(t *testing.T) {
@@ -46,12 +50,35 @@ func TestUninstallDryRunDoesNotTearDownCollector(t *testing.T) {
 	t.Cleanup(func() { newUninstallCollectorManager = original })
 
 	command := New(Version{})
+	jsonOutput := new(bytes.Buffer)
 	command.SetArgs([]string{"uninstall", "--dry-run", "--json"})
+	setOutput(command, jsonOutput)
 	if err := command.Execute(); err != nil {
 		t.Fatalf("dry-run uninstall: %v", err)
 	}
 	if manager.uninstallCalls != 0 {
 		t.Fatalf("dry-run tore down the collector %d times", manager.uninstallCalls)
+	}
+	var result uninstallResult
+	if err := json.Unmarshal(jsonOutput.Bytes(), &result); err != nil {
+		t.Fatalf("decode dry-run JSON: %v", err)
+	}
+	if result.Collector.Message != "dry run: collector uninstall skipped" {
+		t.Fatalf("dry-run collector result = %#v", result.Collector)
+	}
+
+	command = New(Version{})
+	textOutput := new(bytes.Buffer)
+	command.SetArgs([]string{"uninstall", "--dry-run"})
+	setOutput(command, textOutput)
+	if err := command.Execute(); err != nil {
+		t.Fatalf("text dry-run uninstall: %v", err)
+	}
+	if !strings.Contains(textOutput.String(), "dry run: collector uninstall skipped") {
+		t.Fatalf("text dry-run omitted collector plan: %q", textOutput.String())
+	}
+	if manager.uninstallCalls != 0 {
+		t.Fatalf("text dry-run tore down the collector %d times", manager.uninstallCalls)
 	}
 }
 
@@ -143,6 +170,87 @@ func TestUninstallPurgeDataRefusesAnActiveLedger(t *testing.T) {
 	}
 	if _, err := os.Stat(home); err != nil {
 		t.Fatalf("active ledger was deleted: %v", err)
+	}
+}
+
+func TestPurgeUninstallDataKeepsLedgerUnreachableUntilDeletionCompletes(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "ledger")
+	initializeUninstallLedger(t, home)
+	originalRemove := removeUninstallDataDirectory
+	removeUninstallDataDirectory = func(path string) error {
+		writer, err := app.Open(context.Background(), path)
+		if err == nil {
+			_ = writer.Close()
+			t.Fatal("writer opened a ledger while purge deletion was pending")
+		}
+		if !strings.Contains(err.Error(), "purge is in progress") {
+			t.Fatalf("writer during purge error = %v", err)
+		}
+		return originalRemove(path)
+	}
+	t.Cleanup(func() { removeUninstallDataDirectory = originalRemove })
+
+	command := &cobra.Command{}
+	command.SetContext(context.Background())
+	if err := purgeUninstallData(command, home); err != nil {
+		t.Fatalf("purge data: %v", err)
+	}
+	if _, err := os.Stat(home); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("purged home remains: %v", err)
+	}
+}
+
+func TestPurgeUninstallDataRestoresLedgerAccessAfterDeletionFailure(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "ledger")
+	initializeUninstallLedger(t, home)
+	originalRemove := removeUninstallDataDirectory
+	removeUninstallDataDirectory = func(string) error { return errors.New("simulated remove failure") }
+	t.Cleanup(func() { removeUninstallDataDirectory = originalRemove })
+
+	command := &cobra.Command{}
+	command.SetContext(context.Background())
+	if err := purgeUninstallData(command, home); err == nil || !strings.Contains(err.Error(), "simulated remove failure") {
+		t.Fatalf("purge error = %v", err)
+	}
+	writer, err := app.Open(context.Background(), home)
+	if err != nil {
+		t.Fatalf("ledger remained unavailable after deletion failure: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close restored ledger: %v", err)
+	}
+}
+
+func TestUninstallPurgeDataResumesInterruptedPurge(t *testing.T) {
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
+	home := filepath.Join(t.TempDir(), "ledger")
+	initializeUninstallLedger(t, home)
+	paths, err := config.Resolve(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	abandoned, err := prepareUninstallDataPurge(context.Background(), paths.Database)
+	if err != nil {
+		t.Fatalf("prepare interrupted purge: %v", err)
+	}
+	if err := abandoned.ReleaseForPurge(); err != nil {
+		t.Fatalf("release interrupted purge: %v", err)
+	}
+
+	manager := &recordingUninstallCollectorManager{}
+	original := newUninstallCollectorManager
+	newUninstallCollectorManager = func() collectorManager { return manager }
+	t.Cleanup(func() { newUninstallCollectorManager = original })
+	command := New(Version{})
+	command.SetArgs([]string{"--home", home, "uninstall", "--purge-data"})
+	if err := command.Execute(); err != nil {
+		t.Fatalf("resume purge through uninstall: %v", err)
+	}
+	if manager.uninstallCalls != 1 {
+		t.Fatalf("collector uninstall calls = %d, want 1", manager.uninstallCalls)
+	}
+	if _, err := os.Stat(home); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("resumed purge retained home: %v", err)
 	}
 }
 
