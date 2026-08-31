@@ -47,6 +47,7 @@ function Resolve-Release {
         $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$repository/releases/latest" -Headers $headers
     } else {
         $release = @(Invoke-RestMethod -Uri "https://api.github.com/repos/$repository/releases?per_page=100" -Headers $headers |
+            ForEach-Object { $_ } |
             Where-Object { -not $_.draft } |
             Sort-Object published_at -Descending |
             Select-Object -First 1)

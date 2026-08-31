@@ -153,6 +153,9 @@ func TestCopilotCLIPowerShellProfileDoesNotSpawnCMD(t *testing.T) {
 	if !strings.Contains(profile, "QLOG_COLLECTOR_URL") {
 		t.Fatalf("qlog Copilot profile must forward hooks to the loopback collector:\n%s", profile)
 	}
+	if !strings.Contains(profile, "throw ('copilot exited with code ' + $qlogExitCode)") {
+		t.Fatalf("qlog Copilot profile must fail wrapped Copilot calls without cmd.exe:\n%s", profile)
+	}
 }
 
 func TestCopilotCLIOTELLauncherUsesOfficialEnvironmentWithoutGlobalMutation(t *testing.T) {
@@ -217,12 +220,13 @@ func TestCopilotCLIPowerShellLauncherInvokesOnlyFirstApplication(t *testing.T) {
   }
   Microsoft.PowerShell.Core\Get-Command @PSBoundParameters
 }
+
 ` + copilotCLIProfileBlock() + "copilot marker\n"
 	scriptPath := filepath.Join(dir, "profile-test.ps1")
 	if err := os.WriteFile(scriptPath, []byte(script), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	command := exec.Command(powershell, "-NoProfile", "-NonInteractive", "-File", scriptPath)
+	command := exec.Command(powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptPath)
 	command.Env = append(os.Environ(), "QLOG_TEST_FIRST_COPILOT="+first, "QLOG_TEST_SECOND_COPILOT="+second)
 	output, err := command.CombinedOutput()
 	if err != nil {
@@ -231,6 +235,43 @@ func TestCopilotCLIPowerShellLauncherInvokesOnlyFirstApplication(t *testing.T) {
 	got := string(output)
 	if !strings.Contains(got, "first:marker") || strings.Contains(got, "second:marker") {
 		t.Fatalf("PowerShell launcher output = %q, want only first application", got)
+	}
+}
+
+func TestCopilotCLIPowerShellLauncherPreservesFailedExitCodeWithoutCMD(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("requires Windows PowerShell")
+	}
+	powershell, err := exec.LookPath("powershell.exe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	executable := filepath.Join(dir, "copilot-fail.cmd")
+	if err := os.WriteFile(executable, []byte("@echo off\r\nexit /b 23\r\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := `function global:Get-Command {
+  [CmdletBinding()]
+  param([Parameter(Position=0)][string[]]$Name, [System.Management.Automation.CommandTypes]$CommandType)
+  if ($Name -eq 'copilot' -and $CommandType -eq [System.Management.Automation.CommandTypes]::Function) { return }
+  if ($Name -eq 'copilot' -and $CommandType -eq [System.Management.Automation.CommandTypes]::Application) { return [pscustomobject]@{ Path = $env:QLOG_TEST_FAILING_COPILOT } }
+  Microsoft.PowerShell.Core\Get-Command @PSBoundParameters
+}
+` + copilotCLIProfileBlock() + `
+$failed = $false
+try { copilot } catch { $failed = $true }
+if (-not $failed) { exit 1 }
+if ($global:LASTEXITCODE -ne 23) { exit 2 }
+`
+	scriptPath := filepath.Join(dir, "profile-failure-test.ps1")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptPath)
+	command.Env = append(os.Environ(), "QLOG_TEST_FAILING_COPILOT="+executable)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("PowerShell launcher did not preserve failure semantics: %v\n%s", err, output)
 	}
 }
 

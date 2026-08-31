@@ -39,7 +39,7 @@ release:
   # the prerelease indicator understood by GoReleaser's `auto` mode.
   # Keep prereleases out of GitHub's /releases/latest endpoint even if a
   # hosting-side classification changes unexpectedly.
-  make_latest: '{{ if or (contains .Tag "-alpha") (contains .Tag "-beta") (contains .Tag "-rc") }}false{{ else }}true{{ end }}'
+  make_latest: '{{ if or (contains "-alpha" .Tag) (contains "-beta" .Tag) (contains "-rc" .Tag) }}false{{ else }}true{{ end }}'
   footer: |
     Full project history: https://github.com/janpereira-dev/quantum_log/blob/{{ .Tag }}/CHANGELOG.md
 snapshot:

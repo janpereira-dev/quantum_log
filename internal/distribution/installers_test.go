@@ -110,6 +110,51 @@ func TestInstallersResolveChannelsUnlessVersionIsExplicit(t *testing.T) {
 	}
 }
 
+func TestPowerShellLatestChannelEnumeratesReleaseArraysBeforeFiltering(t *testing.T) {
+	contents, err := os.ReadFile(filepath.Join("..", "..", "installers", "install.ps1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(contents)
+	response := strings.Index(script, "Invoke-RestMethod -Uri \"https://api.github.com/repos/$repository/releases?per_page=100\"")
+	enumerate := strings.Index(script, "ForEach-Object { $_ }")
+	filter := strings.Index(script, "Where-Object { -not $_.draft }")
+	if response < 0 || enumerate < response || filter < enumerate {
+		t.Fatalf("install.ps1 must enumerate the multi-release REST array before filtering it:\n%s", script)
+	}
+}
+
+func TestReleaseConfigKeepsPrereleaseTagsOutOfLatest(t *testing.T) {
+	contents, err := os.ReadFile(filepath.Join("..", "..", ".goreleaser.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := string(contents)
+	for _, want := range []string{`contains "-alpha" .Tag`, `contains "-beta" .Tag`, `contains "-rc" .Tag`, `}}false{{ else }}true{{`} {
+		if !strings.Contains(config, want) {
+			t.Fatalf("release config missing %q:\n%s", want, config)
+		}
+	}
+	for _, reversed := range []string{`contains .Tag "-alpha"`, `contains .Tag "-beta"`, `contains .Tag "-rc"`} {
+		if strings.Contains(config, reversed) {
+			t.Fatalf("release config reverses Sprig contains arguments %q:\n%s", reversed, config)
+		}
+	}
+}
+
+func TestInstallGuideDocumentsVerifiedRCInstallerLifecycle(t *testing.T) {
+	contents, err := os.ReadFile(filepath.Join("..", "..", "docs", "INSTALL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	guide := string(contents)
+	for _, want := range []string{"installers/install.sh", "installers/install.ps1", "--version v0.4.0-rc9", "--channel latest", "create and push the release tag", "The pushed `v*` tag triggers the release workflow"} {
+		if !strings.Contains(guide, want) {
+			t.Fatalf("install guide missing %q", want)
+		}
+	}
+}
+
 func TestWindowsSmokeGuideStartsItsOwnForegroundCollector(t *testing.T) {
 	contents, err := os.ReadFile(filepath.Join("..", "..", "scripts", "smoke-v0.3.2-rc.1-windows.ps1"))
 	if err != nil {

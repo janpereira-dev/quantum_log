@@ -41,9 +41,10 @@ run `qlog uninstall`. It retains the local ledger unless `--purge-data` is expli
 
 There is no stable public release yet. Do not use `go install` or the legacy npm
 package to evaluate an RC: both bypass the verified release channel and can point
-at an older candidate. When the RC artifact is published, select it explicitly
-with the verified installer described in [Install](docs/INSTALL.md). For
-auto-capture and reports, use [Auto-capture](docs/AUTOCAPTURE.md).
+at an older candidate. When an RC artifact is published, install it explicitly
+with `install.sh --version v0.4.0-rc9` or `install.ps1 --version v0.4.0-rc9` as
+described in [Install](docs/INSTALL.md). For auto-capture and reports, use
+[Auto-capture](docs/AUTOCAPTURE.md).
 
 ## License
 
