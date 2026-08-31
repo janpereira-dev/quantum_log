@@ -59,6 +59,7 @@ func TestWindowsCollectorTaskDefinitionBoundsRestartOnFailure(t *testing.T) {
 	)
 	for _, want := range []string{
 		"<RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure>",
+		"<Hidden>true</Hidden>",
 		"<LogonType>InteractiveToken</LogonType>",
 		"<RunLevel>LeastPrivilege</RunLevel>",
 		"collector serve --listen 127.0.0.1:4318",
@@ -86,6 +87,109 @@ func TestReadWindowsCollectorTaskSettings(t *testing.T) {
 	}
 	if gotHome != home || gotListen != listen {
 		t.Fatalf("settings = (%q, %q), want (%q, %q)", gotHome, gotListen, home, listen)
+	}
+}
+
+func TestWindowsCollectorResolveSettingsPrefersActiveScheduledTask(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	if err := os.MkdirAll(collectorStateDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeWindowsCollectorTaskDefinition(collectorTaskDefinitionPath(), `C:\Program Files\QUANTUM_LOG\qlog.exe`, `C:\active-ledger`, "127.0.0.1:14318", `CONTOSO\alice`, `C:\collector.log`); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeWindowsCollectorFallbackState(windowsCollectorFallbackState{Home: `C:\stale-ledger`, Listen: "127.0.0.1:4318"}); err != nil {
+		t.Fatal(err)
+	}
+	originalStatus := windowsCollectorStatusFn
+	t.Cleanup(func() { windowsCollectorStatusFn = originalStatus })
+	windowsCollectorStatusFn = func(context.Context, string) (CollectorStatus, error) {
+		return CollectorStatus{Installed: true, Mode: windowsCollectorSchedulerMode}, nil
+	}
+
+	home, listen := (windowsCollectorManager{}).ResolveManagedCollectorSettings(`C:\default-ledger`, "127.0.0.1:4318", false, false)
+	if home != `C:\active-ledger` || listen != "127.0.0.1:14318" {
+		t.Fatalf("settings = (%q, %q), want active task settings", home, listen)
+	}
+}
+
+func TestWindowsCollectorStatusUsesPersistedTaskWhenSchedulerQueryFails(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	if err := os.MkdirAll(collectorStateDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeWindowsCollectorTaskDefinition(collectorTaskDefinitionPath(), `C:\Program Files\QUANTUM_LOG\qlog.exe`, `C:\active-ledger`, "127.0.0.1:14318", `CONTOSO\alice`, `C:\collector.log`); err != nil {
+		t.Fatal(err)
+	}
+	originalQuery := queryWindowsCollectorTask
+	originalExists := windowsCollectorTaskExists
+	t.Cleanup(func() {
+		queryWindowsCollectorTask = originalQuery
+		windowsCollectorTaskExists = originalExists
+	})
+	queryWindowsCollectorTask = func(context.Context) ([]byte, error) { return nil, errors.New("access denied") }
+	windowsCollectorTaskExists = func() (bool, error) { return true, nil }
+
+	status, err := windowsCollectorStatus(context.Background(), "127.0.0.1:4318")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Installed || status.Mode != windowsCollectorSchedulerMode || status.Listen != "127.0.0.1:14318" {
+		t.Fatalf("status = %#v, want persisted scheduled task", status)
+	}
+}
+
+func TestWindowsCollectorStatusIgnoresPersistedTaskWhenSchedulerTaskIsMissing(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	if err := os.MkdirAll(collectorStateDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeWindowsCollectorTaskDefinition(collectorTaskDefinitionPath(), `C:\Program Files\QUANTUM_LOG\qlog.exe`, `C:\stale-ledger`, "127.0.0.1:14318", `CONTOSO\alice`, `C:\collector.log`); err != nil {
+		t.Fatal(err)
+	}
+	originalQuery := queryWindowsCollectorTask
+	originalExists := windowsCollectorTaskExists
+	t.Cleanup(func() {
+		queryWindowsCollectorTask = originalQuery
+		windowsCollectorTaskExists = originalExists
+	})
+	queryWindowsCollectorTask = func(context.Context) ([]byte, error) {
+		return []byte("ERROR: No se puede encontrar el archivo especificado.\r\n"), errors.New("task not found")
+	}
+	windowsCollectorTaskExists = func() (bool, error) { return false, nil }
+
+	status, err := windowsCollectorStatus(context.Background(), "127.0.0.1:4318")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Installed || status.Mode != windowsCollectorNoMode || status.Listen != "127.0.0.1:4318" {
+		t.Fatalf("status = %#v, want missing task", status)
+	}
+}
+
+func TestWindowsCollectorTaskTargetMatchesRequiresSameTaskTarget(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	if err := os.MkdirAll(collectorStateDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeWindowsCollectorTaskDefinition(collectorTaskDefinitionPath(), `C:\Program Files\QUANTUM_LOG\qlog.exe`, `C:\active-ledger`, "127.0.0.1:4318", `CONTOSO\alice`, `C:\collector.log`); err != nil {
+		t.Fatal(err)
+	}
+	originalStatus := windowsCollectorStatusFn
+	t.Cleanup(func() { windowsCollectorStatusFn = originalStatus })
+	windowsCollectorStatusFn = func(context.Context, string) (CollectorStatus, error) {
+		return CollectorStatus{Installed: true, Mode: windowsCollectorSchedulerMode}, nil
+	}
+
+	executable := `C:\Program Files\QUANTUM_LOG\qlog.exe`
+	if !windowsCollectorTaskTargetMatches(`C:\active-ledger`, "127.0.0.1:4318", executable) {
+		t.Fatal("matching scheduled task was rejected")
+	}
+	if windowsCollectorTaskTargetMatches(`C:\different-ledger`, "127.0.0.1:4318", executable) {
+		t.Fatal("different scheduled task target was accepted")
+	}
+	if windowsCollectorTaskTargetMatches(`C:\active-ledger`, "127.0.0.1:4318", `C:\Program Files\QUANTUM_LOG\qlog-next.exe`) {
+		t.Fatal("different collector executable was accepted")
 	}
 }
 
@@ -206,89 +310,16 @@ func TestWindowsCollectorFallbackRunCommandUsesDurableIdentity(t *testing.T) {
 	}
 }
 
-func TestWindowsCollectorStartRestartsUserFallbackWithoutScheduler(t *testing.T) {
-	t.Setenv("LOCALAPPDATA", t.TempDir())
-	state := windowsCollectorFallbackState{
-		Mode:       windowsCollectorFallbackMode,
-		Executable: `C:\Program Files\QUANTUM_LOG\qlog.exe`,
-		Home:       `C:\Users\alice\AppData\Local\QUANTUM_LOG`,
-		Listen:     "127.0.0.1:4318",
-		LogPath:    filepath.Join(collectorStateDir(), "collector.log"),
-	}
-	state.Command = windowsCollectorRunCommand(state)
-	if err := os.MkdirAll(collectorStateDir(), 0o700); err != nil {
-		t.Fatalf("create state directory: %v", err)
-	}
-	if err := writeWindowsCollectorFallbackState(state); err != nil {
-		t.Fatalf("write fallback state: %v", err)
-	}
+func TestWindowsCollectorStartRejectsLegacyFallback(t *testing.T) {
 	originalStatus := windowsCollectorStatusFn
-	originalStart := startWindowsFallbackCollector
-	t.Cleanup(func() {
-		windowsCollectorStatusFn = originalStatus
-		startWindowsFallbackCollector = originalStart
-	})
+	t.Cleanup(func() { windowsCollectorStatusFn = originalStatus })
 	windowsCollectorStatusFn = func(context.Context, string) (CollectorStatus, error) {
-		return CollectorStatus{Installed: true, Mode: windowsCollectorFallbackMode, Listen: state.Listen, ServiceID: windowsCollectorRunValue}, nil
-	}
-	startWindowsFallbackCollector = func(executable, home, listen, logPath string) (int, int64, error) {
-		if executable != state.Executable || home != state.Home || listen != state.Listen || logPath != state.LogPath {
-			t.Fatalf("fallback start args = %q %q %q %q", executable, home, listen, logPath)
-		}
-		return 42, 99, nil
+		return CollectorStatus{Installed: true, Mode: windowsCollectorFallbackMode, Listen: "127.0.0.1:4318"}, nil
 	}
 
-	status, err := (windowsCollectorManager{}).Start(state.Home, state.Listen)
-	if err != nil {
+	_, err := (windowsCollectorManager{}).Start(`C:\ledger`, "127.0.0.1:4318")
+	if err == nil || !strings.Contains(err.Error(), "legacy Windows Run-key fallback") {
 		t.Fatalf("Start() error = %v", err)
-	}
-	if status.Mode != windowsCollectorFallbackMode || !status.Running {
-		t.Fatalf("Start() status = %#v, want running fallback", status)
-	}
-	updated, err := readWindowsCollectorFallbackState()
-	if err != nil {
-		t.Fatalf("read updated fallback state: %v", err)
-	}
-	if updated.PID != 42 || updated.StartedAt != 99 {
-		t.Fatalf("updated fallback state = %#v", updated)
-	}
-}
-
-func TestWindowsCollectorStartDoesNotDuplicateRunningFallback(t *testing.T) {
-	t.Setenv("LOCALAPPDATA", t.TempDir())
-	state := windowsCollectorFallbackState{
-		Mode:       windowsCollectorFallbackMode,
-		Executable: `C:\Program Files\QUANTUM_LOG\qlog.exe`,
-		Home:       `C:\Users\alice\AppData\Local\QUANTUM_LOG`,
-		Listen:     "127.0.0.1:4318",
-		LogPath:    filepath.Join(collectorStateDir(), "collector.log"),
-	}
-	state.Command = windowsCollectorRunCommand(state)
-	if err := os.MkdirAll(collectorStateDir(), 0o700); err != nil {
-		t.Fatalf("create state directory: %v", err)
-	}
-	if err := writeWindowsCollectorFallbackState(state); err != nil {
-		t.Fatalf("write fallback state: %v", err)
-	}
-	originalStatus := windowsCollectorStatusFn
-	originalStart := startWindowsFallbackCollector
-	t.Cleanup(func() {
-		windowsCollectorStatusFn = originalStatus
-		startWindowsFallbackCollector = originalStart
-	})
-	windowsCollectorStatusFn = func(context.Context, string) (CollectorStatus, error) {
-		return CollectorStatus{Installed: true, Running: true, Reachable: true, Mode: windowsCollectorFallbackMode, Listen: state.Listen, ServiceID: windowsCollectorRunValue, Message: "ok"}, nil
-	}
-	startWindowsFallbackCollector = func(string, string, string, string) (int, int64, error) {
-		return 0, 0, errors.New("running fallback must not be started again")
-	}
-
-	status, err := (windowsCollectorManager{}).Start(state.Home, state.Listen)
-	if err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	if !status.Running || !status.Reachable || status.Message != "collector started and ready" {
-		t.Fatalf("Start() status = %#v", status)
 	}
 }
 

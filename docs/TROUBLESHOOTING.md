@@ -1,5 +1,35 @@
 # Troubleshooting
 
+## Windows recovery from RC7 or an interrupted uninstall
+
+Candidates before `0.4.0-rc.8` could leave a qlog-owned Startup value and a
+Copilot hook configuration behind. This cleanup removes only qlog-owned
+configuration and retains the ledger. Run it in one PowerShell window, then
+restart Windows:
+
+```powershell
+$qlog = (Get-Command qlog -All -ErrorAction Stop | Select-Object -First 1).Source
+
+foreach ($adapter in 'copilot','codex','claude-code','copilot-vscode','opencode','pi','openclaw','hermes') {
+  & $qlog adapter uninstall $adapter --json
+}
+& $qlog collector uninstall --json
+
+# Idempotent removal of the exact legacy persistence identifiers.
+schtasks.exe /End /TN 'QUANTUM_LOG Collector' 2>$null
+schtasks.exe /Delete /TN 'QUANTUM_LOG Collector' /F 2>$null
+Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' `
+  -Name 'QUANTUM_LOG Collector' -ErrorAction SilentlyContinue
+
+# Stop only qlog collectors; do not terminate arbitrary cmd.exe processes.
+Get-CimInstance Win32_Process -Filter "Name = 'qlog.exe'" |
+  Where-Object { $_.CommandLine -match '(?i)collector\s+serve' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+```
+
+`0.4.0-rc9` replaces this with a single `qlog uninstall --json` command. Add
+`--purge-data` only if you also want to delete the local ledger.
+
 Use compiled `qlog` artifact for diagnosis. Do not manufacture telemetry or claim real capture from setup files, unit tests, or synthetic events.
 
 ## Collector is not reachable

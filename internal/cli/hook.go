@@ -157,7 +157,7 @@ func ingestOrForwardHook(command *cobra.Command, home *string, event qlogevent.E
 			return fmt.Errorf("create hook request: %w", err)
 		}
 		request.Header.Set("Content-Type", "application/json")
-		response, err := http.DefaultClient.Do(request)
+		response, err := (&http.Client{Timeout: 400 * time.Millisecond}).Do(request)
 		if err != nil {
 			return fmt.Errorf("post hook event: %w", err)
 		}
@@ -183,7 +183,7 @@ func ingestOrForwardHook(command *cobra.Command, home *string, event qlogevent.E
 // collector can be unavailable during upgrades, restarts, or a transient
 // SQLite lock; the next native event will retry ingestion.
 func bestEffortHook(command *cobra.Command, home *string, event qlogevent.Event) error {
-	ctx, cancel := context.WithTimeout(command.Context(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(command.Context(), 500*time.Millisecond)
 	defer cancel()
 	command.SetContext(ctx)
 	if err := ingestOrForwardHook(command, home, event); err != nil {

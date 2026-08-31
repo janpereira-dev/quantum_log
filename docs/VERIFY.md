@@ -21,7 +21,7 @@ $env:QLOG_HOME = "$env:LOCALAPPDATA\qlog-verify"
 & $qlog adapter status --json
 ```
 
-3. If Scheduler policy blocks managed collector, start documented fallback in terminal one.
+3. If Scheduler policy blocks the managed collector, start a foreground collector in terminal one. This does not create a Startup entry.
 
 ```powershell
 & $qlog collector serve --home $env:QLOG_HOME --log-file "$env:QLOG_HOME\collector.log"

@@ -1,11 +1,11 @@
 # Install QUANTUM_LOG
 
 Install `qlog`, then initialize a local ledger. The source CLI currently declares
-`v0.4.0-rc.7`. The npm distribution package still declares `v0.3.2-rc.3`; it has
+`v0.4.0-rc9`. The npm distribution package still declares `v0.3.2-rc.3`; it has
 not yet been aligned with the current CLI candidate. Existing P0 evidence covers
 prior candidates only, not a public release acceptance.
 
-## One-command RC install
+## Legacy local packaging validation (not an RC install)
 
 Requires Node.js 18 or later.
 
@@ -13,11 +13,11 @@ Requires Node.js 18 or later.
 cmd /c "set QLOG_INSTALL_LOCAL_ARTIFACT_DIR=C:\path\to\dist&& npm install --prefix C:\qlog-install .\packaging\npm"
 ```
 
-Run from repository root. This legacy package path still expects generated
+Run from repository root only when validating the legacy package. This path still expects generated
 `checksums.txt` and the exact host `v0.3.2-rc.3` archive. The installer selects the
 matching platform/architecture artifact, verifies SHA-256, and extracts only
-`qlog` or `qlog.exe`. It uses no telemetry. Do not use this path as evidence that
-`v0.4.0-rc.7` was installed until npm packaging, tests, and artifacts are aligned.
+`qlog` or `qlog.exe`. It uses no telemetry. It is not a supported way to install
+`v0.4.0-rc9`; do not substitute `go install` for a published release artifact.
 
 Confirm installed binary:
 
@@ -27,7 +27,10 @@ C:\qlog-install\node_modules\.bin\qlog.cmd --version
 
 P0 observed `qlog 0.3.2-rc.1`; one P0-11 extracted artifact also embedded commit `dba6ca4040b93b889ead41ec90d4b2ffd19226c1`. Do not substitute an older tag or archive.
 
-**BLOCKED_EXTERNAL:** P0 did not run a public HTTPS bootstrap because this RC is intentionally non-public and no signed HTTPS RC artifact exists.
+**No public RC artifact exists yet.** Do not attempt `go install ...@v0.4.0-rc9`:
+the tag does not exist until the release workflow publishes it. A future RC must
+be installed by an explicit verified release tag; the default `stable` channel
+will reject all prerelease tags.
 
 ## Optional local setup
 
@@ -48,15 +51,17 @@ $env:QLOG_HOME = "$env:LOCALAPPDATA\QUANTUM_LOG"
 & $qlog setup --dry-run --json
 ```
 
-On P0 Windows host, Task Scheduler denied managed collector creation with `Acceso denegado`. Setup still configured detected integrations and recorded collector health. See [collector recovery](AUTOCAPTURE.md#collector-recovery) and [ADR-005](architecture/ADR-005-collector-lifecycle.md) before changing persistent collector state.
+On Windows, if Task Scheduler denies managed collector creation with `Acceso denegado`, setup still configures detected integrations but does not create a detached process or a Startup-app fallback. Start `qlog collector serve --home <home>` in the active session before using an OTLP-only source. See [collector recovery](AUTOCAPTURE.md#collector-recovery) and [ADR-005](architecture/ADR-005-collector-lifecycle.md).
 
 ## Cleanup
 
-Remove qlog-owned adapter configuration before deleting data:
+Remove every qlog-owned adapter configuration and collector before deleting the
+binary:
 
 ```powershell
-& $qlog adapter uninstall codex --json
-& $qlog collector uninstall --json
+& $qlog uninstall --json
 ```
 
-Choose adapter ID from `qlog adapter list --json`. `adapter uninstall` removes only qlog-owned setup. Local ledger cleanup is manual: stop/uninstall collector first, then remove chosen `QLOG_HOME` directory.
+`uninstall` removes only qlog-owned setup, including a legacy Windows Startup
+entry created by older candidates. Local ledger data is retained by default. Use
+`& $qlog uninstall --purge-data` only when you explicitly want to erase it.

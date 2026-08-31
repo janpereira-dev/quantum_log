@@ -7,7 +7,7 @@ This guide takes you from an empty local ledger to verified, explicitly qualifie
 ## Quick path
 
 ```bash
-go install github.com/janpereira-dev/quantum_log/cmd/qlog@v0.3.0
+# Install a published binary following ../INSTALL.md first.
 qlog init
 qlog project register --path . --name MY_PROJECT
 qlog project current --json
@@ -19,12 +19,9 @@ qlog doctor --json
 
 ## Install
 
-Install a released version with Go:
-
-```bash
-go install github.com/janpereira-dev/quantum_log/cmd/qlog@v0.3.0
-qlog --version
-```
+Install a verified published binary following [Install](../INSTALL.md). Do not
+use `go install` as an end-user release channel: it bypasses the release archive
+and its checksum verification.
 
 For development, build from this checkout:
 

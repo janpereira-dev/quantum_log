@@ -25,16 +25,17 @@ qlog usage project <project-slug> --json
 
 ## Collector recovery
 
-The collector listens on loopback and is installed as a user-level service. On Windows, qlog falls back to a user process when Task Scheduler policy denies registration. Hooks and plugins are best-effort and never fail the agent; the next event retries normal ingestion.
+The collector listens on loopback and is installed as a user-level service when
+the platform manager permits it. On Windows, a Task Scheduler access-denied result
+does **not** create a detached process or a `Run`-key Startup entry. Setup continues
+with the detected adapters and reports the collector as blocked by external policy.
+Start `qlog collector serve --home <home>` explicitly for the active session before
+using an OTLP-only source. Without a listening collector, OTLP enrichment is absent;
+direct qlog hooks remain best-effort and never fail the agent.
 
-This installation is persistent. On Windows, the access-denied fallback writes
-the qlog-owned `QUANTUM_LOG Collector` value under
-`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, which makes `qlog.exe`
-visible in Startup apps. Removing it while an OTLP-only adapter remains configured
-causes silent gaps in future capture. See
-[ADR-005: collector lifecycle](architecture/ADR-005-collector-lifecycle.md) for
-the current requirement, cleanup contract, architectural debt, and proposed
-explicit opt-in direction.
+`collector uninstall` still removes a legacy qlog-owned `QUANTUM_LOG Collector`
+value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` if an older
+version created it. See [ADR-005: collector lifecycle](architecture/ADR-005-collector-lifecycle.md).
 
 ## Support matrix
 
@@ -64,8 +65,13 @@ No P0 run persisted a real external agent event. Persisted-payload privacy inspe
 ## Cleanup
 
 ```bash
-qlog adapter uninstall <adapter> --json
-qlog collector uninstall --json
+qlog uninstall --json
 ```
 
-These remove qlog-owned configuration and managed collector state. They do not erase local ledger automatically.
+This removes every qlog-owned adapter configuration, the managed collector, and
+legacy Windows `Run`-key state. It does not erase local ledger data. Use
+`qlog uninstall --purge-data` only when the ledger itself must be deleted.
+
+Copilot CLI uses only prompt and session lifecycle hooks. Tool and subagent hooks
+are deliberately not installed: they create a process for every agent tool event
+and are unsuitable for lightweight local capture.

@@ -9,6 +9,7 @@ $ErrorActionPreference = 'Stop'
 $installDir = if ($env:QLOG_INSTALL_DIR) { $env:QLOG_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\QUANTUM_LOG\bin' }
 $modifyPath = $true
 $dryRun = $false
+$purgeData = $false
 
 function Show-Usage {
     @'
@@ -17,10 +18,11 @@ Usage: uninstall.ps1 [options]
 Options:
   --install-dir DIRECTORY Remove qlog from DIRECTORY.
   --no-modify-path        Leave the user PATH unchanged.
+  --purge-data            Also delete the local QUANTUM_LOG ledger after cleanup.
   --dry-run               Print planned changes without writing files.
   --help                  Show this help.
 
-Local QUANTUM_LOG configuration and database files are never removed.
+By default, local QUANTUM_LOG ledger data is preserved.
 '@ | Write-Output
 }
 
@@ -37,6 +39,7 @@ for ($index = 0; $index -lt $Arguments.Count; $index++) {
         }
         '^--install-dir=(.+)$' { $installDir = $Matches[1]; continue }
         '^--no-modify-path$' { $modifyPath = $false; continue }
+        '^--purge-data$' { $purgeData = $true; continue }
         '^--dry-run$' { $dryRun = $true; continue }
         '^--help$|^-h$' { Show-Usage; exit 0 }
         default { Fail "unknown option: $argument" }
@@ -48,14 +51,21 @@ $target = Join-Path $installDir 'qlog.exe'
 Write-Output "binary: $target"
 if ($modifyPath) { Write-Output "user PATH: $installDir" }
 if ($dryRun) {
-    Write-Output 'dry-run: no files changed; local data is preserved'
+	Write-Output 'dry-run: no files changed; qlog-owned setup and local data are preserved'
     exit 0
 }
 
 if (Test-Path -LiteralPath $target) {
+	$cleanupArguments = @('uninstall', '--json')
+	if ($purgeData) { $cleanupArguments += '--purge-data' }
+	& $target @cleanupArguments
+	if ($LASTEXITCODE -ne 0) {
+		Fail "qlog-owned cleanup failed; retained $target so cleanup can be retried"
+	}
     Remove-Item -LiteralPath $target -Force
     Write-Output "removed $target"
 } else {
+	if ($purgeData) { Fail '--purge-data requires the installed qlog binary to remove qlog-owned setup safely' }
     Write-Output "qlog is not present at $target"
 }
 
@@ -72,4 +82,8 @@ if (Test-Path -LiteralPath $installDir) {
     $remaining = @(Get-ChildItem -LiteralPath $installDir -Force)
     if ($remaining.Count -eq 0) { Remove-Item -LiteralPath $installDir -Force }
 }
-Write-Output 'uninstalled qlog; local QUANTUM_LOG data was preserved'
+if ($purgeData) {
+	Write-Output 'uninstalled qlog and removed local QUANTUM_LOG data'
+} else {
+	Write-Output 'uninstalled qlog; local QUANTUM_LOG data was preserved'
+}

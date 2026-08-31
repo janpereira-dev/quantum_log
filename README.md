@@ -22,7 +22,10 @@ Capture quality is explicit. Provider-reported, agent-reported, lifecycle-only, 
 
 ## Auto-capture ledger
 
-Run `qlog setup --yes`, restart configured agents, and use them normally. The collector is managed as a user-level loopback service and hooks/plugins use the installed absolute qlog binary. Every native prompt creates one canonical interaction; model and tool calls are linked children.
+Run `qlog setup --yes`, restart configured agents, and use them normally. The collector is managed as a user-level loopback service when the platform manager permits it; hooks/plugins use the installed absolute qlog binary. On Windows, a Task Scheduler policy denial does not create a Startup-app fallback: use an explicit foreground collector for OTLP capture. Every native prompt creates one canonical interaction; model and tool calls are linked children.
+
+To remove qlog-owned startup, collector, and adapter configuration in one step,
+run `qlog uninstall`. It retains the local ledger unless `--purge-data` is explicit.
 
 | Agent | Interaction | Prompt | Tokens | Cache | Cost | Duration | Tools |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -36,15 +39,11 @@ Run `qlog setup --yes`, restart configured agents, and use them normally. The co
 
 ## Quick start
 
-```powershell
-cmd /c "set QLOG_INSTALL_LOCAL_ARTIFACT_DIR=C:\path\to\dist&& npm install --prefix C:\qlog-install .\packaging\npm"
-```
-
-The source CLI currently declares `v0.4.0-rc.7`, but the local npm distribution
-package still declares `v0.3.2-rc.3`. Therefore this npm command is a legacy
-packaging-validation path, not proof that rc.7 was installed. See the explicit
-version boundary in [Install](docs/INSTALL.md). For auto-capture and reports, use
-[Auto-capture](docs/AUTOCAPTURE.md).
+There is no stable public release yet. Do not use `go install` or the legacy npm
+package to evaluate an RC: both bypass the verified release channel and can point
+at an older candidate. When the RC artifact is published, select it explicitly
+with the verified installer described in [Install](docs/INSTALL.md). For
+auto-capture and reports, use [Auto-capture](docs/AUTOCAPTURE.md).
 
 ## License
 

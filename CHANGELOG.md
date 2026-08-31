@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.0-rc9 - 2026-08-31
+
+- Added `qlog uninstall` as the single safe teardown command for every qlog-owned adapter configuration, managed collector, and legacy Windows Startup fallback. Ledger data remains intact unless `--purge-data` is explicit.
+- Made the Windows binary uninstaller call the same teardown before removing `qlog.exe`, so an uninstall cannot silently leave a scheduled collector, Startup entry, or configured hooks behind.
+- Reduced Copilot CLI from nine hooks to the three low-frequency prompt/session hooks, forwards them to the loopback collector, removes the `cmd.exe` PowerShell error path, and bounds unavailable-collector work to 500 ms.
+- Marked the Windows scheduled task hidden and retained its single-instance policy. This remains a prerelease pending real-device validation that no visible consoles or orphaned qlog processes remain after setup, restart, and uninstall.
+- Release candidates now use the GoReleaser-recognized `-rcN` tag format and cannot become GitHub's `latest` release.
+
+## 0.4.0-rc.8 - 2026-08-31
+
+- Removed the Windows current-user `Run`-key collector fallback. When Task Scheduler is unavailable by policy, setup leaves no detached collector or startup entry and reports that a foreground collector is required for the active OTLP session (#48).
+- Guarded setup and recovery against replacing an installed collector with a different executable, ledger home, or listener, and against treating a foreground process as the managed collector.
+- Validated the release candidate on Ubuntu, macOS, and Windows, including race detection, Windows collector lifecycle tests, installer dry runs, static analysis, and security checks.
+- This remains a prerelease. It does not establish external end-to-end evidence for automatic capture in Codex, Copilot CLI, or VS Code, and it is not a stable `0.4.0` release.
+
 ## 0.4.0-rc.7 - 2026-08-19
 
 - Fixed managed PowerShell Copilot launchers to resolve one `copilot` application while preserving `PATH` precedence, preventing multiple candidate paths from being invoked as one command (#45).

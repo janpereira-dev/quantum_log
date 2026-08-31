@@ -92,8 +92,8 @@ func TestInstallersBootstrapWithDurableExecutableAndHealthCheck(t *testing.T) {
 
 func TestInstallersResolveChannelsUnlessVersionIsExplicit(t *testing.T) {
 	cases := map[string][]string{
-		"installers/install.sh":  {"QLOG_RELEASE_VERSION:-", "releases/latest", "resolve_release"},
-		"installers/install.ps1": {"QLOG_RELEASE_VERSION", "releases/latest", "Resolve-Release"},
+		"installers/install.sh":  {"QLOG_RELEASE_VERSION:-", "releases/latest", "releases?per_page=100", "GitHub returned prerelease", "resolve_release"},
+		"installers/install.ps1": {"QLOG_RELEASE_VERSION", "releases/latest", "releases?per_page=100", "GitHub returned prerelease", "Resolve-Release"},
 	}
 	for name, required := range cases {
 		t.Run(name, func(t *testing.T) {
