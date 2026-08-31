@@ -5,6 +5,44 @@ Install `qlog`, then initialize a local ledger. The source CLI currently declare
 not yet been aligned with the current CLI candidate. Existing P0 evidence covers
 prior candidates only, not a public release acceptance.
 
+## Verified published release installer
+
+Use the release installer, not `go install` or the legacy npm package. It
+downloads the matching GitHub Release archive and verifies its SHA-256 entry in
+`checksums.txt` before replacing the binary.
+
+After `v0.4.0-rc9` is published, install that exact release on macOS or Linux:
+
+```sh
+curl --fail --location --remote-name https://raw.githubusercontent.com/janpereira-dev/quantum_log/v0.4.0-rc9/installers/install.sh
+sh install.sh --version v0.4.0-rc9
+```
+
+On Windows PowerShell:
+
+```powershell
+Invoke-WebRequest https://raw.githubusercontent.com/janpereira-dev/quantum_log/v0.4.0-rc9/installers/install.ps1 -OutFile .\install.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 --version v0.4.0-rc9
+```
+
+Use `--channel latest` only to evaluate the newest published candidate; it can
+select prereleases. The default `stable` channel deliberately excludes alpha,
+beta, and RC releases.
+
+```sh
+sh install.sh --channel latest
+```
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 --channel latest
+```
+
+The operator must first create and push the release tag (for example,
+`git tag -a v0.4.0-rc9 -m "release: v0.4.0-rc9"` followed by `git push origin
+v0.4.0-rc9`). The pushed `v*` tag triggers the release workflow, which then
+publishes the artifacts and GitHub Release consumed by these installers. Until
+that completes, no public RC artifact exists.
+
 ## Legacy local packaging validation (not an RC install)
 
 Requires Node.js 18 or later.
@@ -27,10 +65,10 @@ C:\qlog-install\node_modules\.bin\qlog.cmd --version
 
 P0 observed `qlog 0.3.2-rc.1`; one P0-11 extracted artifact also embedded commit `dba6ca4040b93b889ead41ec90d4b2ffd19226c1`. Do not substitute an older tag or archive.
 
-**No public RC artifact exists yet.** Do not attempt `go install ...@v0.4.0-rc9`:
-the tag does not exist until the release workflow publishes it. A future RC must
-be installed by an explicit verified release tag; the default `stable` channel
-will reject all prerelease tags.
+**No public RC artifact exists yet.** Do not attempt `go install ...@v0.4.0-rc9`.
+Create and push the tag first; the release workflow publishes its artifacts
+afterward. Install an RC by its explicit verified release tag, while the default
+`stable` channel continues to reject prerelease tags.
 
 ## Optional local setup
 

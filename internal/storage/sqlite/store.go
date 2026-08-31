@@ -459,6 +459,13 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	if err != nil {
 		return nil, writerQuiescenceError(err)
 	}
+	if _, err := os.Stat(purgeMarkerPath(absolutePath)); err == nil {
+		_ = quiescence.Close()
+		return nil, errors.New("ledger purge is in progress; retry after it completes")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		_ = quiescence.Close()
+		return nil, fmt.Errorf("inspect ledger purge marker: %w", err)
+	}
 	writerLock, err := storelock.AcquireExclusive(writerLockPath(absolutePath))
 	if err != nil {
 		_ = quiescence.Close()
@@ -2894,6 +2901,8 @@ func ensureParent(path string) error {
 func quiescenceLockPath(databasePath string) string { return databasePath + ".quiescence.lock" }
 
 func writerLockPath(databasePath string) string { return databasePath + ".writer.lock" }
+
+func purgeMarkerPath(databasePath string) string { return databasePath + ".purge.pending" }
 
 func writerQuiescenceError(err error) error {
 	if errors.Is(err, storelock.ErrContended) {
