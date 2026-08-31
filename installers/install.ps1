@@ -21,8 +21,8 @@ Usage: install.ps1 [options]
 
 Options:
   --version VERSION       Install a fixed release version (for example, v1.2.3).
-  --channel CHANNEL       stable (default) or latest. Both resolve GitHub's latest
-                            non-prerelease release until a separate latest channel exists.
+  --channel CHANNEL       stable (default) installs only a non-prerelease release.
+                            latest includes prereleases; use it only for evaluation.
   --install-dir DIRECTORY Install qlog in DIRECTORY.
     --no-modify-path        Do not add the install directory to the user PATH.
     --bootstrap             Consent to bootstrap qlog collector and detected supported adapters.
@@ -42,8 +42,20 @@ function Fail([string]$Message) {
 }
 
 function Resolve-Release {
-    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$repository/releases/latest" -Headers @{ 'User-Agent' = 'qlog-installer' }
+    $headers = @{ 'User-Agent' = 'qlog-installer' }
+    if ($channel -eq 'stable') {
+        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$repository/releases/latest" -Headers $headers
+    } else {
+        $release = @(Invoke-RestMethod -Uri "https://api.github.com/repos/$repository/releases?per_page=100" -Headers $headers |
+            Where-Object { -not $_.draft } |
+            Sort-Object published_at -Descending |
+            Select-Object -First 1)
+        if ($release.Count -eq 1) { $release = $release[0] }
+    }
     if ([string]::IsNullOrWhiteSpace($release.tag_name)) { Fail "could not resolve latest release for channel $channel" }
+    if ($channel -eq 'stable' -and $release.tag_name -match '-(?:alpha|beta|rc)(?:[.-]?\d+)?(?:$|\+)') {
+        Fail "GitHub returned prerelease $($release.tag_name) for stable; no stable qlog release is available"
+    }
     return $release.tag_name
 }
 

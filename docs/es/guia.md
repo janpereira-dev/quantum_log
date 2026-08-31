@@ -7,7 +7,7 @@ Esta guía lleva desde un libro mayor local vacío hasta evidencia de uso verifi
 ## Camino rápido
 
 ```bash
-go install github.com/janpereira-dev/quantum_log/cmd/qlog@v0.3.0
+# Primero instala un binario publicado siguiendo ../INSTALL.md.
 qlog init
 qlog project register --path . --name MY_PROJECT
 qlog project current --json
@@ -19,12 +19,9 @@ qlog doctor --json
 
 ## Instalación
 
-Instala versión publicada con Go:
-
-```bash
-go install github.com/janpereira-dev/quantum_log/cmd/qlog@v0.3.0
-qlog --version
-```
+Instala un binario publicado y verificado siguiendo [Install](../INSTALL.md).
+No uses `go install` como canal de distribución para usuarios: evita el archivo
+de release y su verificación de checksum.
 
 Para desarrollo, compila desde este checkout:
 

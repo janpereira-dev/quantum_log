@@ -17,8 +17,8 @@ Usage: install.sh [options]
 
 Options:
   --version VERSION       Install a fixed release version (for example, v1.2.3).
-  --channel CHANNEL       stable (default) or latest. Both resolve GitHub's latest
-                            non-prerelease release until a separate latest channel exists.
+  --channel CHANNEL       stable (default) installs only a non-prerelease release.
+                            latest includes prereleases; use it only for evaluation.
   --install-dir DIRECTORY Install qlog in DIRECTORY (default: ~/.local/bin).
   --no-modify-path        Do not edit ~/.profile or QLOG_PROFILE.
   --bootstrap             Consent to bootstrap qlog collector and detected supported adapters.
@@ -90,9 +90,16 @@ download_stdout() {
 }
 
 resolve_release() {
-  api="https://api.github.com/repos/$REPOSITORY/releases/latest"
+  if [ "$CHANNEL" = stable ]; then
+    api="https://api.github.com/repos/$REPOSITORY/releases/latest"
+  else
+    api="https://api.github.com/repos/$REPOSITORY/releases?per_page=100"
+  fi
   tag=$(download_stdout "$api" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
   [ -n "$tag" ] || fail "could not resolve latest release for channel $CHANNEL"
+  if [ "$CHANNEL" = stable ] && printf '%s' "$tag" | grep -Eq -- '-(alpha|beta|rc)([.-]?[0-9]+)?($|\+)'; then
+    fail "GitHub returned prerelease $tag for stable; no stable qlog release is available"
+  fi
   printf '%s\n' "$tag"
 }
 

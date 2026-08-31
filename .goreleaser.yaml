@@ -35,7 +35,12 @@ changelog:
       - '^test:'
 release:
   prerelease: auto
+  # RC tags deliberately use the form -rcN (for example v0.4.0-rc9). That is
+  # the prerelease indicator understood by GoReleaser's `auto` mode.
+  # Keep prereleases out of GitHub's /releases/latest endpoint even if a
+  # hosting-side classification changes unexpectedly.
+  make_latest: '{{ if or (contains .Tag "-alpha") (contains .Tag "-beta") (contains .Tag "-rc") }}false{{ else }}true{{ end }}'
   footer: |
     Full project history: https://github.com/janpereira-dev/quantum_log/blob/{{ .Tag }}/CHANGELOG.md
 snapshot:
-  version_template: "0.4.0-rc.9"
+  version_template: "0.4.0-rc9"
