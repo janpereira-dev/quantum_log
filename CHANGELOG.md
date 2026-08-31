@@ -1,11 +1,12 @@
 # Changelog
 
-## 0.4.0-rc.9 - 2026-08-31
+## 0.4.0-rc9 - 2026-08-31
 
 - Added `qlog uninstall` as the single safe teardown command for every qlog-owned adapter configuration, managed collector, and legacy Windows Startup fallback. Ledger data remains intact unless `--purge-data` is explicit.
 - Made the Windows binary uninstaller call the same teardown before removing `qlog.exe`, so an uninstall cannot silently leave a scheduled collector, Startup entry, or configured hooks behind.
 - Reduced Copilot CLI from nine hooks to the three low-frequency prompt/session hooks, forwards them to the loopback collector, removes the `cmd.exe` PowerShell error path, and bounds unavailable-collector work to 500 ms.
 - Marked the Windows scheduled task hidden and retained its single-instance policy. This remains a prerelease pending real-device validation that no visible consoles or orphaned qlog processes remain after setup, restart, and uninstall.
+- Release candidates now use the GoReleaser-recognized `-rcN` tag format and cannot become GitHub's `latest` release.
 
 ## 0.4.0-rc.8 - 2026-08-31
 
