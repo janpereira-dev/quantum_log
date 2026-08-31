@@ -90,7 +90,7 @@ func newCollectorCommand(home *string) *cobra.Command {
 		}, home, &listen),
 		collectorLifecycleCommand("stop", "Stop managed collector", func(manager collectorManager, _, _ string) (CollectorStatus, error) { return manager.Stop() }, home, &listen),
 		collectorLifecycleCommand("restart", "Restart managed collector", func(manager collectorManager, home, listen string) (CollectorStatus, error) {
-			return restartCollectorAfterSchedulerDenied(manager, home, listen)
+			return restartManagedCollector(manager, home, listen)
 		}, home, &listen),
 		collectorLogsCommand(),
 		collectorLifecycleCommand("uninstall", "Uninstall managed collector", func(manager collectorManager, _, _ string) (CollectorStatus, error) { return manager.Uninstall() }, home, &listen),

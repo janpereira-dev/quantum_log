@@ -48,7 +48,7 @@ $env:QLOG_HOME = "$env:LOCALAPPDATA\QUANTUM_LOG"
 & $qlog setup --dry-run --json
 ```
 
-On P0 Windows host, Task Scheduler denied managed collector creation with `Acceso denegado`. Setup still configured detected integrations and recorded collector health. See [collector recovery](AUTOCAPTURE.md#collector-recovery) and [ADR-005](architecture/ADR-005-collector-lifecycle.md) before changing persistent collector state.
+On Windows, if Task Scheduler denies managed collector creation with `Acceso denegado`, setup still configures detected integrations but does not create a detached process or a Startup-app fallback. Start `qlog collector serve --home <home>` in the active session before using an OTLP-only source. See [collector recovery](AUTOCAPTURE.md#collector-recovery) and [ADR-005](architecture/ADR-005-collector-lifecycle.md).
 
 ## Cleanup
 

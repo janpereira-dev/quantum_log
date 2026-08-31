@@ -83,9 +83,6 @@ func TestSetupPlanDoesNotRequireDurableExecutable(t *testing.T) {
 }
 
 func TestSetupContinuesAfterCollectorExternalPolicyDenial(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("requires Windows Task Scheduler policy diagnostics")
-	}
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
 	manager := &policyDeniedCollectorManager{}
 
@@ -93,29 +90,147 @@ func TestSetupContinuesAfterCollectorExternalPolicyDenial(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bootstrapSupportedAdapters() error = %v", err)
 	}
-	if !result.Collector.Installed || !result.Collector.Started {
-		t.Fatalf("collector = %#v, want installed and started user fallback", result.Collector)
+	if result.Collector.Installed || result.Collector.Started || result.Collector.Healthy {
+		t.Fatalf("collector = %#v, want scheduler-blocked collector without a fallback", result.Collector)
 	}
-	for _, want := range []string{"Acceso denegado", "user fallback installed and started"} {
+	for _, want := range []string{"Acceso denegado", "collector activation blocked by external policy"} {
 		if !strings.Contains(strings.Join(result.Collector.Actions, "\n"), want) {
 			t.Fatalf("collector actions = %q, want %q", result.Collector.Actions, want)
 		}
 	}
+	if got := adapterIDs(result.Adapters); !slices.Equal(got, []string{"claude-code", "codex", "copilot", "copilot-vscode", "opencode"}) {
+		t.Fatalf("adapters = %v, want setup to continue after policy denial", got)
+	}
 }
 
-func TestSetupSchedulerDeniedFallbackRemainsRestartable(t *testing.T) {
-	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
+func TestCollectorRestartDoesNotCreateFallbackAfterSchedulerPolicyDenial(t *testing.T) {
 	manager := &policyDeniedCollectorManager{}
+	if _, err := restartManagedCollector(manager, t.TempDir(), defaultCollectorListen); err == nil {
+		t.Fatal("restart unexpectedly recovered from Scheduler policy denial")
+	}
+}
+
+func TestCollectorRestartResumesExistingTaskWithoutProvisioning(t *testing.T) {
+	manager := &stoppedPolicyDeniedCollectorManager{}
+	if _, err := restartExistingCollector(manager, defaultCollectorListen); err != nil {
+		t.Fatalf("restartExistingCollector() error = %v", err)
+	}
+	if !manager.restored {
+		t.Fatal("restart did not resume the existing collector")
+	}
+}
+
+func TestSetupRestoresStoppedCollectorAfterSchedulerPolicyDenial(t *testing.T) {
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
+	manager := &stoppedPolicyDeniedCollectorManager{}
+	manager.started = true
 
 	result, err := bootstrapSupportedAdapters(context.Background(), t.TempDir(), temporaryDurableExecutable(t), true, false, adapters.Default(), manager)
 	if err != nil {
 		t.Fatalf("bootstrapSupportedAdapters() error = %v", err)
 	}
-	if _, err := restartCollectorAfterSchedulerDenied(manager, t.TempDir(), defaultCollectorListen); err != nil {
-		t.Fatalf("restart after Scheduler denial: %v", err)
+	if !manager.restored || manager.stopped || !result.Collector.Started {
+		t.Fatalf("collector = %#v manager = %#v, want stopped collector restored", result.Collector, manager)
 	}
-	if !result.Collector.Installed || !manager.restartedFallback {
-		t.Fatalf("collector=%#v manager=%#v, want installed restarted fallback", result.Collector, manager)
+	if !strings.Contains(strings.Join(result.Collector.Actions, "\n"), "existing collector restored after Scheduler policy denial") {
+		t.Fatalf("collector actions = %#v", result.Collector.Actions)
+	}
+}
+
+func TestSetupRejectsDifferentTargetForActiveManagedCollector(t *testing.T) {
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
+	manager := &differentTargetPolicyDeniedCollectorManager{configuredHome: filepath.Join(t.TempDir(), "different-home")}
+	manager.started = true
+
+	_, err := bootstrapSupportedAdapters(context.Background(), t.TempDir(), temporaryDurableExecutable(t), true, false, adapters.Default(), manager)
+	if err == nil || !strings.Contains(err.Error(), "uninstall it before replacing") {
+		t.Fatalf("bootstrapSupportedAdapters() error = %v", err)
+	}
+	if manager.restored || manager.stopped {
+		t.Fatalf("manager = %#v, want active collector left untouched", manager)
+	}
+}
+
+func TestSetupRejectsDifferentTargetForStoppedManagedCollector(t *testing.T) {
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
+	manager := &differentTargetPolicyDeniedCollectorManager{configuredHome: filepath.Join(t.TempDir(), "different-home")}
+
+	_, err := bootstrapSupportedAdapters(context.Background(), t.TempDir(), temporaryDurableExecutable(t), true, false, adapters.Default(), manager)
+	if err == nil || !strings.Contains(err.Error(), "uninstall it before replacing") {
+		t.Fatalf("bootstrapSupportedAdapters() error = %v", err)
+	}
+	if manager.stopped || manager.installed || manager.started {
+		t.Fatalf("manager = %#v, want persisted collector left untouched", manager)
+	}
+}
+
+func TestSetupReportsStoppedCollectorStillInstalledAfterSchedulerPolicyDenial(t *testing.T) {
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
+	manager := &stoppedPolicyDeniedCollectorManager{}
+	manager.stopped = true
+
+	result, err := bootstrapSupportedAdapters(context.Background(), t.TempDir(), temporaryDurableExecutable(t), true, false, adapters.Default(), manager)
+	if err != nil {
+		t.Fatalf("bootstrapSupportedAdapters() error = %v", err)
+	}
+	if !result.Collector.Installed || result.Collector.Started {
+		t.Fatalf("collector = %#v, want installed but stopped existing collector", result.Collector)
+	}
+	if !strings.Contains(strings.Join(result.Collector.Actions, "\n"), "existing collector remains installed") {
+		t.Fatalf("collector actions = %#v", result.Collector.Actions)
+	}
+}
+
+func TestSetupRejectsLegacyWindowsFallback(t *testing.T) {
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
+	manager := &legacyFallbackCollectorManager{}
+
+	_, err := bootstrapSupportedAdapters(context.Background(), t.TempDir(), temporaryDurableExecutable(t), true, false, adapters.Default(), manager)
+	if err == nil || !strings.Contains(err.Error(), "legacy Windows Run-key fallback") {
+		t.Fatalf("bootstrapSupportedAdapters() error = %v", err)
+	}
+	if manager.installed || manager.started {
+		t.Fatalf("legacy fallback was replaced: %#v", manager)
+	}
+}
+
+func TestSameCollectorTargetCleansEquivalentHomes(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "ledger")
+	if !sameCollectorTarget(home, defaultCollectorListen, filepath.Join(home, "."), defaultCollectorListen) {
+		t.Fatal("equivalent collector homes were treated as different")
+	}
+}
+
+func TestSetupRejectsMatchingHomeAndListenerWhenInstalledExecutableDiffers(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "ledger")
+	manager := &executableMismatchCollectorManager{}
+	err := rejectActiveCollectorTargetChange(context.Background(), manager, home, defaultCollectorListen, home, defaultCollectorListen)
+	if err == nil || !strings.Contains(err.Error(), "uninstall it before") {
+		t.Fatalf("rejectActiveCollectorTargetChange() error = %v", err)
+	}
+}
+
+func TestSetupDoesNotStopForegroundCollector(t *testing.T) {
+	manager := &foregroundCollectorManager{}
+	stopped, err := stopCollectorForLedgerInitialization(context.Background(), manager, defaultCollectorListen)
+	if err != nil {
+		t.Fatalf("stopCollectorForLedgerInitialization() error = %v", err)
+	}
+	if stopped || manager.stopCalled {
+		t.Fatalf("foreground collector was treated as managed: %#v", manager)
+	}
+}
+
+func TestSetupRefusesToReplaceForegroundCollector(t *testing.T) {
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
+	manager := &foregroundCollectorManager{}
+
+	_, err := bootstrapSupportedAdapters(context.Background(), t.TempDir(), temporaryDurableExecutable(t), true, false, adapters.Default(), manager)
+	if err == nil || !strings.Contains(err.Error(), "foreground collector already owns listener") {
+		t.Fatalf("bootstrapSupportedAdapters() error = %v", err)
+	}
+	if manager.stopCalled || manager.installed || manager.started {
+		t.Fatalf("foreground collector was replaced: %#v", manager)
 	}
 }
 
@@ -166,7 +281,7 @@ func TestSetupStopsActiveCollectorBeforeLedgerInitialization(t *testing.T) {
 	}
 }
 
-func TestSetupRestoresCollectorAfterLedgerInitializationFailure(t *testing.T) {
+func TestSetupRejectsDifferentTargetBeforeLedgerInitialization(t *testing.T) {
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
 	home := filepath.Join(t.TempDir(), "blocked-home")
 	if err := os.WriteFile(home, []byte("not a directory"), 0o600); err != nil {
@@ -174,14 +289,12 @@ func TestSetupRestoresCollectorAfterLedgerInitializationFailure(t *testing.T) {
 	}
 	previousHome := t.TempDir()
 	manager := &managedActiveCollectorManager{configuredHome: previousHome, configuredListen: "127.0.0.1:14318"}
-	if _, err := bootstrapSupportedAdapters(context.Background(), home, temporaryDurableExecutable(t), true, false, adapters.Default(), manager); err == nil {
-		t.Fatal("setup succeeded with an invalid ledger home")
+	_, err := bootstrapSupportedAdapters(context.Background(), home, temporaryDurableExecutable(t), true, false, adapters.Default(), manager)
+	if err == nil || !strings.Contains(err.Error(), "uninstall it before replacing") {
+		t.Fatalf("bootstrapSupportedAdapters() error = %v", err)
 	}
-	if !manager.stopped || !manager.started {
-		t.Fatalf("collector lifecycle = %#v, want stopped then restored", manager)
-	}
-	if manager.startedHome != previousHome || manager.startedListen != manager.configuredListen {
-		t.Fatalf("collector restored with (%q, %q), want (%q, %q)", manager.startedHome, manager.startedListen, previousHome, manager.configuredListen)
+	if manager.stopped || manager.started {
+		t.Fatalf("collector lifecycle = %#v, want active collector untouched", manager)
 	}
 }
 
@@ -362,8 +475,24 @@ type ledgerCheckingCollectorManager struct {
 
 type policyDeniedCollectorManager struct {
 	fakeCollectorManager
-	restartedFallback bool
 }
+
+type stoppedPolicyDeniedCollectorManager struct {
+	activeCollectorManager
+	restored bool
+}
+
+type differentTargetPolicyDeniedCollectorManager struct {
+	stoppedPolicyDeniedCollectorManager
+	configuredHome string
+}
+
+type foregroundCollectorManager struct {
+	fakeCollectorManager
+	stopCalled bool
+}
+
+type legacyFallbackCollectorManager struct{ fakeCollectorManager }
 
 type genericAccessDeniedCollectorManager struct{ fakeCollectorManager }
 
@@ -379,6 +508,14 @@ type managedActiveCollectorManager struct {
 	configuredHome   string
 	configuredListen string
 }
+
+type executableMismatchCollectorManager struct{ fakeCollectorManager }
+
+func (*executableMismatchCollectorManager) Status(_ context.Context, listen string) (CollectorStatus, error) {
+	return CollectorStatus{Installed: true, Listen: listen}, nil
+}
+
+func (*executableMismatchCollectorManager) MatchesInstalledTarget(_, _ string) bool { return false }
 
 func (m *managedActiveCollectorManager) ResolveManagedCollectorSettings(home, listen string, homeExplicit, listenExplicit bool) (string, string) {
 	if !homeExplicit {
@@ -414,19 +551,42 @@ func (*policyDeniedCollectorManager) Install(_, _ string) (CollectorStatus, erro
 	return CollectorStatus{}, errors.New(`task scheduler operation /Create for task "QUANTUM_LOG Collector" failed: exit status 1: Error: Acceso denegado.`)
 }
 
-func (m *policyDeniedCollectorManager) InstallFallback(_, listen string) (CollectorStatus, error) {
-	m.installed = true
-	m.started = true
-	return CollectorStatus{Installed: true, Running: true, Listen: listen, Message: "user fallback installed and started"}, nil
-}
-
 func (m *policyDeniedCollectorManager) Restart(_, listen string) (CollectorStatus, error) {
 	return CollectorStatus{}, errors.New(`task scheduler operation /Create for task "QUANTUM_LOG Collector" failed: exit status 1: Error: Acceso denegado.`)
 }
 
-func (m *policyDeniedCollectorManager) RestartFallback(_, listen string) (CollectorStatus, error) {
-	m.restartedFallback = true
-	return CollectorStatus{Installed: true, Running: true, Listen: listen, Message: "user fallback restarted"}, nil
+func (*stoppedPolicyDeniedCollectorManager) Install(_, _ string) (CollectorStatus, error) {
+	return CollectorStatus{}, errors.New(`task scheduler operation /Create for task "QUANTUM_LOG Collector" failed: exit status 1: Error: Acceso denegado.`)
+}
+
+func (m *stoppedPolicyDeniedCollectorManager) RestartExisting(listen string) (CollectorStatus, error) {
+	m.restored = true
+	m.stopped = false
+	m.started = true
+	return CollectorStatus{Installed: true, Running: true, Reachable: true, Listen: listen, Message: "existing collector restarted"}, nil
+}
+
+func (m *differentTargetPolicyDeniedCollectorManager) ResolveManagedCollectorSettings(home, listen string, homeExplicit, listenExplicit bool) (string, string) {
+	if !homeExplicit {
+		home = m.configuredHome
+	}
+	if !listenExplicit {
+		listen = "127.0.0.1:14318"
+	}
+	return home, listen
+}
+
+func (*foregroundCollectorManager) Status(_ context.Context, listen string) (CollectorStatus, error) {
+	return CollectorStatus{Installed: false, Running: true, ManagedHealth: true, Reachable: true, Listen: listen, Message: "foreground collector"}, nil
+}
+
+func (*legacyFallbackCollectorManager) Status(_ context.Context, listen string) (CollectorStatus, error) {
+	return CollectorStatus{Installed: true, Mode: "user_fallback", Listen: listen, Message: "legacy fallback"}, nil
+}
+
+func (m *foregroundCollectorManager) Stop() (CollectorStatus, error) {
+	m.stopCalled = true
+	return CollectorStatus{}, nil
 }
 
 func (*genericAccessDeniedCollectorManager) Install(_, _ string) (CollectorStatus, error) {

@@ -15,6 +15,6 @@ loopback collector are ingestion transports. Sources that push OTLP HTTP current
 require a listening collector; direct hooks and MCP-over-stdio integrations do not
 inherently require a permanent process.
 
-See [ADR-005](architecture/ADR-005-collector-lifecycle.md) for why Windows may show
-`qlog.exe` in Startup apps, the current Task Scheduler/registry fallback, its
-operational cost, and the proposed direction toward explicit collector opt-in.
+See [ADR-005](architecture/ADR-005-collector-lifecycle.md) for the Windows Task
+Scheduler policy boundary, cleanup of legacy Startup entries, and the direction
+toward explicit collector opt-in.

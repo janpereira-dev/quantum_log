@@ -79,10 +79,11 @@ The collector is local-first too. Its default listener is loopback, and non-loop
 The collector is transport infrastructure, not the ledger core. Push-based OTLP
 sources currently need it to remain reachable, while direct hooks and MCP over
 stdio can use a parent-owned, on-demand lifecycle. On Windows, setup can create a
-scheduled task or an access-denied fallback under the current-user `Run` registry
-key. [ADR-005](../architecture/ADR-005-collector-lifecycle.md) documents why this
-appears in Startup apps, the resulting architectural debt, safe cleanup, and the
-proposed explicit opt-in direction.
+scheduled task when Windows policy permits it. An access-denied result does not
+create a process or a current-user `Run` registry entry; run a foreground collector
+for that OTLP session instead. [ADR-005](../architecture/ADR-005-collector-lifecycle.md)
+documents the historical Startup entry, safe legacy cleanup, and the proposed
+explicit opt-in direction.
 
 ## Current delivery boundary
 

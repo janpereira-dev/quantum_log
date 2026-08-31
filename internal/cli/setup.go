@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -17,6 +18,14 @@ import (
 const defaultCollectorListen = "127.0.0.1:4318"
 
 var newSetupCollectorManager = newCollectorManager
+
+type collectorExistingRestarter interface {
+	RestartExisting(listen string) (CollectorStatus, error)
+}
+
+type collectorTargetMatcher interface {
+	MatchesInstalledTarget(home, listen string) bool
+}
 
 // BootstrapResult reports the consented collector and adapter setup actions.
 type BootstrapResult struct {
@@ -34,14 +43,6 @@ type CollectorBootstrapStatus struct {
 	Healthy   bool     `json:"healthy"`
 	Health    string   `json:"health,omitempty"`
 	Actions   []string `json:"actions"`
-}
-
-type collectorFallbackInstaller interface {
-	InstallFallback(home, listen string) (CollectorStatus, error)
-}
-
-type collectorFallbackRestarter interface {
-	RestartFallback(home, listen string) (CollectorStatus, error)
 }
 
 func newSetupCommand(home *string) *cobra.Command {
@@ -179,6 +180,15 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 	// different ledger. Resolve its persisted settings before stopping it so an
 	// initialization failure restores that exact collector instead of moving it.
 	activeCollectorHome, activeCollectorListen := resolveManagedCollectorSettings(manager, paths.Home, defaultCollectorListen, false, false)
+	if err := rejectLegacyWindowsFallback(ctx, manager, activeCollectorListen); err != nil {
+		return BootstrapResult{}, err
+	}
+	if err := rejectActiveCollectorTargetChange(ctx, manager, activeCollectorHome, activeCollectorListen, paths.Home, defaultCollectorListen); err != nil {
+		return BootstrapResult{}, err
+	}
+	if err := rejectForegroundCollectorReplacement(ctx, manager, defaultCollectorListen); err != nil {
+		return BootstrapResult{}, err
+	}
 	collectorStopped, err := stopCollectorForLedgerInitialization(ctx, manager, activeCollectorListen)
 	if err != nil {
 		return BootstrapResult{}, err
@@ -186,10 +196,10 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 	if collectorStopped {
 		result.Collector.Actions = append(result.Collector.Actions, "collector stopped temporarily for ledger initialization")
 		defer func() {
-			if resultErr == nil {
+			if resultErr == nil || !collectorStopped {
 				return
 			}
-			if _, restartErr := restartCollectorAfterSchedulerDenied(manager, activeCollectorHome, activeCollectorListen); restartErr != nil {
+			if _, restartErr := restartManagedCollector(manager, activeCollectorHome, activeCollectorListen); restartErr != nil {
 				resultErr = fmt.Errorf("%w; restore collector after setup failure: %v", resultErr, restartErr)
 			}
 		}()
@@ -202,22 +212,14 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 		return BootstrapResult{}, fmt.Errorf("close initialized ledger: %w", err)
 	}
 
+	collectorPolicyBlocked := false
 	installed, err := manager.Install(paths.Home, defaultCollectorListen)
 	if err != nil {
 		if !recordCollectorExternalPolicy(&result.Collector, err) {
 			return BootstrapResult{}, err
 		}
-		fallback, ok := manager.(collectorFallbackInstaller)
-		if !ok {
-			return BootstrapResult{}, fmt.Errorf("install Windows user fallback collector: unsupported collector manager")
-		}
-		fallbackStatus, fallbackErr := fallback.InstallFallback(paths.Home, defaultCollectorListen)
-		if fallbackErr != nil {
-			return BootstrapResult{}, fmt.Errorf("install Windows user fallback collector: %w", fallbackErr)
-		}
-		result.Collector.Installed = fallbackStatus.Installed
-		result.Collector.Started = fallbackStatus.Running
-		result.Collector.Actions = append(result.Collector.Actions, fallbackStatus.Message)
+		recordExistingCollectorInstallation(ctx, &result.Collector, manager, activeCollectorListen)
+		collectorPolicyBlocked = true
 	} else {
 		result.Collector.Installed = true
 		result.Collector.Actions = append(result.Collector.Actions, installed.Message)
@@ -226,10 +228,21 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 			if !recordCollectorExternalPolicy(&result.Collector, startErr) {
 				return BootstrapResult{}, startErr
 			}
+			collectorPolicyBlocked = true
 		} else {
 			result.Collector.Started = true
 			result.Collector.Actions = append(result.Collector.Actions, started.Message)
 		}
+	}
+	if collectorStopped && collectorPolicyBlocked {
+		restored, restoreErr := restartExistingCollector(manager, activeCollectorListen)
+		if restoreErr != nil {
+			return BootstrapResult{}, fmt.Errorf("restore existing collector after Scheduler policy denial: %w", restoreErr)
+		}
+		collectorStopped = false
+		result.Collector.Installed = restored.Installed
+		result.Collector.Started = restored.Running
+		result.Collector.Actions = append(result.Collector.Actions, "existing collector restored after Scheduler policy denial: "+restored.Message)
 	}
 	recordCollectorHealth(ctx, &result.Collector, manager)
 
@@ -249,7 +262,7 @@ func stopCollectorForLedgerInitialization(ctx context.Context, manager collector
 	// Reachability alone is not proof that the managed collector owns the
 	// endpoint: another local process can answer /healthz. Only stop and later
 	// restore a collector whose managed lifecycle reports it as running.
-	if err != nil || (!status.Running && !status.ManagedHealth) {
+	if err != nil || !status.Installed || (!status.Running && !status.ManagedHealth) {
 		return false, nil
 	}
 	if _, err := manager.Stop(); err != nil {
@@ -272,16 +285,69 @@ func isWindowsSchedulerPolicyDenial(err error) bool {
 	return strings.Contains(lower, "task scheduler operation /create") && (strings.Contains(lower, "access denied") || strings.Contains(lower, "acceso denegado"))
 }
 
-func restartCollectorAfterSchedulerDenied(manager collectorManager, home, listen string) (CollectorStatus, error) {
-	status, err := manager.Restart(home, listen)
-	if err == nil || !isWindowsSchedulerPolicyDenial(err) {
-		return status, err
-	}
-	fallback, ok := manager.(collectorFallbackRestarter)
+func restartManagedCollector(manager collectorManager, home, listen string) (CollectorStatus, error) {
+	return manager.Restart(home, listen)
+}
+
+func restartExistingCollector(manager collectorManager, listen string) (CollectorStatus, error) {
+	restarter, ok := manager.(collectorExistingRestarter)
 	if !ok {
-		return CollectorStatus{}, err
+		return CollectorStatus{}, fmt.Errorf("existing collector cannot be restarted without provisioning a new service")
 	}
-	return fallback.RestartFallback(home, listen)
+	return restarter.RestartExisting(listen)
+}
+
+func rejectActiveCollectorTargetChange(ctx context.Context, manager collectorManager, activeHome, activeListen, targetHome, targetListen string) error {
+	status, err := manager.Status(ctx, activeListen)
+	if err != nil || !status.Installed {
+		return nil
+	}
+	if sameCollectorTarget(activeHome, activeListen, targetHome, targetListen) && collectorTargetMatches(manager, targetHome, targetListen) {
+		return nil
+	}
+	return fmt.Errorf("installed collector does not match requested home %q, listener %q, and current qlog executable; uninstall it before replacing the managed collector", targetHome, targetListen)
+}
+
+func collectorTargetMatches(manager collectorManager, home, listen string) bool {
+	matcher, ok := manager.(collectorTargetMatcher)
+	return !ok || matcher.MatchesInstalledTarget(home, listen)
+}
+
+func sameCollectorTarget(activeHome, activeListen, targetHome, targetListen string) bool {
+	if activeListen != targetListen {
+		return false
+	}
+	activeHome = filepath.Clean(activeHome)
+	targetHome = filepath.Clean(targetHome)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(activeHome, targetHome)
+	}
+	return activeHome == targetHome
+}
+
+func rejectForegroundCollectorReplacement(ctx context.Context, manager collectorManager, listen string) error {
+	status, err := manager.Status(ctx, listen)
+	if err != nil || status.Installed || !status.Reachable || !status.ManagedHealth {
+		return nil
+	}
+	return fmt.Errorf("foreground collector already owns listener %q; stop it before installing a managed collector", listen)
+}
+
+func rejectLegacyWindowsFallback(ctx context.Context, manager collectorManager, listen string) error {
+	status, err := manager.Status(ctx, listen)
+	if err != nil || !status.Installed || status.Mode != "user_fallback" {
+		return nil
+	}
+	return fmt.Errorf("legacy Windows Run-key fallback is installed; run qlog collector uninstall before setup")
+}
+
+func recordExistingCollectorInstallation(ctx context.Context, result *CollectorBootstrapStatus, manager collectorManager, listen string) {
+	status, err := manager.Status(ctx, listen)
+	if err != nil || !status.Installed {
+		return
+	}
+	result.Installed = true
+	result.Actions = append(result.Actions, "existing collector remains installed after Scheduler policy denial: "+status.Message)
 }
 
 func recordCollectorHealth(ctx context.Context, status *CollectorBootstrapStatus, manager collectorManager) {
