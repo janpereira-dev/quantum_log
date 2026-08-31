@@ -59,6 +59,7 @@ func TestWindowsCollectorTaskDefinitionBoundsRestartOnFailure(t *testing.T) {
 	)
 	for _, want := range []string{
 		"<RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure>",
+		"<Hidden>true</Hidden>",
 		"<LogonType>InteractiveToken</LogonType>",
 		"<RunLevel>LeastPrivilege</RunLevel>",
 		"collector serve --listen 127.0.0.1:4318",

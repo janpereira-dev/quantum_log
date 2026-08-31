@@ -77,13 +77,13 @@ func (a copilotCLIAdapter) PlanInstall(_ context.Context, options SetupOptions) 
 		change.Description = "dry run: " + change.Description
 	}
 	changes := []SetupChange{change}
-	notes := []string{"installs prompt, lifecycle, tool, and subagent hooks plus persistent qlog-owned Copilot CLI OTel configuration"}
+	notes := []string{"installs prompt and session lifecycle hooks plus qlog-owned Copilot CLI OTel configuration"}
 	if runtime.GOOS == "windows" {
 		changes = append(changes, SetupChange{Path: "PowerShell CurrentUserCurrentHost profile", Action: "updated", Description: "adds a qlog-owned Copilot-only OTel launcher function"})
-		notes[0] = "installs lifecycle hooks plus a qlog-owned Windows PowerShell Copilot-only OTel launcher"
+		notes[0] = "installs prompt and session hooks plus a qlog-owned Windows PowerShell Copilot-only OTel launcher"
 	} else {
 		changes = append(changes, SetupChange{Path: a.posixProfilePath(), Action: "updated", Description: "adds a qlog-owned Copilot-only OTel shell function"})
-		notes[0] = "installs lifecycle hooks plus a qlog-owned shell Copilot-only OTel launcher"
+		notes[0] = "installs prompt and session hooks plus a qlog-owned shell Copilot-only OTel launcher"
 	}
 	notes = append(notes, "OTel content capture remains disabled; clean-device source evidence is still required")
 	quality, state := CaptureOTELReported, SetupAvailable
@@ -214,18 +214,12 @@ func copilotCLIHooksConfig(home, executablePath string) string {
 	return fmt.Sprintf(`{
   "version": 1,
   "hooks": {
-    "sessionStart": [{"type":"command","command":%q,"bash":%q,"powershell":%q,"timeoutSec":5}],
-    "sessionEnd": [{"type":"command","command":%q,"bash":%q,"powershell":%q,"timeoutSec":5}],
-    "userPromptSubmitted": [{"type":"command","command":%q,"bash":%q,"powershell":%q,"timeoutSec":5}],
-    "agentStop": [{"type":"command","command":%q,"bash":%q,"powershell":%q,"timeoutSec":5}],
-    "errorOccurred": [{"type":"command","command":%q,"bash":%q,"powershell":%q,"timeoutSec":5}],
-    "preToolUse": [{"type":"command","command":%q,"bash":%q,"powershell":%q,"timeoutSec":5}],
-    "postToolUse": [{"type":"command","command":%q,"bash":%q,"powershell":%q,"timeoutSec":5}],
-    "subagentStart": [{"type":"command","command":%q,"bash":%q,"powershell":%q,"timeoutSec":5}],
-    "subagentStop": [{"type":"command","command":%q,"bash":%q,"powershell":%q,"timeoutSec":5}]
+    "sessionStart": [{"type":"command","command":%q,"bash":%q,"powershell":%q,"timeoutSec":1}],
+    "sessionEnd": [{"type":"command","command":%q,"bash":%q,"powershell":%q,"timeoutSec":1}],
+    "userPromptSubmitted": [{"type":"command","command":%q,"bash":%q,"powershell":%q,"timeoutSec":1}]
   }
 }
-`, copilotCLIGenericHookCommand(home, executablePath, "sessionStart"), command+" --event sessionStart", powershell+" --event sessionStart", copilotCLIGenericHookCommand(home, executablePath, "sessionEnd"), command+" --event sessionEnd", powershell+" --event sessionEnd", copilotCLIGenericHookCommand(home, executablePath, "userPromptSubmitted"), command+" --event userPromptSubmitted", powershell+" --event userPromptSubmitted", copilotCLIGenericHookCommand(home, executablePath, "agentStop"), command+" --event agentStop", powershell+" --event agentStop", copilotCLIGenericHookCommand(home, executablePath, "errorOccurred"), command+" --event errorOccurred", powershell+" --event errorOccurred", copilotCLIGenericHookCommand(home, executablePath, "preToolUse"), command+" --event preToolUse", powershell+" --event preToolUse", copilotCLIGenericHookCommand(home, executablePath, "postToolUse"), command+" --event postToolUse", powershell+" --event postToolUse", copilotCLIGenericHookCommand(home, executablePath, "subagentStart"), command+" --event subagentStart", powershell+" --event subagentStart", copilotCLIGenericHookCommand(home, executablePath, "subagentStop"), command+" --event subagentStop", powershell+" --event subagentStop")
+`, copilotCLIGenericHookCommand(home, executablePath, "sessionStart"), command+" --event sessionStart", powershell+" --event sessionStart", copilotCLIGenericHookCommand(home, executablePath, "sessionEnd"), command+" --event sessionEnd", powershell+" --event sessionEnd", copilotCLIGenericHookCommand(home, executablePath, "userPromptSubmitted"), command+" --event userPromptSubmitted", powershell+" --event userPromptSubmitted")
 }
 
 func copilotCLIHookCommand(home, executablePath string) string {

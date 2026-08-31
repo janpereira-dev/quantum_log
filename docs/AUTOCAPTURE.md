@@ -65,8 +65,13 @@ No P0 run persisted a real external agent event. Persisted-payload privacy inspe
 ## Cleanup
 
 ```bash
-qlog adapter uninstall <adapter> --json
-qlog collector uninstall --json
+qlog uninstall --json
 ```
 
-These remove qlog-owned configuration and managed collector state. They do not erase local ledger automatically.
+This removes every qlog-owned adapter configuration, the managed collector, and
+legacy Windows `Run`-key state. It does not erase local ledger data. Use
+`qlog uninstall --purge-data` only when the ledger itself must be deleted.
+
+Copilot CLI uses only prompt and session lifecycle hooks. Tool and subagent hooks
+are deliberately not installed: they create a process for every agent tool event
+and are unsuitable for lightweight local capture.
