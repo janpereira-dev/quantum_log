@@ -57,7 +57,7 @@ func New(version Version) *cobra.Command {
 	}
 	root.PersistentFlags().StringVar(&home, "home", "", "override the local QUANTUM_LOG data directory")
 	root.SetVersionTemplate("{{.Version}}\n")
-	root.AddCommand(newInitCommand(&home), newConfigCommand(&home), newDoctorCommand(&home), newVerifyCommand(&home), newMaintenanceCommand(&home), newProjectCommand(&home), newIngestCommand(&home), newUsageCommand(&home), newLogCommand(&home), newReportCommand(&home), newLegacySummaryCommand(&home), newAllocationCommand(&home), newPricingCommand(&home), newTaskCommand(&home), newSessionCommand(&home), newExportCommand(&home), newTUICommand(&home), newAdapterCommand(&home), newSetupCommand(&home), newCollectorCommand(&home), newHookCommand(&home), newRunCommand(&home), newMCPCommand(&home, version), newUnattributedCommand(&home), newBudgetCommand(&home), newAnchorCommand(&home), newAcceptanceCommand(&home, version))
+	root.AddCommand(newInitCommand(&home), newConfigCommand(&home), newDoctorCommand(&home), newVerifyCommand(&home), newMaintenanceCommand(&home), newProjectCommand(&home), newIngestCommand(&home), newUsageCommand(&home), newLogCommand(&home), newReportCommand(&home), newLegacySummaryCommand(&home), newAllocationCommand(&home), newPricingCommand(&home), newTaskCommand(&home), newSessionCommand(&home), newExportCommand(&home), newTUICommand(&home), newAdapterCommand(&home), newSetupCommand(&home), newCollectorCommand(&home), newHookCommand(&home), newUninstallCommand(&home), newRunCommand(&home), newMCPCommand(&home, version), newUnattributedCommand(&home), newBudgetCommand(&home), newAnchorCommand(&home), newAcceptanceCommand(&home, version))
 	return root
 }
 

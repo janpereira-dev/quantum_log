@@ -118,9 +118,14 @@ func TestCopilotCLIInstallCreatesIsolatedLifecycleHookConfig(t *testing.T) {
 		t.Fatalf("install result = %#v", result)
 	}
 	contents := string(mustReadFile(t, adapter.hooksPath()))
-	for _, want := range []string{"\"version\": 1", "sessionStart", "sessionEnd", "userPromptSubmitted", "agentStop", "errorOccurred", "preToolUse", "postToolUse", "subagentStart", "subagentStop", "hook copilot-cli --event"} {
+	for _, want := range []string{"\"version\": 1", "sessionStart", "sessionEnd", "userPromptSubmitted", "hook copilot-cli --event", "\"timeoutSec\":1"} {
 		if !strings.Contains(contents, want) {
 			t.Fatalf("hooks config missing %q:\n%s", want, contents)
+		}
+	}
+	for _, forbidden := range []string{"agentStop", "errorOccurred", "preToolUse", "postToolUse", "subagentStart", "subagentStop"} {
+		if strings.Contains(contents, forbidden) {
+			t.Fatalf("hooks config contains high-frequency event %q:\n%s", forbidden, contents)
 		}
 	}
 	for _, forbidden := range []string{"toolArgs", "toolResult", "authorization"} {
@@ -137,6 +142,16 @@ func TestCopilotCLIInstallCreatesIsolatedLifecycleHookConfig(t *testing.T) {
 	}
 	if runtime.GOOS != "windows" && (status.State != SetupPartial || status.CaptureQuality != CaptureLifecycleOnly) {
 		t.Fatalf("POSIX status = %#v, want partial lifecycle-only without a non-interactive launcher", status)
+	}
+}
+
+func TestCopilotCLIPowerShellProfileDoesNotSpawnCMD(t *testing.T) {
+	profile := copilotCLIProfileBlock()
+	if strings.Contains(profile, "ComSpec") {
+		t.Fatalf("qlog Copilot profile must not invoke cmd.exe:\n%s", profile)
+	}
+	if !strings.Contains(profile, "QLOG_COLLECTOR_URL") {
+		t.Fatalf("qlog Copilot profile must forward hooks to the loopback collector:\n%s", profile)
 	}
 }
 

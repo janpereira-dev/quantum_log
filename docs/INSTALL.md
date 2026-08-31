@@ -1,7 +1,7 @@
 # Install QUANTUM_LOG
 
 Install `qlog`, then initialize a local ledger. The source CLI currently declares
-`v0.4.0-rc.8`. The npm distribution package still declares `v0.3.2-rc.3`; it has
+`v0.4.0-rc.9`. The npm distribution package still declares `v0.3.2-rc.3`; it has
 not yet been aligned with the current CLI candidate. Existing P0 evidence covers
 prior candidates only, not a public release acceptance.
 
@@ -17,7 +17,7 @@ Run from repository root. This legacy package path still expects generated
 `checksums.txt` and the exact host `v0.3.2-rc.3` archive. The installer selects the
 matching platform/architecture artifact, verifies SHA-256, and extracts only
 `qlog` or `qlog.exe`. It uses no telemetry. Do not use this path as evidence that
-`v0.4.0-rc.8` was installed until npm packaging, tests, and artifacts are aligned.
+`v0.4.0-rc.9` was installed until npm packaging, tests, and artifacts are aligned.
 
 Confirm installed binary:
 
@@ -52,11 +52,13 @@ On Windows, if Task Scheduler denies managed collector creation with `Acceso den
 
 ## Cleanup
 
-Remove qlog-owned adapter configuration before deleting data:
+Remove every qlog-owned adapter configuration and collector before deleting the
+binary:
 
 ```powershell
-& $qlog adapter uninstall codex --json
-& $qlog collector uninstall --json
+& $qlog uninstall --json
 ```
 
-Choose adapter ID from `qlog adapter list --json`. `adapter uninstall` removes only qlog-owned setup. Local ledger cleanup is manual: stop/uninstall collector first, then remove chosen `QLOG_HOME` directory.
+`uninstall` removes only qlog-owned setup, including a legacy Windows Startup
+entry created by older candidates. Local ledger data is retained by default. Use
+`& $qlog uninstall --purge-data` only when you explicitly want to erase it.
