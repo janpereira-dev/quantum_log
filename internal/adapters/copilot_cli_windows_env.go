@@ -132,11 +132,13 @@ func copilotCLIProfileBlock() string {
 	return copilotCLIProfileBlockStart + "\n" +
 		"if ($null -eq (Get-Variable qlogCopilotOriginal -Scope Global -ErrorAction SilentlyContinue)) { $global:qlogCopilotOriginal = (Get-Command copilot -CommandType Function -ErrorAction SilentlyContinue).ScriptBlock }\n" +
 		"function global:copilot {\n" +
-		"  $qlogArgs = @($args)\n" +
+		"  [CmdletBinding()]\n" +
+		"  param([Parameter(ValueFromRemainingArguments=$true)][object[]]$qlogArgs)\n" +
+		"  $qlogArgs = @($qlogArgs)\n" +
 		"  $qlogPrevious = @{}\n" +
 		"  foreach ($qlogPair in @(@('COPILOT_OTEL_ENABLED','true'), @('COPILOT_OTEL_EXPORTER_TYPE','otlp-http'), @('OTEL_EXPORTER_OTLP_ENDPOINT','http://127.0.0.1:4318'), @('OTEL_EXPORTER_OTLP_PROTOCOL','http/json'), @('OTEL_METRICS_EXPORTER','none'), @('OTEL_LOGS_EXPORTER','none'), @('OTEL_SERVICE_NAME','github-copilot'), @('OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT','false'), @('QLOG_COLLECTOR_URL','http://127.0.0.1:4318/v1/events'))) { $qlogPrevious[$qlogPair[0]] = [Environment]::GetEnvironmentVariable($qlogPair[0], 'Process'); Set-Item -Path ('Env:' + $qlogPair[0]) -Value $qlogPair[1] }\n" +
 		"  try { if ($null -ne $global:qlogCopilotOriginal) { & $global:qlogCopilotOriginal @qlogArgs } else { $qlogCopilotExecutable = @(Get-Command copilot -CommandType Application -ErrorAction Stop)[0].Path; & $qlogCopilotExecutable @qlogArgs }; $qlogSuccess = $?; $qlogExitCode = $LASTEXITCODE } finally { foreach ($qlogKey in $qlogPrevious.Keys) { if ($null -eq $qlogPrevious[$qlogKey]) { Remove-Item -Path ('Env:' + $qlogKey) -ErrorAction SilentlyContinue } else { Set-Item -Path ('Env:' + $qlogKey) -Value $qlogPrevious[$qlogKey] } } }\n" +
-		"  if ($null -ne $qlogExitCode) { $global:LASTEXITCODE = $qlogExitCode }; if (-not $qlogSuccess) { $qlogError = [System.Management.Automation.ErrorRecord]::new([System.Exception]::new('copilot exited with code ' + $qlogExitCode), 'QlogCopilotExit', [System.Management.Automation.ErrorCategory]::NotSpecified, $null); Write-Error -ErrorRecord $qlogError -ErrorAction Continue }\n" +
+		"  if ($null -ne $qlogExitCode) { $global:LASTEXITCODE = $qlogExitCode }; if (-not $qlogSuccess) { $qlogError = [System.Management.Automation.ErrorRecord]::new([System.Exception]::new('copilot exited with code ' + $qlogExitCode), 'QlogCopilotExit', [System.Management.Automation.ErrorCategory]::NotSpecified, $null); $PSCmdlet.WriteError($qlogError) }\n" +
 		"}\n" +
 		copilotCLIProfileBlockEnd + "\n"
 }

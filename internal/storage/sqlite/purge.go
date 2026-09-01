@@ -9,29 +9,54 @@ import (
 	storelock "github.com/janpereira-dev/quantum_log/internal/storage/lock"
 )
 
-// CheckPurgePending rejects access to a ledger left protected by the RC.9
+// InitializationGuard retains the shared legacy quiescence lock from the
+// pre-configuration sentinel check until a newly opened Store owns its own
+// shared lock. It prevents an RC.9 purge from beginning between those steps.
+type InitializationGuard struct{ quiescence *storelock.Handle }
+
+// AcquireInitializationGuard rejects a ledger left protected by the RC.9
 // in-home purge sentinel. The sentinel is compatibility protection only:
 // RC.10 deliberately performs no automatic destructive purge.
 //
 // When the home already exists, the check is made while holding the existing
 // cooperative quiescence lock. A nonexistent home cannot contain a sentinel
 // and is left for normal initialization to create.
-func CheckPurgePending(path string) error {
+func AcquireInitializationGuard(path string) (*InitializationGuard, error) {
 	absolutePath, err := filepath.Abs(path)
 	if err != nil {
-		return fmt.Errorf("resolve database path: %w", err)
+		return nil, fmt.Errorf("resolve database path: %w", err)
 	}
 	if _, err := os.Stat(filepath.Dir(absolutePath)); errors.Is(err, os.ErrNotExist) {
-		return nil
+		return &InitializationGuard{}, nil
 	} else if err != nil {
-		return fmt.Errorf("inspect local data directory: %w", err)
+		return nil, fmt.Errorf("inspect local data directory: %w", err)
 	}
 	quiescence, err := storelock.AcquireSharedCreate(quiescenceLockPath(absolutePath))
 	if err != nil {
-		return writerQuiescenceError(err)
+		return nil, writerQuiescenceError(err)
 	}
-	defer func() { _ = quiescence.Close() }()
-	return rejectPurgeMarker(absolutePath)
+	if err := rejectPurgeMarker(absolutePath); err != nil {
+		_ = quiescence.Close()
+		return nil, err
+	}
+	return &InitializationGuard{quiescence: quiescence}, nil
+}
+
+func (g *InitializationGuard) Close() error {
+	if g == nil || g.quiescence == nil {
+		return nil
+	}
+	return g.quiescence.Close()
+}
+
+// CheckPurgePending is retained for callers that only need the compatibility
+// preflight. Initialization must use AcquireInitializationGuard instead.
+func CheckPurgePending(path string) error {
+	guard, err := AcquireInitializationGuard(path)
+	if err != nil {
+		return err
+	}
+	return guard.Close()
 }
 
 func rejectPurgeMarker(databasePath string) error {

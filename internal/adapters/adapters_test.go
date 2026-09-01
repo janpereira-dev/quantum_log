@@ -153,7 +153,7 @@ func TestCopilotCLIPowerShellProfileDoesNotSpawnCMD(t *testing.T) {
 	if !strings.Contains(profile, "QLOG_COLLECTOR_URL") {
 		t.Fatalf("qlog Copilot profile must forward hooks to the loopback collector:\n%s", profile)
 	}
-	if !strings.Contains(profile, "Write-Error -ErrorRecord $qlogError -ErrorAction Continue") {
+	if !strings.Contains(profile, "$PSCmdlet.WriteError($qlogError)") {
 		t.Fatalf("qlog Copilot profile must fail wrapped Copilot calls without cmd.exe:\n%s", profile)
 	}
 }
@@ -270,11 +270,12 @@ exit 0
 	}
 	command := exec.Command(powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptPath)
 	command.Env = append(os.Environ(), "QLOG_TEST_FAILING_COPILOT="+executable)
-	// Windows PowerShell reports a non-terminating error record as process exit
-	// status 1 for -File scripts. The script's explicit checks above still prove
-	// that `$?` is false and LASTEXITCODE is preserved; status 1 is expected.
-	if output, err := command.CombinedOutput(); err == nil || !strings.Contains(string(output), "copilot exited with code 23") {
-		t.Fatalf("PowerShell launcher did not preserve failure semantics: %v\n%s", err, output)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("PowerShell launcher did not preserve caller failure semantics: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "copilot exited with code 23") {
+		t.Fatalf("PowerShell launcher omitted the native failure: %s", output)
 	}
 }
 
