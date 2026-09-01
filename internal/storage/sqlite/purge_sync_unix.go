@@ -12,7 +12,7 @@ func syncLifecycleDirectory(root string) error {
 	if err != nil {
 		return fmt.Errorf("open qlog lifecycle control directory: %w", err)
 	}
-	defer directory.Close()
+	defer func() { _ = directory.Close() }()
 	if err := directory.Sync(); err != nil {
 		return fmt.Errorf("sync qlog lifecycle control directory: %w", err)
 	}

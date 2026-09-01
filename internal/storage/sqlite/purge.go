@@ -134,13 +134,6 @@ func acquireLifecycleExclusive(databasePath string) (*storelock.Handle, lifecycl
 	return handle, control, nil
 }
 
-func rejectPurgeInProgress(databasePath string) error {
-	control, err := lifecycleControlFor(databasePath)
-	if err != nil {
-		return err
-	}
-	return rejectPurgeInProgressControl(control)
-}
 func rejectPurgeInProgressControl(control lifecycleControl) error {
 	info, err := os.Lstat(control.journalPath)
 	if errors.Is(err, os.ErrNotExist) {
@@ -182,7 +175,7 @@ func writePurgeJournal(control lifecycleControl) error {
 		return fmt.Errorf("create ledger purge journal: %w", err)
 	}
 	name := temp.Name()
-	defer os.Remove(name)
+	defer func() { _ = os.Remove(name) }()
 	if _, err := temp.Write(contents); err != nil {
 		_ = temp.Close()
 		return fmt.Errorf("write ledger purge journal: %w", err)
@@ -285,7 +278,7 @@ func validatePresentPurgeLedger(ctx context.Context, abs string, guard *PurgeGua
 	if err != nil {
 		return fmt.Errorf("open read-only sqlite: %w", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	db.SetMaxOpenConns(1)
 	if err := db.PingContext(ctx); err != nil {
 		return fmt.Errorf("open read-only sqlite: %w", err)
@@ -305,7 +298,7 @@ func validatePurgeOwnership(ctx context.Context, store *Store) error {
 	if err != nil {
 		return fmt.Errorf("database schema is not a recognised qlog ledger: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	applied := map[string]struct{}{}
 	for rows.Next() {
 		var version string

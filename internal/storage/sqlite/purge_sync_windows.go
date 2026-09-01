@@ -17,7 +17,7 @@ func syncLifecycleDirectory(root string) error {
 	if err != nil {
 		return fmt.Errorf("open qlog lifecycle control directory: %w", err)
 	}
-	defer windows.CloseHandle(handle)
+	defer func() { _ = windows.CloseHandle(handle) }()
 	if err := windows.FlushFileBuffers(handle); err != nil {
 		return fmt.Errorf("sync qlog lifecycle control directory: %w", err)
 	}
