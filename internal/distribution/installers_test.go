@@ -182,7 +182,7 @@ func TestPowerShellUninstallerRejectsPurgeBeforeInvokingInstalledBinary(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	script := string(contents)
+	script := strings.ReplaceAll(string(contents), "\r\n", "\n")
 	reject := strings.Index(script, "if ($purgeData) {\n    Fail '--purge-data is temporarily unavailable")
 	invoke := strings.Index(script, "& $target @cleanupArguments")
 	if reject < 0 || invoke < 0 || reject > invoke {
