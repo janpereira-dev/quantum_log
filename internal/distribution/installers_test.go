@@ -148,7 +148,7 @@ func TestInstallGuideDocumentsVerifiedRCInstallerLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	guide := string(contents)
-	for _, want := range []string{"installers/install.sh", "installers/install.ps1", "--version v0.4.0-rc9", "--channel latest", "create and push the release tag", "The pushed `v*` tag triggers the release workflow"} {
+	for _, want := range []string{"installers/install.sh", "installers/install.ps1", "--version v0.4.0-rc10", "--channel latest", "create and push the release tag", "The pushed `v*` tag triggers the release workflow"} {
 		if !strings.Contains(guide, want) {
 			t.Fatalf("install guide missing %q", want)
 		}

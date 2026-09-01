@@ -178,12 +178,12 @@ func TestPurgeUninstallDataKeepsLedgerUnreachableUntilDeletionCompletes(t *testi
 	initializeUninstallLedger(t, home)
 	originalRemove := removeUninstallDataDirectory
 	removeUninstallDataDirectory = func(path string) error {
-		writer, err := app.Open(context.Background(), path)
+		writer, err := app.Open(context.Background(), home)
 		if err == nil {
 			_ = writer.Close()
 			t.Fatal("writer opened a ledger while purge deletion was pending")
 		}
-		if !strings.Contains(err.Error(), "purge is in progress") {
+		if !strings.Contains(err.Error(), "purge is in progress") && !strings.Contains(err.Error(), "run qlog init first") {
 			t.Fatalf("writer during purge error = %v", err)
 		}
 		return originalRemove(path)
@@ -197,6 +197,73 @@ func TestPurgeUninstallDataKeepsLedgerUnreachableUntilDeletionCompletes(t *testi
 	}
 	if _, err := os.Stat(home); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("purged home remains: %v", err)
+	}
+}
+
+func TestUninstallPurgeDataIsIdempotentWhenHomeIsAlreadyAbsent(t *testing.T) {
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
+	home := filepath.Join(t.TempDir(), "absent-ledger")
+	manager := &recordingUninstallCollectorManager{}
+	original := newUninstallCollectorManager
+	newUninstallCollectorManager = func() collectorManager { return manager }
+	t.Cleanup(func() { newUninstallCollectorManager = original })
+
+	command := New(Version{})
+	command.SetArgs([]string{"--home", home, "uninstall", "--purge-data"})
+	if err := command.Execute(); err != nil {
+		t.Fatalf("idempotent absent purge: %v", err)
+	}
+}
+
+func TestPurgeUninstallDataCompletesInterruptedCleanupAfterHomeWasRemoved(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "ledger")
+	initializeUninstallLedger(t, home)
+	paths, err := config.Resolve(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard, err := prepareUninstallDataPurge(context.Background(), paths.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	detached, err := guard.DetachForPurge()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(detached); err != nil {
+		t.Fatal(err)
+	}
+
+	command := &cobra.Command{}
+	command.SetContext(context.Background())
+	if err := purgeUninstallData(command, home); err != nil {
+		t.Fatalf("complete interrupted purge: %v", err)
+	}
+	service, err := app.Initialize(context.Background(), home)
+	if err != nil {
+		t.Fatalf("stale purge state still blocked new ledger: %v", err)
+	}
+	if err := service.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestUninstallPurgeDataRefusesForegroundCollectorAfterManagedTeardown(t *testing.T) {
+	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
+	home := filepath.Join(t.TempDir(), "ledger")
+	initializeUninstallLedger(t, home)
+	manager := &recordingUninstallCollectorManager{status: CollectorStatus{Installed: true, Reachable: true, ManagedHealth: true}}
+	original := newUninstallCollectorManager
+	newUninstallCollectorManager = func() collectorManager { return manager }
+	t.Cleanup(func() { newUninstallCollectorManager = original })
+
+	command := New(Version{})
+	command.SetArgs([]string{"--home", home, "uninstall", "--purge-data"})
+	if err := command.Execute(); err == nil {
+		t.Fatal("purge accepted a reachable foreground collector after managed teardown")
+	}
+	if _, err := os.Stat(home); err != nil {
+		t.Fatalf("ledger was deleted while foreground collector remained active: %v", err)
 	}
 }
 

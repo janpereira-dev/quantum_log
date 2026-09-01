@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -12,24 +13,53 @@ import (
 	storelock "github.com/janpereira-dev/quantum_log/internal/storage/lock"
 )
 
-// PurgeGuard proves that a ledger is initialized and makes it unreachable to
-// cooperative writers until the destructive operation either succeeds or is
-// aborted. The marker remains after the lock handles are closed so Windows can
-// remove the directory without opening a writer race.
+// PurgeGuard owns a destructive ledger removal. Its marker and detached
+// directory live beside (not inside) the qlog home: RemoveAll can therefore
+// never unlink the signal that blocks cooperative openers. The ledger home is
+// atomically renamed before removal, which also makes a partially removed
+// ledger unreachable when a process is interrupted.
 type PurgeGuard struct {
-	quiescence *storelock.Handle
-	markerPath string
-	closeOnce  sync.Once
-	closeErr   error
+	quiescence   *storelock.Handle
+	homePath     string
+	detachedPath string
+	markerPath   string
+	detached     bool
+	closeOnce    sync.Once
+	closeErr     error
 }
 
-// PreparePurge validates a qlog ledger before destructive removal. The caller
-// must call ReleaseForPurge before deleting files, then Abort if deletion
-// fails. Windows cannot remove a directory while its lock handles are open.
+// PreparePurge validates an idle qlog ledger before destructive removal. An
+// interrupted purge is resumable: if its detached directory remains, callers
+// receive a guard that can remove it without recreating or reopening a ledger.
 func PreparePurge(ctx context.Context, path string) (_ *PurgeGuard, result error) {
 	absolutePath, err := filepath.Abs(path)
 	if err != nil {
 		return nil, fmt.Errorf("resolve database path: %w", err)
+	}
+	homePath := filepath.Dir(absolutePath)
+	markerPath := purgeMarkerPath(absolutePath)
+	detachedPath := purgeDetachedPath(absolutePath)
+
+	if marker, err := os.Lstat(markerPath); err == nil {
+		if err := validatePurgeMarker(markerPath, marker); err != nil {
+			return nil, err
+		}
+		if info, statErr := os.Lstat(detachedPath); statErr == nil {
+			if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+				return nil, fmt.Errorf("refuse unsafe detached qlog ledger %q", detachedPath)
+			}
+			return &PurgeGuard{homePath: homePath, detachedPath: detachedPath, markerPath: markerPath, detached: true}, nil
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return nil, fmt.Errorf("inspect detached qlog ledger: %w", statErr)
+		}
+		// A completed deletion can be interrupted after RemoveAll but before the
+		// marker cleanup. It is safe to finish that cleanup only when the original
+		// home no longer exists; callers can then treat purge as idempotent.
+		if _, homeErr := os.Lstat(homePath); errors.Is(homeErr, os.ErrNotExist) {
+			return &PurgeGuard{homePath: homePath, detachedPath: detachedPath, markerPath: markerPath, detached: true}, nil
+		} else if homeErr != nil {
+			return nil, fmt.Errorf("inspect qlog home: %w", homeErr)
+		}
 	}
 	if _, err := os.Stat(absolutePath); err != nil {
 		return nil, fmt.Errorf("open local database: %w; run qlog init first", err)
@@ -55,28 +85,77 @@ func PreparePurge(ctx context.Context, path string) (_ *PurgeGuard, result error
 	if err != nil {
 		return nil, fmt.Errorf("open read-only sqlite: %w", err)
 	}
+	defer func() { _ = db.Close() }()
 	db.SetMaxOpenConns(1)
 	store := &Store{db: db}
-	defer func() { _ = db.Close() }()
 	if err := db.PingContext(ctx); err != nil {
 		return nil, fmt.Errorf("open read-only sqlite: %w", err)
 	}
-	if err := store.validateSchema(ctx); err != nil {
+	if err := validatePurgeOwnership(ctx, store); err != nil {
 		return nil, err
 	}
-	if err := store.VerifyLedger(ctx, ""); err != nil {
-		return nil, err
-	}
-	markerPath := purgeMarkerPath(absolutePath)
 	if err := acquirePurgeMarker(markerPath); err != nil {
 		return nil, err
 	}
-	return &PurgeGuard{quiescence: quiescence, markerPath: markerPath}, nil
+	return &PurgeGuard{quiescence: quiescence, homePath: homePath, detachedPath: detachedPath, markerPath: markerPath}, nil
 }
 
-// acquirePurgeMarker either records a new purge or resumes an interrupted one.
-// PreparePurge holds exclusive quiescence before calling this helper, so an
-// existing marker cannot be resumed while a cooperative writer is active.
+// validatePurgeOwnership accepts any recognisable historical qlog migration
+// history. A purge must not depend on the current binary being able to query a
+// newer schema, but it must still refuse foreign or corrupt SQLite files.
+func validatePurgeOwnership(ctx context.Context, store *Store) error {
+	known, err := knownQlogMigrationIDs()
+	if err != nil {
+		return err
+	}
+	rows, err := store.db.QueryContext(ctx, `SELECT version FROM schema_migrations`)
+	if err != nil {
+		return fmt.Errorf("database schema is not a recognised qlog ledger: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	applied := make(map[string]struct{})
+	for rows.Next() {
+		var version string
+		if err := rows.Scan(&version); err != nil {
+			return fmt.Errorf("read qlog migration history: %w", err)
+		}
+		if _, found := known[version]; !found {
+			return fmt.Errorf("database schema has unrecognised migration %q", version)
+		}
+		applied[version] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read qlog migration history: %w", err)
+	}
+	if _, found := applied["001_initial.sql"]; !found {
+		return errors.New("database schema has no qlog migration history")
+	}
+	var integrity string
+	if err := store.db.QueryRowContext(ctx, "PRAGMA integrity_check").Scan(&integrity); err != nil {
+		return fmt.Errorf("verify qlog database integrity: %w", err)
+	}
+	if integrity != "ok" {
+		return fmt.Errorf("database integrity check failed: %s", integrity)
+	}
+	return nil
+}
+
+// knownQlogMigrationIDs makes the ownership boundary follow the embedded,
+// authoritative migration source rather than a broad filename convention.
+func knownQlogMigrationIDs() (map[string]struct{}, error) {
+	entries, err := migrations.ReadDir("migrations")
+	if err != nil {
+		return nil, fmt.Errorf("read embedded qlog migrations: %w", err)
+	}
+	known := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() && filepath.Ext(entry.Name()) == ".sql" {
+			known[entry.Name()] = struct{}{}
+		}
+	}
+	return known, nil
+}
+
 func acquirePurgeMarker(markerPath string) error {
 	info, err := os.Lstat(markerPath)
 	if err == nil {
@@ -110,9 +189,22 @@ func validatePurgeMarker(markerPath string, info os.FileInfo) error {
 	return nil
 }
 
-// ReleaseForPurge releases lock handles while retaining the purge marker. This
-// makes the old ledger unreachable before a caller removes it, including on
-// Windows where open lock handles prevent directory removal.
+func rejectPurgeInProgress(databasePath string) error {
+	info, err := os.Lstat(purgeMarkerPath(databasePath))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect ledger purge marker: %w", err)
+	}
+	if err := validatePurgeMarker(purgeMarkerPath(databasePath), info); err != nil {
+		return err
+	}
+	return errors.New("ledger purge is in progress; retry after it completes")
+}
+
+// ReleaseForPurge closes Windows-incompatible lock handles only after the
+// external marker is durable. Openers remain blocked while the locks are gone.
 func (g *PurgeGuard) ReleaseForPurge() error {
 	if g == nil || g.quiescence == nil {
 		return nil
@@ -121,21 +213,83 @@ func (g *PurgeGuard) ReleaseForPurge() error {
 	return g.closeErr
 }
 
-// Abort restores access to a ledger when deletion did not complete.
+// DetachForPurge atomically moves the whole qlog home out of its public path.
+// The returned path is the only directory a caller may recursively remove.
+func (g *PurgeGuard) DetachForPurge() (string, error) {
+	if g == nil {
+		return "", errors.New("nil qlog ledger purge guard")
+	}
+	if err := g.ReleaseForPurge(); err != nil {
+		return "", err
+	}
+	if g.detached {
+		return g.detachedPath, nil
+	}
+	if _, err := os.Lstat(g.detachedPath); err == nil {
+		return "", fmt.Errorf("refuse to replace existing detached qlog ledger %q", g.detachedPath)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("inspect detached qlog ledger: %w", err)
+	}
+	if err := os.Rename(g.homePath, g.detachedPath); err != nil {
+		return "", fmt.Errorf("atomically detach qlog ledger: %w", err)
+	}
+	g.detached = true
+	return g.detachedPath, nil
+}
+
+// Complete removes durable purge state after the detached tree is gone.
+func (g *PurgeGuard) Complete() error {
+	if g == nil {
+		return nil
+	}
+	if err := g.ReleaseForPurge(); err != nil {
+		return err
+	}
+	if _, err := os.Lstat(g.detachedPath); err == nil {
+		return fmt.Errorf("cannot complete qlog purge while detached ledger remains %q", g.detachedPath)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect detached qlog ledger: %w", err)
+	}
+	if err := os.Remove(g.markerPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove ledger purge marker: %w", err)
+	}
+	return nil
+}
+
+// Abort restores a successfully detached directory if no destructive removal
+// was completed. If restoration fails, the external marker remains to fail
+// closed rather than allowing a writer into partially deleted data.
 func (g *PurgeGuard) Abort() error {
 	if g == nil {
 		return nil
 	}
 	result := g.ReleaseForPurge()
-	if g.markerPath != "" {
-		if err := os.Remove(g.markerPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			result = errors.Join(result, fmt.Errorf("remove ledger purge marker: %w", err))
+	if g.detached {
+		if _, err := os.Lstat(g.detachedPath); err == nil {
+			if err := os.Rename(g.detachedPath, g.homePath); err != nil {
+				return errors.Join(result, fmt.Errorf("restore detached qlog ledger: %w", err))
+			}
+			g.detached = false
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return errors.Join(result, fmt.Errorf("inspect detached qlog ledger: %w", err))
 		}
+	}
+	if err := os.Remove(g.markerPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		result = errors.Join(result, fmt.Errorf("remove ledger purge marker: %w", err))
 	}
 	return result
 }
 
-// Close releases the guard and removes its marker without deleting data.
-func (g *PurgeGuard) Close() error {
-	return g.Abort()
+func (g *PurgeGuard) Close() error { return g.Abort() }
+
+func purgeMarkerPath(databasePath string) string {
+	home := filepath.Dir(databasePath)
+	digest := sha256.Sum256([]byte(filepath.Clean(home)))
+	return filepath.Join(filepath.Dir(home), ".qlog-purge-"+fmt.Sprintf("%x", digest[:8])+".pending")
+}
+
+func purgeDetachedPath(databasePath string) string {
+	home := filepath.Dir(databasePath)
+	digest := sha256.Sum256([]byte(filepath.Clean(home)))
+	return filepath.Join(filepath.Dir(home), ".qlog-purge-"+fmt.Sprintf("%x", digest[:8])+".deleting")
 }

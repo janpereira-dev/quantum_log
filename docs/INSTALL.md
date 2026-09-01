@@ -1,7 +1,7 @@
 # Install QUANTUM_LOG
 
 Install `qlog`, then initialize a local ledger. The source CLI currently declares
-`v0.4.0-rc9`. The npm distribution package still declares `v0.3.2-rc.3`; it has
+`v0.4.0-rc10`. The npm distribution package still declares `v0.3.2-rc.3`; it has
 not yet been aligned with the current CLI candidate. Existing P0 evidence covers
 prior candidates only, not a public release acceptance.
 
@@ -11,18 +11,18 @@ Use the release installer, not `go install` or the legacy npm package. It
 downloads the matching GitHub Release archive and verifies its SHA-256 entry in
 `checksums.txt` before replacing the binary.
 
-After `v0.4.0-rc9` is published, install that exact release on macOS or Linux:
+After `v0.4.0-rc10` is published, install that exact release on macOS or Linux:
 
 ```sh
-curl --fail --location --remote-name https://raw.githubusercontent.com/janpereira-dev/quantum_log/v0.4.0-rc9/installers/install.sh
-sh install.sh --version v0.4.0-rc9
+curl --fail --location --remote-name https://raw.githubusercontent.com/janpereira-dev/quantum_log/v0.4.0-rc10/installers/install.sh
+sh install.sh --version v0.4.0-rc10
 ```
 
 On Windows PowerShell:
 
 ```powershell
-Invoke-WebRequest https://raw.githubusercontent.com/janpereira-dev/quantum_log/v0.4.0-rc9/installers/install.ps1 -OutFile .\install.ps1
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 --version v0.4.0-rc9
+Invoke-WebRequest https://raw.githubusercontent.com/janpereira-dev/quantum_log/v0.4.0-rc10/installers/install.ps1 -OutFile .\install.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 --version v0.4.0-rc10
 ```
 
 Use `--channel latest` only to evaluate the newest published candidate; it can
@@ -38,8 +38,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 --channel 
 ```
 
 The operator must first create and push the release tag (for example,
-`git tag -a v0.4.0-rc9 -m "release: v0.4.0-rc9"` followed by `git push origin
-v0.4.0-rc9`). The pushed `v*` tag triggers the release workflow, which then
+`git tag -a v0.4.0-rc10 -m "release: v0.4.0-rc10"` followed by `git push origin
+v0.4.0-rc10`). The pushed `v*` tag triggers the release workflow, which then
 publishes the artifacts and GitHub Release consumed by these installers. Until
 that completes, no public RC artifact exists.
 
@@ -55,7 +55,7 @@ Run from repository root only when validating the legacy package. This path stil
 `checksums.txt` and the exact host `v0.3.2-rc.3` archive. The installer selects the
 matching platform/architecture artifact, verifies SHA-256, and extracts only
 `qlog` or `qlog.exe`. It uses no telemetry. It is not a supported way to install
-`v0.4.0-rc9`; do not substitute `go install` for a published release artifact.
+`v0.4.0-rc10`; do not substitute `go install` for a published release artifact.
 
 Confirm installed binary:
 
@@ -65,7 +65,7 @@ C:\qlog-install\node_modules\.bin\qlog.cmd --version
 
 P0 observed `qlog 0.3.2-rc.1`; one P0-11 extracted artifact also embedded commit `dba6ca4040b93b889ead41ec90d4b2ffd19226c1`. Do not substitute an older tag or archive.
 
-**No public RC artifact exists yet.** Do not attempt `go install ...@v0.4.0-rc9`.
+**No public RC artifact exists yet.** Do not attempt `go install ...@v0.4.0-rc10`.
 Create and push the tag first; the release workflow publishes its artifacts
 afterward. Install an RC by its explicit verified release tag, while the default
 `stable` channel continues to reject prerelease tags.

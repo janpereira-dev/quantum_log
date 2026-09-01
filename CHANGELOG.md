@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0-rc10 - 2026-09-01
+
+- Hardened `qlog uninstall --purge-data` with an external durable purge guard and atomic ledger-home detachment. Cooperative database open, snapshot, read-only, and checkpoint paths remain blocked until deletion succeeds or the original ledger is restored.
+- Made purge recovery idempotent for an already absent home, accepted recognised historical QLog migration histories, and refuse deletion whenever a foreground collector remains reachable after managed-service teardown.
+- Updated the Copilot PowerShell launcher to retain non-terminating native failure semantics without spawning `cmd.exe` or terminating the caller.
+
 ## 0.4.0-rc9 - 2026-08-31
 
 - Added `qlog uninstall` as the single safe teardown command for every qlog-owned adapter configuration, managed collector, and legacy Windows Startup fallback. Ledger data remains intact unless `--purge-data` is explicit.

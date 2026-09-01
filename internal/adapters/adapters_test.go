@@ -153,7 +153,7 @@ func TestCopilotCLIPowerShellProfileDoesNotSpawnCMD(t *testing.T) {
 	if !strings.Contains(profile, "QLOG_COLLECTOR_URL") {
 		t.Fatalf("qlog Copilot profile must forward hooks to the loopback collector:\n%s", profile)
 	}
-	if !strings.Contains(profile, "throw ('copilot exited with code ' + $qlogExitCode)") {
+	if !strings.Contains(profile, "$PSCmdlet.WriteError($qlogError)") {
 		t.Fatalf("qlog Copilot profile must fail wrapped Copilot calls without cmd.exe:\n%s", profile)
 	}
 }
@@ -173,7 +173,7 @@ func TestCopilotCLIPowerShellLauncherSelectsOneApplication(t *testing.T) {
 	config := copilotCLIProfileBlock()
 	for _, want := range []string{
 		"@(Get-Command copilot -CommandType Application -ErrorAction Stop)[0].Path",
-		"& $qlogCopilotExecutable @args",
+		"& $qlogCopilotExecutable @qlogArgs",
 	} {
 		if !strings.Contains(config, want) {
 			t.Fatalf("Copilot CLI PowerShell launcher missing %q:\n%s", want, config)
@@ -259,9 +259,8 @@ func TestCopilotCLIPowerShellLauncherPreservesFailedExitCodeWithoutCMD(t *testin
   Microsoft.PowerShell.Core\Get-Command @PSBoundParameters
 }
 ` + copilotCLIProfileBlock() + `
-$failed = $false
-try { copilot } catch { $failed = $true }
-if (-not $failed) { exit 1 }
+copilot
+if ($?) { exit 1 }
 if ($global:LASTEXITCODE -ne 23) { exit 2 }
 `
 	scriptPath := filepath.Join(dir, "profile-failure-test.ps1")

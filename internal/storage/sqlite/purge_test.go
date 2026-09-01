@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,6 +58,51 @@ func TestPreparePurgeRejectsCorruptOrActiveLedger(t *testing.T) {
 	}
 }
 
+func TestPreparePurgeAcceptsRecognisedHistoricalMigrationHistory(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "qlog.db")
+	store, err := Open(context.Background(), databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(context.Background(), `DELETE FROM schema_migrations WHERE version = '013_reconciled_model_usage.sql'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	guard, err := PreparePurge(context.Background(), databasePath)
+	if err != nil {
+		t.Fatalf("PreparePurge() rejected recognised historical ledger: %v", err)
+	}
+	if err := guard.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPreparePurgeRejectsForeignMigrationTableLookalike(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "qlog.db")
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(databasePath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE schema_migrations (version TEXT PRIMARY KEY); INSERT INTO schema_migrations(version) VALUES ('foreign_ledger.sql')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, lockPath := range []string{quiescenceLockPath(databasePath), writerLockPath(databasePath)} {
+		if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := PreparePurge(context.Background(), databasePath); err == nil {
+		t.Fatal("PreparePurge accepted a foreign schema_migrations lookalike")
+	} else if !strings.Contains(err.Error(), "unrecognised migration") {
+		t.Fatalf("foreign lookalike error = %v", err)
+	}
+}
+
 func TestPurgeGuardKeepsLedgerUnreachableUntilAbort(t *testing.T) {
 	databasePath := filepath.Join(t.TempDir(), "qlog.db")
 	writer, err := Open(context.Background(), databasePath)
@@ -88,6 +134,55 @@ func TestPurgeGuardKeepsLedgerUnreachableUntilAbort(t *testing.T) {
 	}
 	if err := nextWriter.Close(); err != nil {
 		t.Fatalf("close restored ledger: %v", err)
+	}
+}
+
+func TestPurgeMarkerBlocksEveryCooperativeDatabaseEntryPoint(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "qlog.db")
+	writer, err := Open(context.Background(), databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	guard, err := PreparePurge(context.Background(), databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := guard.ReleaseForPurge(); err != nil {
+		t.Fatal(err)
+	}
+	for name, open := range map[string]func() error{
+		"open": func() error {
+			store, err := Open(context.Background(), databasePath)
+			if store != nil {
+				_ = store.Close()
+			}
+			return err
+		},
+		"read-only": func() error {
+			store, err := OpenReadOnly(context.Background(), databasePath)
+			if store != nil {
+				_ = store.Close()
+			}
+			return err
+		},
+		"snapshot": func() error {
+			store, err := OpenSnapshotReadOnly(context.Background(), databasePath)
+			if store != nil {
+				_ = store.Close()
+			}
+			return err
+		},
+		"checkpoint": func() error { return Checkpoint(context.Background(), databasePath) },
+	} {
+		if err := open(); err == nil || !strings.Contains(err.Error(), "purge is in progress") {
+			t.Errorf("%s during purge error = %v", name, err)
+		}
+	}
+	if err := guard.Abort(); err != nil {
+		t.Fatal(err)
 	}
 }
 

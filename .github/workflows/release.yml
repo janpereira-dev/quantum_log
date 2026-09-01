@@ -21,7 +21,7 @@ jobs:
           tag='${{ github.ref_name }}'
           case "$tag" in
             *-alpha.*|*-beta.*|*-rc.*)
-              echo "Release-candidate tags must use -alphaN, -betaN, or -rcN (for example v0.4.0-rc9)." >&2
+              echo "Release-candidate tags must use -alphaN, -betaN, or -rcN (for example v0.4.0-rc10)." >&2
               exit 1
               ;;
           esac

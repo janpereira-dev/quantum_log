@@ -35,9 +35,13 @@ func newUninstallCommand(home *string) *cobra.Command {
 			result := uninstallResult{Adapters: make(map[string]adapters.InstallResult)}
 			failures := make([]error, 0)
 			manager := newUninstallCollectorManager()
-			purgeHome, _, preflightErr := resolveUninstallPurgeTarget(command, manager, *home, purgeData)
-			if preflightErr != nil {
-				failures = append(failures, preflightErr)
+			purgeHome, purgeListen := "", ""
+			if purgeData {
+				var preflightErr error
+				purgeHome, purgeListen, preflightErr = resolveUninstallPurgeTarget(command, manager, *home)
+				if preflightErr != nil {
+					failures = append(failures, preflightErr)
+				}
 			}
 
 			for _, adapter := range registry.List() {
@@ -63,6 +67,10 @@ func newUninstallCommand(home *string) *cobra.Command {
 			if purgeData && !dryRun {
 				if len(failures) != 0 {
 					failures = append(failures, errors.New("local data was retained because qlog-owned cleanup or purge preflight was incomplete"))
+				} else if status, err := manager.Status(command.Context(), purgeListen); err != nil {
+					failures = append(failures, fmt.Errorf("inspect collector after uninstall before purging local data: %w", err))
+				} else if status.Reachable && status.ManagedHealth {
+					failures = append(failures, errors.New("refusing to purge local data while a reachable foreground qlog collector is active; stop qlog collector serve and retry"))
 				} else if err := purgeUninstallData(command, purgeHome); err != nil {
 					failures = append(failures, err)
 				} else {
@@ -104,7 +112,7 @@ func newUninstallCommand(home *string) *cobra.Command {
 	return command
 }
 
-func resolveUninstallPurgeTarget(command *cobra.Command, manager collectorManager, home string, purgeData bool) (string, string, error) {
+func resolveUninstallPurgeTarget(command *cobra.Command, manager collectorManager, home string) (string, string, error) {
 	paths, err := config.Resolve(home)
 	if err != nil {
 		return "", "", fmt.Errorf("resolve local data directory: %w", err)
@@ -114,18 +122,8 @@ func resolveUninstallPurgeTarget(command *cobra.Command, manager collectorManage
 	if err != nil {
 		return "", "", fmt.Errorf("resolve managed local data directory: %w", err)
 	}
-	if !purgeData {
-		return paths.Home, resolvedListen, nil
-	}
 	if err := rejectUnsafeUninstallHome(paths.Home); err != nil {
 		return "", "", err
-	}
-	status, err := manager.Status(command.Context(), resolvedListen)
-	if err != nil {
-		return "", "", fmt.Errorf("inspect collector before purging local data: %w", err)
-	}
-	if status.Reachable && status.ManagedHealth && !status.Installed {
-		return "", "", errors.New("refusing to purge local data while a reachable unmanaged qlog collector is active; stop qlog collector serve and retry")
 	}
 	return paths.Home, resolvedListen, nil
 }
@@ -138,21 +136,34 @@ func purgeUninstallData(command *cobra.Command, home string) error {
 	if err != nil {
 		return fmt.Errorf("resolve local data directory: %w", err)
 	}
+	homeMissing := false
+	if _, err := os.Lstat(paths.Home); errors.Is(err, os.ErrNotExist) {
+		homeMissing = true
+	} else if err != nil {
+		return fmt.Errorf("inspect local data directory: %w", err)
+	}
 	guard, err := prepareUninstallDataPurge(command.Context(), paths.Database)
 	if err != nil {
+		if homeMissing {
+			return nil
+		}
 		return fmt.Errorf("refusing to purge data that is not an idle, valid qlog ledger: %w", err)
 	}
-	if err := guard.ReleaseForPurge(); err != nil {
+	deletionPath, err := guard.DetachForPurge()
+	if err != nil {
 		if abortErr := guard.Abort(); abortErr != nil {
-			return errors.Join(fmt.Errorf("release qlog ledger purge guard: %w", err), fmt.Errorf("restore access to retained local data: %w", abortErr))
+			return errors.Join(fmt.Errorf("detach qlog ledger for purge: %w", err), fmt.Errorf("restore access to retained local data: %w", abortErr))
 		}
-		return fmt.Errorf("release qlog ledger purge guard: %w", err)
+		return fmt.Errorf("detach qlog ledger for purge: %w", err)
 	}
-	if err := removeUninstallDataDirectory(paths.Home); err != nil {
+	if err := removeUninstallDataDirectory(deletionPath); err != nil {
 		if abortErr := guard.Abort(); abortErr != nil {
 			return errors.Join(fmt.Errorf("remove local data directory: %w", err), fmt.Errorf("restore access to retained local data: %w", abortErr))
 		}
 		return fmt.Errorf("remove local data directory: %w", err)
+	}
+	if err := guard.Complete(); err != nil {
+		return fmt.Errorf("complete local data purge: %w", err)
 	}
 	return nil
 }
@@ -169,6 +180,9 @@ func rejectUnsafeUninstallHome(home string) error {
 		}
 	}
 	info, err := os.Lstat(clean)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("inspect qlog home before purge: %w", err)
 	}
