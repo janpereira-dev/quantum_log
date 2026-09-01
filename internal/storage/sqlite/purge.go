@@ -19,8 +19,11 @@ type InitializationGuard struct{ quiescence *storelock.Handle }
 // RC.10 deliberately performs no automatic destructive purge.
 //
 // When the home already exists, the check is made while holding the existing
-// cooperative quiescence lock. A nonexistent home cannot contain a sentinel
-// and is left for normal initialization to create.
+// cooperative quiescence lock. A nonexistent home cannot contain a sentinel:
+// RC.9 requires an existing database before it can acquire the exclusive
+// legacy quiescence lock, config.Ensure does not create that database, and
+// Open acquires the shared legacy lock before creating it. Therefore no
+// RC.9-compatible purge can begin during absent-home initialization.
 func AcquireInitializationGuard(path string) (*InitializationGuard, error) {
 	absolutePath, err := filepath.Abs(path)
 	if err != nil {
