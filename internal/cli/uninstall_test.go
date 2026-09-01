@@ -233,6 +233,11 @@ func TestPurgeUninstallDataCompletesInterruptedCleanupAfterHomeWasRemoved(t *tes
 	if err := os.RemoveAll(detached); err != nil {
 		t.Fatal(err)
 	}
+	// This models the normal post-delete handoff; process-death recovery is
+	// covered in the storage package where the lifecycle handle is observable.
+	if err := guard.Complete(); err != nil {
+		t.Fatal(err)
+	}
 
 	command := &cobra.Command{}
 	command.SetContext(context.Background())
@@ -310,14 +315,17 @@ func TestUninstallPurgeDataResumesInterruptedPurge(t *testing.T) {
 	t.Cleanup(func() { newUninstallCollectorManager = original })
 	command := New(Version{})
 	command.SetArgs([]string{"--home", home, "uninstall", "--purge-data"})
-	if err := command.Execute(); err != nil {
-		t.Fatalf("resume purge through uninstall: %v", err)
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "purge is in progress") {
+		t.Fatalf("concurrent purge recovery error = %v", err)
 	}
 	if manager.uninstallCalls != 1 {
 		t.Fatalf("collector uninstall calls = %d, want 1", manager.uninstallCalls)
 	}
-	if _, err := os.Stat(home); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("resumed purge retained home: %v", err)
+	if _, err := os.Stat(home); err != nil {
+		t.Fatalf("concurrent recovery removed home: %v", err)
+	}
+	if err := abandoned.Abort(); err != nil {
+		t.Fatalf("abort abandoned purge: %v", err)
 	}
 }
 

@@ -136,17 +136,11 @@ func purgeUninstallData(command *cobra.Command, home string) error {
 	if err != nil {
 		return fmt.Errorf("resolve local data directory: %w", err)
 	}
-	homeMissing := false
-	if _, err := os.Lstat(paths.Home); errors.Is(err, os.ErrNotExist) {
-		homeMissing = true
-	} else if err != nil {
+	if _, err := os.Lstat(paths.Home); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("inspect local data directory: %w", err)
 	}
 	guard, err := prepareUninstallDataPurge(command.Context(), paths.Database)
 	if err != nil {
-		if homeMissing {
-			return nil
-		}
 		return fmt.Errorf("refusing to purge data that is not an idle, valid qlog ledger: %w", err)
 	}
 	deletionPath, err := guard.DetachForPurge()
@@ -156,11 +150,13 @@ func purgeUninstallData(command *cobra.Command, home string) error {
 		}
 		return fmt.Errorf("detach qlog ledger for purge: %w", err)
 	}
-	if err := removeUninstallDataDirectory(deletionPath); err != nil {
-		if abortErr := guard.Abort(); abortErr != nil {
-			return errors.Join(fmt.Errorf("remove local data directory: %w", err), fmt.Errorf("restore access to retained local data: %w", abortErr))
+	if deletionPath != "" {
+		if err := removeUninstallDataDirectory(deletionPath); err != nil {
+			if abortErr := guard.Abort(); abortErr != nil {
+				return errors.Join(fmt.Errorf("remove local data directory: %w", err), fmt.Errorf("restore access to retained local data: %w", abortErr))
+			}
+			return fmt.Errorf("remove local data directory: %w", err)
 		}
-		return fmt.Errorf("remove local data directory: %w", err)
 	}
 	if err := guard.Complete(); err != nil {
 		return fmt.Errorf("complete local data purge: %w", err)
