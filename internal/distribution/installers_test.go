@@ -115,7 +115,7 @@ func TestPowerShellLatestChannelEnumeratesReleaseArraysBeforeFiltering(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	script := string(contents)
+	script := strings.ReplaceAll(string(contents), "\r\n", "\n")
 	response := strings.Index(script, "Invoke-RestMethod -Uri \"https://api.github.com/repos/$repository/releases?per_page=100\"")
 	enumerate := strings.Index(script, "ForEach-Object { $_ }")
 	filter := strings.Index(script, "Where-Object { -not $_.draft }")
