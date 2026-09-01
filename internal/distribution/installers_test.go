@@ -177,6 +177,22 @@ func TestPowerShellInstallerSkipsBootstrapPromptWhenNoninteractive(t *testing.T)
 	}
 }
 
+func TestPowerShellUninstallerRejectsPurgeBeforeInvokingInstalledBinary(t *testing.T) {
+	contents, err := os.ReadFile(filepath.Join("..", "..", "installers", "uninstall.ps1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(contents)
+	reject := strings.Index(script, "if ($purgeData) {\n    Fail '--purge-data is temporarily unavailable")
+	invoke := strings.Index(script, "& $target @cleanupArguments")
+	if reject < 0 || invoke < 0 || reject > invoke {
+		t.Fatalf("uninstall.ps1 must reject --purge-data before it can invoke an installed qlog binary:\n%s", script)
+	}
+	if strings.Contains(script, "$cleanupArguments += '--purge-data'") {
+		t.Fatalf("uninstall.ps1 forwarded --purge-data to an installed binary:\n%s", script)
+	}
+}
+
 func TestM4EvidenceDocumentsStableScopeAndCleanDeviceGate(t *testing.T) {
 	contents, err := os.ReadFile(filepath.Join("..", "..", "docs-int", "verification", "m4-evidence.md"))
 	if err != nil {

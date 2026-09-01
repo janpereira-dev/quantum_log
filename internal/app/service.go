@@ -23,8 +23,15 @@ type Service struct {
 	Store *storepkg.Store
 }
 
+type initializationGuard interface {
+	Close() error
+}
+
 var ensureInitializedConfig = config.Ensure
 var openInitializedStore = storepkg.Open
+var acquireInitializationGuard = func(database string) (initializationGuard, error) {
+	return storepkg.AcquireInitializationGuard(database)
+}
 
 // ResolvedProject keeps central project resolution separate from capture adapters.
 type ResolvedProject struct {
@@ -36,7 +43,7 @@ type ResolvedProject struct {
 	GitRoot      string
 }
 
-func Initialize(ctx context.Context, home string) (_ *Service, result error) {
+func Initialize(ctx context.Context, home string) (service *Service, result error) {
 	paths, err := config.Resolve(home)
 	if err != nil {
 		return nil, fmt.Errorf("resolve paths: %w", err)
@@ -44,12 +51,16 @@ func Initialize(ctx context.Context, home string) (_ *Service, result error) {
 	// A published RC.9 may have left an in-home sentinel after an interrupted
 	// purge attempt. Keep this lock until Open owns its shared lock, so an RC.9
 	// process cannot start a purge between the preflight and configuration work.
-	guard, err := storepkg.AcquireInitializationGuard(paths.Database)
+	guard, err := acquireInitializationGuard(paths.Database)
 	if err != nil {
 		return nil, err
 	}
 	defer func() {
 		if closeErr := guard.Close(); closeErr != nil {
+			if service != nil {
+				result = errors.Join(result, service.Close())
+				service = nil
+			}
 			result = errors.Join(result, fmt.Errorf("release initialization quiescence lock: %w", closeErr))
 		}
 	}()

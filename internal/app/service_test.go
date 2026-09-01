@@ -96,6 +96,52 @@ func TestInitializeReleasesQuiescenceLockAfterStoreHandoffFailure(t *testing.T) 
 	assertInitializationLockReleased(t, paths.Database)
 }
 
+func TestInitializeClosesStoreWhenInitializationGuardReleaseFails(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "ledger")
+	paths, err := config.Resolve(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(paths.Home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	originalEnsure, originalOpen, originalGuard := ensureInitializedConfig, openInitializedStore, acquireInitializationGuard
+	t.Cleanup(func() {
+		ensureInitializedConfig = originalEnsure
+		openInitializedStore = originalOpen
+		acquireInitializationGuard = originalGuard
+	})
+	ensureInitializedConfig = config.Ensure
+	openInitializedStore = storepkg.Open
+	acquireInitializationGuard = func(string) (initializationGuard, error) {
+		return failingInitializationGuard{}, nil
+	}
+
+	service, err := Initialize(context.Background(), home)
+	if service != nil {
+		t.Fatalf("Initialize() returned a service after guard release failed: %#v", service)
+	}
+	if err == nil || !strings.Contains(err.Error(), "release initialization quiescence lock") {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+	// A second writer can open only when Initialize closed the Store it had
+	// already created before the guard release failure was returned.
+	store, err := storepkg.Open(context.Background(), paths.Database)
+	if err != nil {
+		t.Fatalf("Initialize leaked its Store after guard release failure: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type failingInitializationGuard struct{}
+
+func (failingInitializationGuard) Close() error {
+	return errors.New("simulated initialization guard release failure")
+}
+
 func assertInitializationLockHeld(t *testing.T, database string) {
 	t.Helper()
 	lock, err := storelock.AcquireExclusiveExisting(database + ".quiescence.lock")

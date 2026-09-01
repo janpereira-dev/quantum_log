@@ -47,6 +47,9 @@ for ($index = 0; $index -lt $Arguments.Count; $index++) {
 }
 
 if ([string]::IsNullOrWhiteSpace($installDir)) { Fail '--install-dir cannot be empty' }
+if ($purgeData) {
+    Fail '--purge-data is temporarily unavailable; no local data was deleted. Run uninstall without it, back up the ledger, stop qlog processes, and remove only the verified ledger directory manually.'
+}
 $target = Join-Path $installDir 'qlog.exe'
 Write-Output "binary: $target"
 if ($modifyPath) { Write-Output "user PATH: $installDir" }
@@ -57,7 +60,6 @@ if ($dryRun) {
 
 if (Test-Path -LiteralPath $target) {
 	$cleanupArguments = @('uninstall', '--json')
-	if ($purgeData) { $cleanupArguments += '--purge-data' }
 	& $target @cleanupArguments
 	if ($LASTEXITCODE -ne 0) {
 		Fail "qlog-owned cleanup failed; retained $target so cleanup can be retried"
@@ -65,7 +67,6 @@ if (Test-Path -LiteralPath $target) {
     Remove-Item -LiteralPath $target -Force
     Write-Output "removed $target"
 } else {
-	if ($purgeData) { Fail '--purge-data requires the installed qlog binary to remove qlog-owned setup safely' }
     Write-Output "qlog is not present at $target"
 }
 
