@@ -18,7 +18,7 @@ type uninstallResult struct {
 
 var newUninstallCollectorManager = newCollectorManager
 
-const automaticDataPurgeUnavailableMessage = "automatic local-data purge is temporarily unavailable; qlog retained the ledger. Run qlog uninstall without --purge-data, back up the ledger, stop all qlog processes, and remove the ledger manually only after verifying the path."
+const automaticDataPurgeUnavailableMessage = "automatic local-data purge is temporarily unavailable; qlog retained the ledger. Run qlog uninstall without --purge-data, back up the ledger, stop all qlog processes, and remove the ledger manually only after verifying the path"
 
 func newUninstallCommand(home *string) *cobra.Command {
 	registry := adapters.Default()
