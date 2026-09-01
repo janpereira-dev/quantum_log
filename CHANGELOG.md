@@ -1,8 +1,14 @@
 # Changelog
 
+## 0.4.0-rc10 - 2026-09-01
+
+- Withdrew automatic `qlog uninstall --purge-data` deletion while its cross-release recovery protocol is audited. The command now fails closed with `data_purged: false`; it still reports adapter and collector cleanup accurately and never deletes a ledger.
+- Retained compatibility with the published RC.9 in-home `qlog.db.purge.pending` sentinel. Cooperative database opens, snapshots, read-only access, checkpoints, and initialization reject a protected ledger rather than creating or modifying configuration.
+- Updated the Copilot PowerShell launcher to retain non-terminating native failure semantics without spawning `cmd.exe` or terminating the caller.
+
 ## 0.4.0-rc9 - 2026-08-31
 
-- Added `qlog uninstall` as the single safe teardown command for every qlog-owned adapter configuration, managed collector, and legacy Windows Startup fallback. Ledger data remains intact unless `--purge-data` is explicit.
+- Added `qlog uninstall` as the single teardown command for every qlog-owned adapter configuration, managed collector, and legacy Windows Startup fallback. Ledger data remains intact by default; RC.10 declines automatic deletion while the prior purge protocol is audited.
 - Made the Windows binary uninstaller call the same teardown before removing `qlog.exe`, so an uninstall cannot silently leave a scheduled collector, Startup entry, or configured hooks behind.
 - Reduced Copilot CLI from nine hooks to the three low-frequency prompt/session hooks, forwards them to the loopback collector, removes the `cmd.exe` PowerShell error path, and bounds unavailable-collector work to 500 ms.
 - Marked the Windows scheduled task hidden and retained its single-instance policy. This remains a prerelease pending real-device validation that no visible consoles or orphaned qlog processes remain after setup, restart, and uninstall.

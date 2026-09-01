@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestPreparePurgeValidatesInitializedIdleLedger(t *testing.T) {
+func TestPurgeSentinelBlocksEveryCooperativeDatabaseEntryPoint(t *testing.T) {
 	databasePath := filepath.Join(t.TempDir(), "qlog.db")
 	writer, err := Open(context.Background(), databasePath)
 	if err != nil {
@@ -17,127 +17,60 @@ func TestPreparePurgeValidatesInitializedIdleLedger(t *testing.T) {
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	guard, err := PreparePurge(context.Background(), databasePath)
-	if err != nil {
-		t.Fatalf("PreparePurge() error = %v", err)
-	}
-	if err := guard.Close(); err != nil {
-		t.Fatalf("close purge guard: %v", err)
-	}
-}
-
-func TestPreparePurgeRejectsCorruptOrActiveLedger(t *testing.T) {
-	corrupt := filepath.Join(t.TempDir(), "qlog.db")
-	initialized, err := Open(context.Background(), corrupt)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := initialized.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(corrupt, []byte("not a sqlite database"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := PreparePurge(context.Background(), corrupt); err == nil {
-		t.Fatal("PreparePurge accepted a corrupt database")
-	} else if strings.Contains(err.Error(), "quiescence lock is missing") {
-		t.Fatalf("corrupt ledger error = %v", err)
-	}
-
-	active := filepath.Join(t.TempDir(), "qlog.db")
-	writer, err := Open(context.Background(), active)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = writer.Close() })
-	if _, err := PreparePurge(context.Background(), active); err == nil {
-		t.Fatal("PreparePurge accepted an active writer")
-	} else if !strings.Contains(err.Error(), "quiescence lock is held") {
-		t.Fatalf("active ledger error = %v", err)
-	}
-}
-
-func TestPurgeGuardKeepsLedgerUnreachableUntilAbort(t *testing.T) {
-	databasePath := filepath.Join(t.TempDir(), "qlog.db")
-	writer, err := Open(context.Background(), databasePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatal(err)
-	}
-	guard, err := PreparePurge(context.Background(), databasePath)
-	if err != nil {
-		t.Fatalf("PreparePurge() error = %v", err)
-	}
-	if err := guard.ReleaseForPurge(); err != nil {
-		t.Fatalf("release purge guard: %v", err)
-	}
-	if nextWriter, err := Open(context.Background(), databasePath); err == nil {
-		_ = nextWriter.Close()
-		t.Fatal("Open accepted a ledger marked for purge")
-	} else if !strings.Contains(err.Error(), "purge is in progress") {
-		t.Fatalf("Open while purging error = %v", err)
-	}
-	if err := guard.Abort(); err != nil {
-		t.Fatalf("abort purge: %v", err)
-	}
-	nextWriter, err := Open(context.Background(), databasePath)
-	if err != nil {
-		t.Fatalf("Open after abort = %v", err)
-	}
-	if err := nextWriter.Close(); err != nil {
-		t.Fatalf("close restored ledger: %v", err)
-	}
-}
-
-func TestPreparePurgeResumesAnInterruptedPurge(t *testing.T) {
-	databasePath := filepath.Join(t.TempDir(), "qlog.db")
-	writer, err := Open(context.Background(), databasePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatal(err)
-	}
-	abandoned, err := PreparePurge(context.Background(), databasePath)
-	if err != nil {
-		t.Fatalf("prepare initial purge: %v", err)
-	}
-	if err := abandoned.ReleaseForPurge(); err != nil {
-		t.Fatalf("release initial purge: %v", err)
-	}
-
-	resumed, err := PreparePurge(context.Background(), databasePath)
-	if err != nil {
-		t.Fatalf("resume interrupted purge: %v", err)
-	}
-	if err := resumed.ReleaseForPurge(); err != nil {
-		t.Fatalf("release resumed purge: %v", err)
-	}
-	if nextWriter, err := Open(context.Background(), databasePath); err == nil {
-		_ = nextWriter.Close()
-		t.Fatal("Open accepted a ledger while its resumed purge was pending")
-	}
-	if err := resumed.Abort(); err != nil {
-		t.Fatalf("abort resumed purge: %v", err)
-	}
-}
-
-func TestPreparePurgeRefusesResumeWithoutExclusiveOwnership(t *testing.T) {
-	databasePath := filepath.Join(t.TempDir(), "qlog.db")
-	writer, err := Open(context.Background(), databasePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = writer.Close() })
 	if err := os.WriteFile(purgeMarkerPath(databasePath), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Remove(purgeMarkerPath(databasePath)) })
-	if _, err := PreparePurge(context.Background(), databasePath); err == nil {
-		t.Fatal("PreparePurge resumed without exclusive quiescence ownership")
-	} else if !strings.Contains(err.Error(), "quiescence lock is held") {
-		t.Fatalf("PreparePurge resume error = %v", err)
+
+	for name, open := range map[string]func() error{
+		"open": func() error {
+			store, err := Open(context.Background(), databasePath)
+			if store != nil {
+				_ = store.Close()
+			}
+			return err
+		},
+		"read-only": func() error {
+			store, err := OpenReadOnly(context.Background(), databasePath)
+			if store != nil {
+				_ = store.Close()
+			}
+			return err
+		},
+		"snapshot": func() error {
+			store, err := OpenSnapshotReadOnly(context.Background(), databasePath)
+			if store != nil {
+				_ = store.Close()
+			}
+			return err
+		},
+		"checkpoint": func() error { return Checkpoint(context.Background(), databasePath) },
+	} {
+		if err := open(); err == nil || !strings.Contains(err.Error(), "purge is pending") {
+			t.Errorf("%s while sentinel is present error = %v", name, err)
+		}
+	}
+}
+
+func TestCheckPurgePendingAcceptsAbsentHome(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "absent", "qlog.db")
+	if err := CheckPurgePending(databasePath); err != nil {
+		t.Fatalf("CheckPurgePending(absent home) = %v", err)
+	}
+}
+
+func TestPurgeSentinelRejectsUnsafeTopology(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "qlog.db")
+	writer, err := Open(context.Background(), databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(purgeMarkerPath(databasePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckPurgePending(databasePath); err == nil || !strings.Contains(err.Error(), "non-regular") {
+		t.Fatalf("unsafe purge sentinel error = %v", err)
 	}
 }

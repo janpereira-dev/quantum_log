@@ -459,12 +459,9 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	if err != nil {
 		return nil, writerQuiescenceError(err)
 	}
-	if _, err := os.Stat(purgeMarkerPath(absolutePath)); err == nil {
+	if err := rejectPurgeMarker(absolutePath); err != nil {
 		_ = quiescence.Close()
-		return nil, errors.New("ledger purge is in progress; retry after it completes")
-	} else if !errors.Is(err, os.ErrNotExist) {
-		_ = quiescence.Close()
-		return nil, fmt.Errorf("inspect ledger purge marker: %w", err)
+		return nil, err
 	}
 	writerLock, err := storelock.AcquireExclusive(writerLockPath(absolutePath))
 	if err != nil {
@@ -500,6 +497,10 @@ func OpenReadOnly(ctx context.Context, path string) (*Store, error) {
 	quiescence, err := storelock.AcquireExclusiveExisting(quiescenceLockPath(absolutePath))
 	if err != nil {
 		return nil, readerQuiescenceError(err)
+	}
+	if err := rejectPurgeMarker(absolutePath); err != nil {
+		_ = quiescence.Close()
+		return nil, err
 	}
 	if _, err := os.Stat(writerLockPath(absolutePath)); err != nil {
 		_ = quiescence.Close()
@@ -542,6 +543,10 @@ func OpenSnapshotReadOnly(ctx context.Context, path string) (*Store, error) {
 	quiescence, err := storelock.AcquireShared(quiescenceLockPath(absolutePath))
 	if err != nil {
 		return nil, readerQuiescenceError(err)
+	}
+	if err := rejectPurgeMarker(absolutePath); err != nil {
+		_ = quiescence.Close()
+		return nil, err
 	}
 	if _, err := os.Stat(writerLockPath(absolutePath)); err != nil {
 		_ = quiescence.Close()
@@ -602,6 +607,9 @@ func Checkpoint(ctx context.Context, path string) (result error) {
 		return maintenanceQuiescenceError(err)
 	}
 	defer func() { result = errors.Join(result, quiescence.Close()) }()
+	if err := rejectPurgeMarker(absolutePath); err != nil {
+		return err
+	}
 	writerLock, err := storelock.AcquireExclusiveExisting(writerLockPath(absolutePath))
 	if err != nil {
 		return maintenanceWriterLockError(err)

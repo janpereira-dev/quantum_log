@@ -3,12 +3,8 @@ package cli
 import (
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 
 	"github.com/janpereira-dev/quantum_log/internal/adapters"
-	"github.com/janpereira-dev/quantum_log/internal/config"
-	storepkg "github.com/janpereira-dev/quantum_log/internal/storage/sqlite"
 	"github.com/spf13/cobra"
 )
 
@@ -21,8 +17,8 @@ type uninstallResult struct {
 }
 
 var newUninstallCollectorManager = newCollectorManager
-var removeUninstallDataDirectory = os.RemoveAll
-var prepareUninstallDataPurge = storepkg.PreparePurge
+
+const automaticDataPurgeUnavailableMessage = "automatic local-data purge is temporarily unavailable; qlog retained the ledger. Run qlog uninstall without --purge-data, back up the ledger, stop all qlog processes, and remove the ledger manually only after verifying the path"
 
 func newUninstallCommand(home *string) *cobra.Command {
 	registry := adapters.Default()
@@ -35,9 +31,8 @@ func newUninstallCommand(home *string) *cobra.Command {
 			result := uninstallResult{Adapters: make(map[string]adapters.InstallResult)}
 			failures := make([]error, 0)
 			manager := newUninstallCollectorManager()
-			purgeHome, _, preflightErr := resolveUninstallPurgeTarget(command, manager, *home, purgeData)
-			if preflightErr != nil {
-				failures = append(failures, preflightErr)
+			if purgeData {
+				failures = append(failures, errors.New(automaticDataPurgeUnavailableMessage))
 			}
 
 			for _, adapter := range registry.List() {
@@ -60,16 +55,6 @@ func newUninstallCommand(home *string) *cobra.Command {
 				}
 			}
 
-			if purgeData && !dryRun {
-				if len(failures) != 0 {
-					failures = append(failures, errors.New("local data was retained because qlog-owned cleanup or purge preflight was incomplete"))
-				} else if err := purgeUninstallData(command, purgeHome); err != nil {
-					failures = append(failures, err)
-				} else {
-					result.DataPurged = true
-				}
-			}
-
 			if jsonOutput {
 				if err := writeJSON(command.Root().OutOrStdout(), result); err != nil {
 					return err
@@ -89,8 +74,8 @@ func newUninstallCommand(home *string) *cobra.Command {
 						return err
 					}
 				}
-				if purgeData && result.DataPurged {
-					if _, err := fmt.Fprintln(command.Root().OutOrStdout(), "removed local QUANTUM_LOG data"); err != nil {
+				if purgeData {
+					if _, err := fmt.Fprintln(command.Root().OutOrStdout(), "local QUANTUM_LOG data was retained; automatic purge is temporarily unavailable"); err != nil {
 						return err
 					}
 				}
@@ -100,80 +85,6 @@ func newUninstallCommand(home *string) *cobra.Command {
 	}
 	command.Flags().BoolVar(&dryRun, "dry-run", false, "show qlog-owned cleanup without writing files")
 	command.Flags().BoolVar(&jsonOutput, "json", false, "output JSON")
-	command.Flags().BoolVar(&purgeData, "purge-data", false, "also delete the local QUANTUM_LOG ledger after successful cleanup")
+	command.Flags().BoolVar(&purgeData, "purge-data", false, "request local data purge (temporarily unavailable; no data is deleted)")
 	return command
-}
-
-func resolveUninstallPurgeTarget(command *cobra.Command, manager collectorManager, home string, purgeData bool) (string, string, error) {
-	paths, err := config.Resolve(home)
-	if err != nil {
-		return "", "", fmt.Errorf("resolve local data directory: %w", err)
-	}
-	resolvedHome, resolvedListen := resolveManagedCollectorSettings(manager, paths.Home, defaultCollectorListen, command.Flags().Changed("home"), false)
-	paths, err = config.Resolve(resolvedHome)
-	if err != nil {
-		return "", "", fmt.Errorf("resolve managed local data directory: %w", err)
-	}
-	if !purgeData {
-		return paths.Home, resolvedListen, nil
-	}
-	if err := rejectUnsafeUninstallHome(paths.Home); err != nil {
-		return "", "", err
-	}
-	status, err := manager.Status(command.Context(), resolvedListen)
-	if err != nil {
-		return "", "", fmt.Errorf("inspect collector before purging local data: %w", err)
-	}
-	if status.Reachable && status.ManagedHealth && !status.Installed {
-		return "", "", errors.New("refusing to purge local data while a reachable unmanaged qlog collector is active; stop qlog collector serve and retry")
-	}
-	return paths.Home, resolvedListen, nil
-}
-
-func purgeUninstallData(command *cobra.Command, home string) error {
-	if err := rejectUnsafeUninstallHome(home); err != nil {
-		return err
-	}
-	paths, err := config.Resolve(home)
-	if err != nil {
-		return fmt.Errorf("resolve local data directory: %w", err)
-	}
-	guard, err := prepareUninstallDataPurge(command.Context(), paths.Database)
-	if err != nil {
-		return fmt.Errorf("refusing to purge data that is not an idle, valid qlog ledger: %w", err)
-	}
-	if err := guard.ReleaseForPurge(); err != nil {
-		if abortErr := guard.Abort(); abortErr != nil {
-			return errors.Join(fmt.Errorf("release qlog ledger purge guard: %w", err), fmt.Errorf("restore access to retained local data: %w", abortErr))
-		}
-		return fmt.Errorf("release qlog ledger purge guard: %w", err)
-	}
-	if err := removeUninstallDataDirectory(paths.Home); err != nil {
-		if abortErr := guard.Abort(); abortErr != nil {
-			return errors.Join(fmt.Errorf("remove local data directory: %w", err), fmt.Errorf("restore access to retained local data: %w", abortErr))
-		}
-		return fmt.Errorf("remove local data directory: %w", err)
-	}
-	return nil
-}
-
-func rejectUnsafeUninstallHome(home string) error {
-	clean := filepath.Clean(home)
-	volumeRoot := filepath.VolumeName(clean) + string(filepath.Separator)
-	if clean == string(filepath.Separator) || (filepath.VolumeName(clean) != "" && clean == volumeRoot) || filepath.Dir(clean) == clean {
-		return fmt.Errorf("refusing to purge unsafe qlog home %q", home)
-	}
-	if userHome, err := os.UserHomeDir(); err == nil {
-		if resolvedUserHome, resolveErr := filepath.Abs(userHome); resolveErr == nil && filepath.Clean(resolvedUserHome) == clean {
-			return fmt.Errorf("refusing to purge user home %q", home)
-		}
-	}
-	info, err := os.Lstat(clean)
-	if err != nil {
-		return fmt.Errorf("inspect qlog home before purge: %w", err)
-	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("refusing to purge non-directory or symbolic-link qlog home %q", home)
-	}
-	return nil
 }

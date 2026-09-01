@@ -18,11 +18,11 @@ Usage: uninstall.ps1 [options]
 Options:
   --install-dir DIRECTORY Remove qlog from DIRECTORY.
   --no-modify-path        Leave the user PATH unchanged.
-  --purge-data            Also delete the local QUANTUM_LOG ledger after cleanup.
+  --purge-data            Request ledger deletion (temporarily unavailable; data is retained).
   --dry-run               Print planned changes without writing files.
   --help                  Show this help.
 
-By default, local QUANTUM_LOG ledger data is preserved.
+Local QUANTUM_LOG ledger data is preserved. Automatic purge is temporarily unavailable.
 '@ | Write-Output
 }
 
@@ -47,6 +47,9 @@ for ($index = 0; $index -lt $Arguments.Count; $index++) {
 }
 
 if ([string]::IsNullOrWhiteSpace($installDir)) { Fail '--install-dir cannot be empty' }
+if ($purgeData) {
+    Fail '--purge-data is temporarily unavailable; no local data was deleted. Run uninstall without it, back up the ledger, stop qlog processes, and remove only the verified ledger directory manually.'
+}
 $target = Join-Path $installDir 'qlog.exe'
 Write-Output "binary: $target"
 if ($modifyPath) { Write-Output "user PATH: $installDir" }
@@ -57,7 +60,6 @@ if ($dryRun) {
 
 if (Test-Path -LiteralPath $target) {
 	$cleanupArguments = @('uninstall', '--json')
-	if ($purgeData) { $cleanupArguments += '--purge-data' }
 	& $target @cleanupArguments
 	if ($LASTEXITCODE -ne 0) {
 		Fail "qlog-owned cleanup failed; retained $target so cleanup can be retried"
@@ -65,7 +67,6 @@ if (Test-Path -LiteralPath $target) {
     Remove-Item -LiteralPath $target -Force
     Write-Output "removed $target"
 } else {
-	if ($purgeData) { Fail '--purge-data requires the installed qlog binary to remove qlog-owned setup safely' }
     Write-Output "qlog is not present at $target"
 }
 
@@ -82,8 +83,4 @@ if (Test-Path -LiteralPath $installDir) {
     $remaining = @(Get-ChildItem -LiteralPath $installDir -Force)
     if ($remaining.Count -eq 0) { Remove-Item -LiteralPath $installDir -Force }
 }
-if ($purgeData) {
-	Write-Output 'uninstalled qlog and removed local QUANTUM_LOG data'
-} else {
-	Write-Output 'uninstalled qlog; local QUANTUM_LOG data was preserved'
-}
+Write-Output 'uninstalled qlog; local QUANTUM_LOG data was preserved'

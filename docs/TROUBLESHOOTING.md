@@ -27,8 +27,11 @@ Get-CimInstance Win32_Process -Filter "Name = 'qlog.exe'" |
   ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 ```
 
-`0.4.0-rc9` replaces this with a single `qlog uninstall --json` command. Add
-`--purge-data` only if you also want to delete the local ledger.
+`0.4.0-rc10` replaces this with a single `qlog uninstall --json` command. It
+intentionally retains the local ledger: automatic `--purge-data` is temporarily
+unavailable and fails closed. Back up the ledger, stop all qlog processes, and
+manually remove only the inspected qlog ledger directory if data removal is
+required.
 
 Use compiled `qlog` artifact for diagnosis. Do not manufacture telemetry or claim real capture from setup files, unit tests, or synthetic events.
 

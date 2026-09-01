@@ -115,7 +115,7 @@ func TestPowerShellLatestChannelEnumeratesReleaseArraysBeforeFiltering(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	script := string(contents)
+	script := strings.ReplaceAll(string(contents), "\r\n", "\n")
 	response := strings.Index(script, "Invoke-RestMethod -Uri \"https://api.github.com/repos/$repository/releases?per_page=100\"")
 	enumerate := strings.Index(script, "ForEach-Object { $_ }")
 	filter := strings.Index(script, "Where-Object { -not $_.draft }")
@@ -148,7 +148,7 @@ func TestInstallGuideDocumentsVerifiedRCInstallerLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	guide := string(contents)
-	for _, want := range []string{"installers/install.sh", "installers/install.ps1", "--version v0.4.0-rc9", "--channel latest", "create and push the release tag", "The pushed `v*` tag triggers the release workflow"} {
+	for _, want := range []string{"installers/install.sh", "installers/install.ps1", "--version v0.4.0-rc10", "--channel latest", "create and push the release tag", "The pushed `v*` tag triggers the release workflow"} {
 		if !strings.Contains(guide, want) {
 			t.Fatalf("install guide missing %q", want)
 		}
@@ -174,6 +174,22 @@ func TestPowerShellInstallerSkipsBootstrapPromptWhenNoninteractive(t *testing.T)
 	}
 	if !strings.Contains(string(contents), "$bootstrap -eq $null -and -not $dryRun -and -not [Console]::IsInputRedirected") {
 		t.Fatal("install.ps1 must prompt only when an interactive PowerShell host is available")
+	}
+}
+
+func TestPowerShellUninstallerRejectsPurgeBeforeInvokingInstalledBinary(t *testing.T) {
+	contents, err := os.ReadFile(filepath.Join("..", "..", "installers", "uninstall.ps1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := strings.ReplaceAll(string(contents), "\r\n", "\n")
+	reject := strings.Index(script, "if ($purgeData) {\n    Fail '--purge-data is temporarily unavailable")
+	invoke := strings.Index(script, "& $target @cleanupArguments")
+	if reject < 0 || invoke < 0 || reject > invoke {
+		t.Fatalf("uninstall.ps1 must reject --purge-data before it can invoke an installed qlog binary:\n%s", script)
+	}
+	if strings.Contains(script, "$cleanupArguments += '--purge-data'") {
+		t.Fatalf("uninstall.ps1 forwarded --purge-data to an installed binary:\n%s", script)
 	}
 }
 
