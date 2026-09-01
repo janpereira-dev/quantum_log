@@ -200,7 +200,7 @@ func TestCopilotCLIPowerShellLauncherInvokesOnlyFirstApplication(t *testing.T) {
 	dir := t.TempDir()
 	first := filepath.Join(dir, "copilot-first.cmd")
 	second := filepath.Join(dir, "copilot-second.cmd")
-	if err := os.WriteFile(first, []byte("@echo off\r\necho first:%*\r\n"), 0o600); err != nil {
+	if err := os.WriteFile(first, []byte("@echo off\r\necho first:%~1^|%~2\r\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(second, []byte("@echo off\r\necho second:%*\r\n"), 0o600); err != nil {
@@ -221,7 +221,7 @@ func TestCopilotCLIPowerShellLauncherInvokesOnlyFirstApplication(t *testing.T) {
   Microsoft.PowerShell.Core\Get-Command @PSBoundParameters
 }
 
-` + copilotCLIProfileBlock() + "copilot marker\n"
+` + copilotCLIProfileBlock() + "copilot 'first argument' second\n"
 	scriptPath := filepath.Join(dir, "profile-test.ps1")
 	if err := os.WriteFile(scriptPath, []byte(script), 0o600); err != nil {
 		t.Fatal(err)
@@ -233,8 +233,8 @@ func TestCopilotCLIPowerShellLauncherInvokesOnlyFirstApplication(t *testing.T) {
 		t.Fatalf("PowerShell launcher failed: %v\n%s", err, output)
 	}
 	got := string(output)
-	if !strings.Contains(got, "first:marker") || strings.Contains(got, "second:marker") {
-		t.Fatalf("PowerShell launcher output = %q, want only first application", got)
+	if !strings.Contains(got, "first:first argument|second") || strings.Contains(got, "second:") {
+		t.Fatalf("PowerShell launcher output = %q, want both arguments only at the first application", got)
 	}
 }
 

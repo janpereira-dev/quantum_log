@@ -37,6 +37,11 @@ func Initialize(ctx context.Context, home string) (*Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve paths: %w", err)
 	}
+	// A published RC.9 may have left an in-home sentinel after an interrupted
+	// purge attempt. Check it before Ensure can create or alter configuration.
+	if err := storepkg.CheckPurgePending(paths.Database); err != nil {
+		return nil, err
+	}
 	if err := config.Ensure(paths); err != nil {
 		return nil, fmt.Errorf("create configuration: %w", err)
 	}

@@ -101,5 +101,11 @@ binary:
 ```
 
 `uninstall` removes only qlog-owned setup, including a legacy Windows Startup
-entry created by older candidates. Local ledger data is retained by default. Use
-`& $qlog uninstall --purge-data` only when you explicitly want to erase it.
+entry created by older candidates. RC.10 retains local ledger data in every
+mode: `& $qlog uninstall --purge-data` is temporarily unavailable and fails
+closed with `data_purged: false`.
+
+To remove data without relying on an automatic deletion workflow, first run
+`& $qlog uninstall --json`, back up the ledger, stop every `qlog collector
+serve` process, and manually remove only the verified ledger directory. Do not
+delete a home path until you have inspected it and confirmed it belongs to qlog.

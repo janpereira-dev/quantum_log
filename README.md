@@ -25,7 +25,8 @@ Capture quality is explicit. Provider-reported, agent-reported, lifecycle-only, 
 Run `qlog setup --yes`, restart configured agents, and use them normally. The collector is managed as a user-level loopback service when the platform manager permits it; hooks/plugins use the installed absolute qlog binary. On Windows, a Task Scheduler policy denial does not create a Startup-app fallback: use an explicit foreground collector for OTLP capture. Every native prompt creates one canonical interaction; model and tool calls are linked children.
 
 To remove qlog-owned startup, collector, and adapter configuration in one step,
-run `qlog uninstall`. It retains the local ledger unless `--purge-data` is explicit.
+run `qlog uninstall`. It always retains the local ledger in RC.10: automatic
+`--purge-data` is temporarily unavailable and fails closed.
 
 | Agent | Interaction | Prompt | Tokens | Cache | Cost | Duration | Tools |
 | --- | --- | --- | --- | --- | --- | --- | --- |

@@ -69,8 +69,11 @@ qlog uninstall --json
 ```
 
 This removes every qlog-owned adapter configuration, the managed collector, and
-legacy Windows `Run`-key state. It does not erase local ledger data. Use
-`qlog uninstall --purge-data` only when the ledger itself must be deleted.
+legacy Windows `Run`-key state. It does not erase local ledger data. RC.10
+temporarily withdraws automatic `qlog uninstall --purge-data`; the command
+fails closed and retains the ledger. Back up the ledger, stop all qlog
+processes, and manually remove only the inspected qlog ledger directory when
+data removal is required.
 
 Copilot CLI uses only prompt and session lifecycle hooks. Tool and subagent hooks
 are deliberately not installed: they create a process for every agent tool event

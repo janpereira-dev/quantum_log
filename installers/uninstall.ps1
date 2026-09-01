@@ -18,11 +18,11 @@ Usage: uninstall.ps1 [options]
 Options:
   --install-dir DIRECTORY Remove qlog from DIRECTORY.
   --no-modify-path        Leave the user PATH unchanged.
-  --purge-data            Also delete the local QUANTUM_LOG ledger after cleanup.
+  --purge-data            Request ledger deletion (temporarily unavailable; data is retained).
   --dry-run               Print planned changes without writing files.
   --help                  Show this help.
 
-By default, local QUANTUM_LOG ledger data is preserved.
+Local QUANTUM_LOG ledger data is preserved. Automatic purge is temporarily unavailable.
 '@ | Write-Output
 }
 
@@ -82,8 +82,4 @@ if (Test-Path -LiteralPath $installDir) {
     $remaining = @(Get-ChildItem -LiteralPath $installDir -Force)
     if ($remaining.Count -eq 0) { Remove-Item -LiteralPath $installDir -Force }
 }
-if ($purgeData) {
-	Write-Output 'uninstalled qlog and removed local QUANTUM_LOG data'
-} else {
-	Write-Output 'uninstalled qlog; local QUANTUM_LOG data was preserved'
-}
+Write-Output 'uninstalled qlog; local QUANTUM_LOG data was preserved'

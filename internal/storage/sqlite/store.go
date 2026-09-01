@@ -33,7 +33,6 @@ var migrations embed.FS
 
 type Store struct {
 	db         *sql.DB
-	lifecycle  *storelock.Handle
 	quiescence *storelock.Handle
 	writerLock *storelock.Handle
 	writable   bool
@@ -456,23 +455,17 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	if err := ensureParent(absolutePath); err != nil {
 		return nil, err
 	}
-	absolutePath, err = canonicalDatabasePath(absolutePath)
-	if err != nil {
-		return nil, err
-	}
-	lifecycle, _, err := acquireLifecycleShared(absolutePath)
-	if err != nil {
-		return nil, err
-	}
 	quiescence, err := storelock.AcquireSharedCreate(quiescenceLockPath(absolutePath))
 	if err != nil {
-		_ = lifecycle.Close()
 		return nil, writerQuiescenceError(err)
+	}
+	if err := rejectPurgeMarker(absolutePath); err != nil {
+		_ = quiescence.Close()
+		return nil, err
 	}
 	writerLock, err := storelock.AcquireExclusive(writerLockPath(absolutePath))
 	if err != nil {
 		_ = quiescence.Close()
-		_ = lifecycle.Close()
 		return nil, writerLockError(err)
 	}
 	// modernc accepts a SQLite URI with a Windows-safe forward-slash path.
@@ -481,11 +474,10 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	if err != nil {
 		_ = writerLock.Close()
 		_ = quiescence.Close()
-		_ = lifecycle.Close()
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	store := &Store{db: db, lifecycle: lifecycle, quiescence: quiescence, writerLock: writerLock, writable: true}
+	store := &Store{db: db, quiescence: quiescence, writerLock: writerLock, writable: true}
 	if err := store.migrate(ctx); err != nil {
 		_ = store.Close()
 		return nil, err
@@ -499,48 +491,38 @@ func OpenReadOnly(ctx context.Context, path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve database path: %w", err)
 	}
-	absolutePath, err = canonicalDatabasePath(absolutePath)
-	if err != nil {
-		return nil, err
-	}
-	lifecycle, _, err := acquireLifecycleShared(absolutePath)
-	if err != nil {
-		return nil, err
-	}
 	if _, err := os.Stat(absolutePath); err != nil {
-		_ = lifecycle.Close()
 		return nil, fmt.Errorf("open local database: %w; run qlog init first", err)
 	}
 	quiescence, err := storelock.AcquireExclusiveExisting(quiescenceLockPath(absolutePath))
 	if err != nil {
-		_ = lifecycle.Close()
 		return nil, readerQuiescenceError(err)
+	}
+	if err := rejectPurgeMarker(absolutePath); err != nil {
+		_ = quiescence.Close()
+		return nil, err
 	}
 	if _, err := os.Stat(writerLockPath(absolutePath)); err != nil {
 		_ = quiescence.Close()
-		_ = lifecycle.Close()
 		return nil, readerWriterLockError(err)
 	}
 	if err := rejectActiveWAL(absolutePath); err != nil {
 		_ = quiescence.Close()
-		_ = lifecycle.Close()
 		return nil, err
 	}
 	dsn := "file:" + filepath.ToSlash(absolutePath) + "?mode=ro&immutable=1&_pragma=query_only(1)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		_ = quiescence.Close()
-		_ = lifecycle.Close()
 		return nil, fmt.Errorf("open read-only sqlite: %w", err)
 	}
 	db.SetMaxOpenConns(1)
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
 		_ = quiescence.Close()
-		_ = lifecycle.Close()
 		return nil, fmt.Errorf("open read-only sqlite: %w", err)
 	}
-	store := &Store{db: db, lifecycle: lifecycle, quiescence: quiescence, warnings: isolatedSHMWarning(absolutePath)}
+	store := &Store{db: db, quiescence: quiescence, warnings: isolatedSHMWarning(absolutePath)}
 	if err := store.validateSchema(ctx); err != nil {
 		_ = store.Close()
 		return nil, err
@@ -555,43 +537,34 @@ func OpenSnapshotReadOnly(ctx context.Context, path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve database path: %w", err)
 	}
-	absolutePath, err = canonicalDatabasePath(absolutePath)
-	if err != nil {
-		return nil, err
-	}
-	lifecycle, _, err := acquireLifecycleShared(absolutePath)
-	if err != nil {
-		return nil, err
-	}
 	if _, err := os.Stat(absolutePath); err != nil {
-		_ = lifecycle.Close()
 		return nil, fmt.Errorf("open local database: %w; run qlog init first", err)
 	}
 	quiescence, err := storelock.AcquireShared(quiescenceLockPath(absolutePath))
 	if err != nil {
-		_ = lifecycle.Close()
 		return nil, readerQuiescenceError(err)
+	}
+	if err := rejectPurgeMarker(absolutePath); err != nil {
+		_ = quiescence.Close()
+		return nil, err
 	}
 	if _, err := os.Stat(writerLockPath(absolutePath)); err != nil {
 		_ = quiescence.Close()
-		_ = lifecycle.Close()
 		return nil, readerWriterLockError(err)
 	}
 	dsn := "file:" + filepath.ToSlash(absolutePath) + "?mode=ro&_pragma=query_only(1)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		_ = quiescence.Close()
-		_ = lifecycle.Close()
 		return nil, fmt.Errorf("open snapshot sqlite: %w", err)
 	}
 	db.SetMaxOpenConns(1)
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
 		_ = quiescence.Close()
-		_ = lifecycle.Close()
 		return nil, fmt.Errorf("open snapshot sqlite: %w", err)
 	}
-	store := &Store{db: db, lifecycle: lifecycle, quiescence: quiescence}
+	store := &Store{db: db, quiescence: quiescence}
 	if err := store.validateSchema(ctx); err != nil {
 		_ = store.Close()
 		return nil, err
@@ -615,9 +588,6 @@ func (s *Store) Close() error {
 	if s.quiescence != nil {
 		result = errors.Join(result, s.quiescence.Close())
 	}
-	if s.lifecycle != nil {
-		result = errors.Join(result, s.lifecycle.Close())
-	}
 	return result
 }
 
@@ -629,15 +599,6 @@ func Checkpoint(ctx context.Context, path string) (result error) {
 	if err != nil {
 		return fmt.Errorf("resolve database path: %w", err)
 	}
-	absolutePath, err = canonicalDatabasePath(absolutePath)
-	if err != nil {
-		return err
-	}
-	lifecycle, _, err := acquireLifecycleShared(absolutePath)
-	if err != nil {
-		return err
-	}
-	defer func() { result = errors.Join(result, lifecycle.Close()) }()
 	if _, err := os.Stat(absolutePath); err != nil {
 		return fmt.Errorf("open local database: %w; run qlog init first", err)
 	}
@@ -646,6 +607,9 @@ func Checkpoint(ctx context.Context, path string) (result error) {
 		return maintenanceQuiescenceError(err)
 	}
 	defer func() { result = errors.Join(result, quiescence.Close()) }()
+	if err := rejectPurgeMarker(absolutePath); err != nil {
+		return err
+	}
 	writerLock, err := storelock.AcquireExclusiveExisting(writerLockPath(absolutePath))
 	if err != nil {
 		return maintenanceWriterLockError(err)
@@ -2945,6 +2909,8 @@ func ensureParent(path string) error {
 func quiescenceLockPath(databasePath string) string { return databasePath + ".quiescence.lock" }
 
 func writerLockPath(databasePath string) string { return databasePath + ".writer.lock" }
+
+func purgeMarkerPath(databasePath string) string { return databasePath + ".purge.pending" }
 
 func writerQuiescenceError(err error) error {
 	if errors.Is(err, storelock.ErrContended) {
