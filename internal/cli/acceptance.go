@@ -2,6 +2,7 @@ package cli
 
 import (
 	"archive/zip"
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -17,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	acceptancecontract "github.com/janpereira-dev/quantum_log/internal/acceptance"
 	"github.com/janpereira-dev/quantum_log/internal/adapters"
 	"github.com/janpereira-dev/quantum_log/internal/app"
 	"github.com/janpereira-dev/quantum_log/internal/storage/sqlite"
@@ -44,18 +46,19 @@ type acceptanceAgentResult struct {
 }
 
 type acceptanceManifest struct {
-	SchemaVersion        int                     `json:"schema_version"`
-	GeneratedAt          time.Time               `json:"generated_at"`
-	Version              string                  `json:"version"`
-	Commit               string                  `json:"commit"`
-	BuildDate            string                  `json:"build_date"`
-	Platform             string                  `json:"platform"`
-	ImplementationStatus string                  `json:"implementation_status"`
-	ReadinessStatus      string                  `json:"readiness_status"`
-	ExternalE2EStatus    string                  `json:"external_e2e_status"`
-	Agents               []acceptanceAgentResult `json:"agents"`
-	Files                map[string]string       `json:"files"`
-	Privacy              []string                `json:"privacy"`
+	SchemaVersion        int                                    `json:"schema_version"`
+	GeneratedAt          time.Time                              `json:"generated_at"`
+	Version              string                                 `json:"version"`
+	Commit               string                                 `json:"commit"`
+	BuildDate            string                                 `json:"build_date"`
+	Platform             string                                 `json:"platform"`
+	ImplementationStatus string                                 `json:"implementation_status"`
+	ReadinessStatus      string                                 `json:"readiness_status"`
+	ExternalE2EStatus    string                                 `json:"external_e2e_status"`
+	Agents               []acceptanceAgentResult                `json:"agents"`
+	Files                map[string]string                      `json:"files"`
+	Privacy              []string                               `json:"privacy"`
+	RealAgentEvidence    []acceptancecontract.RealAgentEvidence `json:"real_agent_evidence,omitempty"`
 }
 
 type acceptanceDiagnostics struct {
@@ -67,22 +70,28 @@ type acceptanceDiagnostics struct {
 func newAcceptanceCommand(home *string, version Version) *cobra.Command {
 	acceptance := &cobra.Command{Use: "acceptance", Short: "Create privacy-safe local acceptance evidence"}
 	var output string
+	var realAgentEvidence []string
 	run := &cobra.Command{Use: "run", Short: "Write a sanitized local acceptance ZIP package", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
 		if strings.TrimSpace(output) == "" {
 			return errors.New("acceptance run requires --output <zip>")
 		}
-		if err := writeAcceptancePackage(command.Context(), *home, version, output); err != nil {
+		if err := writeAcceptancePackageWithEvidence(command.Context(), *home, version, output, realAgentEvidence); err != nil {
 			return err
 		}
 		_, err := fmt.Fprintf(command.OutOrStdout(), "acceptance evidence: %s\n", output)
 		return err
 	}}
 	run.Flags().StringVar(&output, "output", "", "destination ZIP path")
+	run.Flags().StringArrayVar(&realAgentEvidence, "real-agent-evidence", nil, "repeatable qlog.acceptance.real-agent/v1 JSON summary")
 	acceptance.AddCommand(run)
 	return acceptance
 }
 
 func writeAcceptancePackage(ctx context.Context, home string, version Version, output string) error {
+	return writeAcceptancePackageWithEvidence(ctx, home, version, output, nil)
+}
+
+func writeAcceptancePackageWithEvidence(ctx context.Context, home string, version Version, output string, rawEvidence []string) error {
 	service, err := app.OpenSnapshotReadOnly(ctx, home)
 	if err != nil {
 		return err
@@ -117,6 +126,11 @@ func writeAcceptancePackage(ctx context.Context, home string, version Version, o
 			diagnostics.CollectorLogFingerprint = "sha256"
 		}
 	}
+	realAgentEvidence, err := evaluatePackagedRealAgentEvidence(ctx, service.Store, version, diagnostics.LedgerStatus, rawEvidence)
+	if err != nil {
+		return err
+	}
+	agents = applyRealAgentEvidence(agents, realAgentEvidence)
 
 	reportJSON, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
@@ -159,6 +173,13 @@ func writeAcceptancePackage(ctx context.Context, home string, version Version, o
 		"report.txt":       reportText.Bytes(),
 		"sessions.json":    append(sessionsJSON, '\n'),
 	}
+	if len(realAgentEvidence) > 0 {
+		evidenceJSON, err := json.MarshalIndent(realAgentEvidence, "", "  ")
+		if err != nil {
+			return fmt.Errorf("encode real-agent evidence: %w", err)
+		}
+		files["real-agent-evidence.json"] = append(evidenceJSON, '\n')
+	}
 	externalE2EStatus := acceptanceExternalStatus(agents)
 	if diagnostics.LedgerStatus == acceptanceFail {
 		externalE2EStatus = acceptanceFail
@@ -181,6 +202,7 @@ func writeAcceptancePackage(ctx context.Context, home string, version Version, o
 			"Diagnostics contain only status and qlog-owned log fingerprints, never log content or paths.",
 			"PASS records local evidence only and never asserts external verification.",
 		},
+		RealAgentEvidence: realAgentEvidence,
 	}
 	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
@@ -189,6 +211,72 @@ func writeAcceptancePackage(ctx context.Context, home string, version Version, o
 	files["manifest.json"] = append(manifestJSON, '\n')
 	files["SHA256SUMS"] = acceptanceChecksumFile(files)
 	return writeAcceptanceZIP(output, files)
+}
+
+func evaluatePackagedRealAgentEvidence(ctx context.Context, store *sqlite.Store, version Version, ledgerStatus string, rawEvidence []string) ([]acceptancecontract.RealAgentEvidence, error) {
+	results := make([]acceptancecontract.RealAgentEvidence, 0, len(rawEvidence))
+	seen := make(map[string]bool, len(rawEvidence))
+	for index, raw := range rawEvidence {
+		if len(raw) > 16*1024 {
+			return nil, fmt.Errorf("real-agent evidence %d exceeds 16 KiB", index+1)
+		}
+		var evidence acceptancecontract.RealAgentEvidence
+		decoder := json.NewDecoder(bufio.NewReader(strings.NewReader(raw)))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&evidence); err != nil {
+			return nil, fmt.Errorf("decode real-agent evidence %d: %w", index+1, err)
+		}
+		var trailing any
+		if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+			return nil, fmt.Errorf("decode real-agent evidence %d: trailing JSON value", index+1)
+		}
+		if seen[evidence.AgentID] {
+			return nil, fmt.Errorf("duplicate real-agent evidence for %q", evidence.AgentID)
+		}
+		seen[evidence.AgentID] = true
+		if ledgerStatus != acceptancePass {
+			evidence.LedgerStatus = acceptancecontract.StatusFail
+		}
+		expectedTag := version.Version
+		if expectedTag != "" && !strings.HasPrefix(expectedTag, "v") {
+			expectedTag = "v" + expectedTag
+		}
+		evaluated, err := acceptancecontract.EvaluateRealAgentEvidenceForCandidate(evidence, expectedTag, version.Commit)
+		if err != nil {
+			return nil, fmt.Errorf("evaluate real-agent evidence %d: %w", index+1, err)
+		}
+		if evaluated.SourceEvidence {
+			contract := evidenceContract(evaluated.AgentID)
+			found, err := hasAdapterEvidence(ctx, store, evaluated.AgentID, "", evaluated.StartedAt, evaluated.EndedAt, contract)
+			if err != nil {
+				return nil, fmt.Errorf("verify real source evidence for %q: %w", evaluated.AgentID, err)
+			}
+			if !found {
+				evaluated.SourceEvidence = false
+				evaluated, _ = acceptancecontract.EvaluateRealAgentEvidence(evaluated)
+			}
+		}
+		results = append(results, evaluated)
+	}
+	sort.Slice(results, func(i, j int) bool { return results[i].AgentID < results[j].AgentID })
+	return results, nil
+}
+
+func applyRealAgentEvidence(agents []acceptanceAgentResult, evidence []acceptancecontract.RealAgentEvidence) []acceptanceAgentResult {
+	byAgent := make(map[string]acceptancecontract.RealAgentEvidence, len(evidence))
+	for _, item := range evidence {
+		byAgent[item.AgentID] = item
+	}
+	for index := range agents {
+		item, found := byAgent[agents[index].AdapterID]
+		if !found {
+			agents[index].Status = acceptancePendingExternalE2E
+			continue
+		}
+		agents[index].Status = item.Status
+		agents[index].SourceEvidence = item.SourceEvidence
+	}
+	return agents
 }
 
 func acceptanceSafeReport(report sqlite.CapabilityReport) sqlite.CapabilityReport {
@@ -257,7 +345,7 @@ func acceptanceAgents(ctx context.Context, service *app.Service, collectorReacha
 		result := acceptanceAgentStatus(adapter.Descriptor().ID, status.Available, status.Installed, recentEvidence)
 		result.CaptureQuality = string(status.CaptureQuality)
 		result.Source = contract.Source
-		result.SourceEvidence = contract.SourceEvidence
+		result.SourceEvidence = false
 		if !collectorReachable {
 			result.Readiness = acceptancePendingExternalE2E
 		}
@@ -269,9 +357,6 @@ func acceptanceAgents(ctx context.Context, service *app.Service, collectorReacha
 
 func acceptanceAgentStatus(adapterID string, available, installed, recentEvidence bool) acceptanceAgentResult {
 	result := acceptanceAgentResult{AdapterID: adapterID, Available: available, Installed: installed, RecentEvidence: recentEvidence, Status: acceptancePendingExternalE2E, Readiness: acceptancePendingExternalE2E}
-	if recentEvidence {
-		result.Status = acceptancePass
-	}
 	if available && installed {
 		result.Readiness = acceptanceReadyForExternalE2E
 	}
@@ -288,10 +373,17 @@ func acceptanceReadiness(results []acceptanceAgentResult) string {
 }
 
 func acceptanceExternalStatus(results []acceptanceAgentResult) string {
+	pending := false
 	for _, result := range results {
-		if result.Status != acceptancePass {
-			return acceptancePendingExternalE2E
+		if result.Status == acceptanceFail {
+			return acceptanceFail
 		}
+		if result.Status != acceptancePass {
+			pending = true
+		}
+	}
+	if pending {
+		return acceptancePendingExternalE2E
 	}
 	return acceptancePass
 }

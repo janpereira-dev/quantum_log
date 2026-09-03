@@ -5,11 +5,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	acceptancecontract "github.com/janpereira-dev/quantum_log/internal/acceptance"
 	"github.com/janpereira-dev/quantum_log/internal/app"
 	"github.com/janpereira-dev/quantum_log/internal/storage/sqlite"
 )
@@ -83,6 +86,118 @@ func TestAcceptanceRunWritesSanitizedEvidencePackage(t *testing.T) {
 	}
 }
 
+func TestAcceptanceRunPackagesOnlyCandidateBoundRealSourceEvidence(t *testing.T) {
+	home := t.TempDir()
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	startedAt := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
+	service, err := app.Open(context.Background(), home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Store.EnsureSession(context.Background(), "session-real", "codex", startedAt); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := service.Store.AppendRawEvent(context.Background(), sqlite.RawEventInput{Source: "otlp-http", SessionID: "session-real", EventType: "model.call", OccurredAt: startedAt.Add(10 * time.Second), Payload: []byte(`{"agent_name":"codex","capture_quality":"otel_reported","codex_response_completed":true}`)})
+	if err != nil || !raw.Accepted {
+		t.Fatalf("append source evidence: %#v, %v", raw, err)
+	}
+	if _, err := service.Store.RecordModelCall(context.Background(), sqlite.ModelCallInput{RawEventID: raw.ID, SessionID: "session-real", AgentName: "codex", Provider: "openai", ModelID: "gpt-5", CaptureQuality: "otel_reported", InputTokens: 1, OutputTokens: 2, OccurredAt: startedAt.Add(10 * time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Close(); err != nil {
+		t.Fatal(err)
+	}
+	evidence := acceptancecontract.RealAgentEvidence{
+		SchemaVersion: acceptancecontract.RealAgentSchemaVersion, CandidateTag: "v0.4.0-rc11",
+		CandidateCommit: strings.Repeat("a", 40), Platform: "windows/amd64", AgentID: "codex", AgentVersion: "0.151.0",
+		StartedAt: startedAt, EndedAt: startedAt.Add(2 * time.Minute), SourceEvidence: true,
+		LedgerStatus: acceptancecontract.StatusPass, PrivacyStatus: acceptancecontract.StatusPass,
+		ReplayStatus: acceptancecontract.StatusPass, Status: acceptancecontract.StatusFail,
+	}
+	encoded, err := json.Marshal(evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(t.TempDir(), "acceptance.zip")
+	command := New(Version{Version: strings.TrimPrefix(evidence.CandidateTag, "v"), Commit: evidence.CandidateCommit})
+	command.SetArgs([]string{"--home", home, "acceptance", "run", "--output", output, "--real-agent-evidence", string(encoded)})
+	if err := command.Execute(); err != nil {
+		t.Fatalf("acceptance run: %v", err)
+	}
+	entries := readAcceptanceZIP(t, output)
+	var packaged []acceptancecontract.RealAgentEvidence
+	if err := json.Unmarshal(entries["real-agent-evidence.json"], &packaged); err != nil {
+		t.Fatalf("decode evidence: %v", err)
+	}
+	if len(packaged) != 1 || packaged[0].Status != acceptancecontract.StatusPass {
+		t.Fatalf("packaged evidence = %#v", packaged)
+	}
+}
+
+func TestAcceptanceRunRejectsMismatchedCandidateEvidence(t *testing.T) {
+	home := t.TempDir()
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatal(err)
+	}
+	evidence := acceptancecontract.RealAgentEvidence{
+		SchemaVersion: acceptancecontract.RealAgentSchemaVersion, CandidateTag: "v0.4.0-rc11",
+		CandidateCommit: strings.Repeat("a", 40), Platform: "windows/amd64", AgentID: "codex", AgentVersion: "0.151.0",
+		StartedAt: time.Now().UTC().Add(-time.Minute), EndedAt: time.Now().UTC(), SourceEvidence: true,
+		LedgerStatus: acceptancecontract.StatusPass, PrivacyStatus: acceptancecontract.StatusPass, ReplayStatus: acceptancecontract.StatusPass,
+	}
+	encoded, _ := json.Marshal(evidence)
+	command := New(Version{Version: evidence.CandidateTag, Commit: strings.Repeat("b", 40)})
+	command.SetArgs([]string{"--home", home, "acceptance", "run", "--output", filepath.Join(t.TempDir(), "acceptance.zip"), "--real-agent-evidence", string(encoded)})
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "exact qlog candidate") {
+		t.Fatalf("error = %v, want exact candidate mismatch", err)
+	}
+}
+
+func TestAcceptanceRunRejectsNonContractEvidenceFields(t *testing.T) {
+	home := t.TempDir()
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatal(err)
+	}
+	evidence := acceptancecontract.RealAgentEvidence{
+		SchemaVersion: acceptancecontract.RealAgentSchemaVersion, CandidateTag: "v0.4.0-rc11",
+		CandidateCommit: strings.Repeat("a", 40), Platform: "windows/amd64", AgentID: "codex", AgentVersion: "0.151.0",
+		StartedAt: time.Now().UTC().Add(-time.Minute), EndedAt: time.Now().UTC(),
+		LedgerStatus: acceptancecontract.StatusPass, PrivacyStatus: acceptancecontract.StatusPass, ReplayStatus: acceptancecontract.StatusPass,
+	}
+	encoded, _ := json.Marshal(evidence)
+	raw := strings.TrimSuffix(string(encoded), "}") + `,"prompt":"must-not-package"}`
+	command := New(Version{Version: evidence.CandidateTag, Commit: evidence.CandidateCommit})
+	command.SetArgs([]string{"--home", home, "acceptance", "run", "--output", filepath.Join(t.TempDir(), "acceptance.zip"), "--real-agent-evidence", raw})
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("error = %v, want unknown field rejection", err)
+	}
+}
+
+func readAcceptanceZIP(t *testing.T, path string) map[string][]byte {
+	t.Helper()
+	archive, err := zip.OpenReader(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = archive.Close() }()
+	entries := make(map[string][]byte, len(archive.File))
+	for _, file := range archive.File {
+		reader, err := file.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := io.ReadAll(reader)
+		_ = reader.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		entries[file.Name] = data
+	}
+	return entries
+}
+
 func TestAcceptanceRunReadsSnapshotWhileCollectorWriterIsActive(t *testing.T) {
 	home := t.TempDir()
 	if _, err := runQLog(t, home, "init"); err != nil {
@@ -107,6 +222,16 @@ func TestAcceptanceStatusTreatsMissingEventsAsPending(t *testing.T) {
 	result := acceptanceAgentStatus("codex", false, false, false)
 	if result.Status != acceptancePendingExternalE2E {
 		t.Fatalf("missing evidence status = %s, want %s", result.Status, acceptancePendingExternalE2E)
+	}
+}
+
+func TestAcceptanceExternalStatusPropagatesFailure(t *testing.T) {
+	results := []acceptanceAgentResult{
+		{AdapterID: "claude-code", Status: acceptancePendingExternalE2E},
+		{AdapterID: "codex", Status: acceptanceFail},
+	}
+	if got := acceptanceExternalStatus(results); got != acceptanceFail {
+		t.Fatalf("external status = %q, want %q", got, acceptanceFail)
 	}
 }
 
