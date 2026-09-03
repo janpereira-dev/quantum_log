@@ -608,15 +608,20 @@ func TestCopilotTransportDecisionIsEvidenceBound(t *testing.T) {
 
 	adr := normalized("docs/architecture/ADR-006-copilot-transport.md")
 	for _, want := range []string{
-		"Status: accepted",
+		"Status: accepted decision; no stable Copilot transport approved",
 		"## Weighted criteria frozen before observation",
 		"Documented and stable source | 20",
 		"Privacy and clean removal are veto gates",
 		"GitHub Copilot CLI 1.0.78",
 		"Visual Studio Code 1.136.0",
-		"CLI: documented file exporter",
+		"CLI: unsupported for stable capture",
+		"OTLP probe: 0 raw events",
+		"file exporter: diagnostic only",
+		"privacy veto remains",
 		"VS Code: unsupported for stable capture",
 		"private APIs", "log scraping", "UI interception", "packet interception",
+		"one file per Copilot process", "raw-line SHA-256", "16 MiB", "64 MiB",
+		"symlinks and Windows reparse points", "rotation and truncation", "orphan recovery",
 		"## Privacy impact", "## Rollback",
 	} {
 		if !strings.Contains(adr, strings.ToLower(want)) {
@@ -624,24 +629,48 @@ func TestCopilotTransportDecisionIsEvidenceBound(t *testing.T) {
 		}
 	}
 
-	spike := normalized("docs-int/verification/copilot-transport-spike.md")
+	spikePath := "docs-int/verification/copilot-transport-spike.md"
+	spikeRaw := strings.ReplaceAll(read(spikePath), "\r\n", "\n")
+	spike := strings.Join(strings.Fields(strings.ToLower(spikeRaw)), " ")
 	for _, want := range []string{
 		"2026-09-03", "Windows 11 x64", "GitHub Copilot CLI 1.0.78", "Visual Studio Code 1.136.0",
 		"`COPILOT_OTEL_FILE_EXPORTER_PATH`", "`false`", "exit code `0`", "10 JSONL records",
-		"2 spans", "8 metrics", "1f891d72e02a6d1765098848a1d1a517ab37b2cc134663ff44fdd4c61c8bde8c",
+		"2 spans", "8 metrics", "9b5022f32568bc1382e8463bcfed0a62e6c55026de080ce5454debc71a8ac131",
+		"2b0e1d3270ac381a5c16266047d99aa0840d21cfc8a88fcb7af60e6beb3900a3",
+		`{"collector_ready":true,"copilot_exit_code":0,"model_call_count":0,"raw_event_count":0,"transport":"otlp-http"}`,
 		"prompt literal: absent", "response literal: absent", "credential markers: absent",
 		"No Copilot extension was installed", "No VS Code agent turn was run",
-		"Raw JSONL was deleted", "copilot help monitoring",
+		"Raw JSONL was deleted", "copilot help monitoring", "canonical JSON",
 	} {
 		if !strings.Contains(spike, strings.ToLower(want)) {
 			t.Errorf("Copilot transport spike missing %q", want)
 		}
 	}
+	canonical := spikeRaw
+	for index, wantHash := range []string{
+		"9b5022f32568bc1382e8463bcfed0a62e6c55026de080ce5454debc71a8ac131",
+		"2b0e1d3270ac381a5c16266047d99aa0840d21cfc8a88fcb7af60e6beb3900a3",
+	} {
+		start := strings.Index(canonical, "```json\n")
+		if start < 0 {
+			t.Fatalf("canonical JSON block %d missing", index+1)
+		}
+		canonical = canonical[start+len("```json\n"):]
+		end := strings.Index(canonical, "\n```")
+		if end < 0 {
+			t.Fatalf("canonical JSON block %d is not closed", index+1)
+		}
+		gotHash := fmt.Sprintf("%x", sha256.Sum256([]byte(canonical[:end])))
+		if gotHash != wantHash {
+			t.Errorf("canonical JSON block %d hash = %s, want %s", index+1, gotHash, wantHash)
+		}
+		canonical = canonical[end+len("\n```"):]
+	}
 
 	cli := normalized("docs/adapters/copilot-cli/source-contract.md")
 	for _, want := range []string{
-		"documented file exporter", "incremental", "durable", "content capture remains false",
-		"does not require a persistent collector", "1.0.78",
+		"unsupported for stable capture", "implemented transport remains OTLP HTTP", "no replacement is authorized",
+		"documented file exporter is diagnostic only", "privacy veto", "1.0.78",
 	} {
 		if !strings.Contains(cli, strings.ToLower(want)) {
 			t.Errorf("Copilot CLI source contract missing %q", want)
@@ -655,6 +684,18 @@ func TestCopilotTransportDecisionIsEvidenceBound(t *testing.T) {
 	} {
 		if !strings.Contains(vscode, strings.ToLower(want)) {
 			t.Errorf("Copilot VS Code source contract missing %q", want)
+		}
+	}
+
+	plan := normalized("docs/superpowers/plans/2026-09-03-product-finalization.md")
+	implementation := strings.Index(plan, "### task 7a: implement an accepted copilot transport")
+	acceptance := strings.Index(plan, "### task 8: add real-agent acceptance adapters")
+	if implementation < 0 || acceptance < 0 || implementation >= acceptance {
+		t.Error("Copilot transport implementation task must precede real-agent acceptance")
+	}
+	for _, want := range []string{"blocked until adr-006 approves a transport", "task 8 must not replace or reconfigure the copilot transport"} {
+		if !strings.Contains(plan, want) {
+			t.Errorf("product finalization plan missing %q", want)
 		}
 	}
 }

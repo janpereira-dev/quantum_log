@@ -3,53 +3,42 @@
 Primary source: [GitHub Copilot CLI command reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference),
 OpenTelemetry monitoring section.
 
-## Decision and current state
+## Current status
 
-ADR-006 selects the documented file exporter for the next Copilot CLI adapter
-implementation. This decision is evidence-bound to GitHub Copilot CLI 1.0.78 on
-Windows 11 x64. It does not claim that the current qlog adapter already uses this
-transport: the existing setup path still configures OTLP HTTP and therefore
-retains its collector dependency until Task 8 replaces it.
+Copilot CLI is unsupported for stable capture. The implemented transport remains
+OTLP HTTP and is experimental/unverified: an isolated real Copilot CLI 1.0.78
+probe reached a healthy qlog collector boundary but persisted zero raw events and
+zero model calls. A successful Copilot command is not source evidence.
 
-## Supported configuration boundary
+No replacement is authorized by ADR-006. The documented file exporter is
+diagnostic only because its real output included the `gen_ai.tool.definitions`
+attribute name with content capture false, while the value was deliberately not
+retained. That leaves the privacy veto unresolved.
 
-The selected launcher will set only process-scoped values for the child Copilot
-CLI process:
+## Implemented configuration
 
-- `COPILOT_OTEL_FILE_EXPORTER_PATH=<qlog-owned external path>`
+Current qlog setup configures a qlog-owned launcher/profile block for:
+
+- `COPILOT_OTEL_ENABLED=true`
+- `COPILOT_OTEL_EXPORTER_TYPE=otlp-http`
+- `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318`
+- `OTEL_EXPORTER_OTLP_PROTOCOL=http/json`
 - `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false`
 
-Setting the file path automatically enables the documented file exporter. The
-launcher must not modify a shell profile, user or machine environment, Copilot
-configuration, credentials, or VS Code settings; content capture remains false.
-Uninstall removes only the qlog-owned telemetry file, durable import checkpoint,
-and launcher registration created by this adapter.
+That path requires a reachable collector. Install/uninstall must preserve
+unrelated profile content and user-modified values. On Windows, current setup
+also writes matching qlog-owned current-user environment values; uninstall
+removes only values it owns and preserves user changes. Existing shells retain
+their inherited environment until restarted. These statements describe existing
+setup behavior, not verified telemetry delivery.
 
-## Ingest contract
+## Evidence gate
 
-Import is incremental and durable. The importer tracks file identity and byte
-offset, accepts only complete JSONL records, commits a sanitized batch before
-advancing its checkpoint, and safely replays after interruption. Truncation or
-rotation starts a separately identified stream; it never silently skips bytes.
-The implementation must bound retained source-file growth.
+Promotion requires a pinned producer version to deliver real model and
+non-negative token evidence with session/project correlation through an accepted
+transport. The privacy scan must prove that prompt, response, message, tool
+definition/argument/result, credential, environment-value, and path values do not
+reach the ledger or an unbounded transient store. Missing values remain missing;
+zero is reported only when explicitly emitted.
 
-Only allowlisted identity, correlation, timing, model, and non-negative numeric
-usage fields may reach the ledger. Accepted token values retain their emitted raw
-key and `otel_reported` provenance. Missing attributes remain missing and emitted
-zero remains reported zero. Prompt, response, message, tool definition,
-tool-argument/result, credential, environment-value, and path values are dropped
-before persistence.
-
-Because Copilot writes locally and qlog imports later, this transport does not require a persistent collector.
-Export or import failure remains best-effort and
-must not change the Copilot command result.
-
-## Evidence and drift gate
-
-The 2026-09-03 spike observed 2 spans, 8 metrics, model/session/token attribute
-names, and sanitized schema SHA-256
-`1f891d72e02a6d1765098848a1d1a517ab37b2cc134663ff44fdd4c61c8bde8c`.
 See [`docs-int/verification/copilot-transport-spike.md`](../../../docs-int/verification/copilot-transport-spike.md).
-
-Any producer-version or schema change fails the evidence gate until a new
-privacy-safe fixture proves required fields and forbidden content handling.

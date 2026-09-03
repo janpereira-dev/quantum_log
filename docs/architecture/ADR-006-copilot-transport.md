@@ -1,28 +1,20 @@
-# ADR-006: Select durable local Copilot capture transports from real evidence
+# ADR-006: Require real, privacy-safe evidence before selecting a Copilot transport
 
-Status: accepted
+Status: accepted decision; no stable Copilot transport approved
 
 Date: 2026-09-03
 
 ## Context
 
-Copilot CLI and Copilot Chat for VS Code are separate products and must not share
-an evidence claim. Quantum Log needs reported model and token evidence without
-capturing prompts, responses, tool inputs, tool outputs, credentials, or user
-paths. A transport decision also has to reduce, rather than extend, the
-persistent-collector lifecycle described in ADR-005.
-
-The primary product sources are GitHub's
-[Copilot CLI command reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference)
-and [OpenTelemetry agent-monitoring overview](https://docs.github.com/en/copilot/concepts/agents/opentelemetry).
-GitHub links to the official
-[VS Code Copilot monitoring reference](https://code.visualstudio.com/docs/agents/guides/monitoring-agents)
-for editor-specific settings.
+Copilot CLI and Copilot Chat for VS Code are independent producer boundaries.
+Neither official capability documentation nor a successful agent command proves
+that Quantum Log received safe model and token evidence. The primary sources are
+GitHub's [Copilot CLI command reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference)
+and [OpenTelemetry agent-monitoring overview](https://docs.github.com/en/copilot/concepts/agents/opentelemetry),
+plus the official [VS Code Copilot monitoring reference](https://code.visualstudio.com/docs/agents/guides/monitoring-agents)
+linked by GitHub for editor-specific settings.
 
 ## Weighted criteria frozen before observation
-
-The finalization plan fixed these criteria before the 2026-09-03 runtime
-observation. Scores are out of 100.
 
 | Criterion | Weight |
 | --- | ---: |
@@ -35,87 +27,109 @@ observation. Scores are out of 100.
 | Cross-platform support | 5 |
 | Version-drift detection | 5 |
 
-Privacy and clean removal are veto gates: a transport that exposes content by
-default or cannot be removed without touching unrelated user state is rejected
-regardless of its weighted score.
+Privacy and clean removal are veto gates. A transport that can expose transient
+content without a proven bound, or cannot be removed without touching unrelated
+state, is rejected regardless of score.
 
-## Evidence
+## Observed evidence
 
-The sanitized spike used GitHub Copilot CLI 1.0.78 on Windows 11 x64. A minimal
-authenticated prompt completed successfully with only process-scoped
-`COPILOT_OTEL_FILE_EXPORTER_PATH` and content capture explicitly false. The
-documented file exporter produced model, session, and reported token attribute
-names in a local JSONL file. The evidence contains only signal counts, attribute
-names, a sanitized-schema hash, and privacy-scan results; the raw JSONL was
-deleted.
+Both bounded probes used GitHub Copilot CLI 1.0.78 on Windows 11 x64, a minimal
+authenticated prompt, and content capture explicitly false. No global profile,
+user environment, product configuration, or credential was changed.
 
-Visual Studio Code 1.136.0 was installed, but no GitHub Copilot extension was
-installed. No authenticated editor-agent run was therefore possible. The
-official settings describe OTLP and file export, but documentation alone is not
-real source evidence for that installed product state.
+- **OTLP probe: 0 raw events.** A qlog collector built from this checkout was
+  healthy on an isolated loopback port with a temporary `QLOG_HOME`. Copilot
+  exited `0`, but qlog recorded zero raw events and zero model calls. The
+  producer diagnostic reported one HTTP export network error. This does not
+  support accepting OTLP.
+- **File probe: 10 records.** The process-scoped file exporter emitted two spans
+  and eight metrics with model, conversation, and token attribute names. It also
+  emitted the `gen_ai.tool.definitions` attribute name while content capture was
+  false. Its value was intentionally not retained, so the contradiction with the
+  official content-capture description cannot be resolved from this evidence.
+- **VS Code:** Visual Studio Code 1.136.0 had no Copilot extension installed; no
+  authenticated editor turn or schema evidence exists.
 
-Full sanitized evidence is recorded in
+The canonical sanitized representations and reproducible hashes are in
 [`docs-int/verification/copilot-transport-spike.md`](../../docs-int/verification/copilot-transport-spike.md).
 
 ## Options compared
 
-| Product / option | Score | Decision | Reason |
-| --- | ---: | --- | --- |
-| CLI: documented file exporter | 95 | Accept for implementation | Official, local, durable JSONL; observed model, conversation, and token schema; process-scoped ownership requires only an output file and cursor/checkpoint. |
-| CLI: OTLP HTTP | 75 | Reject as default | Official and rich, but push delivery needs a live collector and introduces availability and lifecycle debt. CLI 1.0.78 also disables cleartext HTTP export rather than failing the agent. |
-| CLI: documented lifecycle hooks | 40 | Reject for usage | Useful lifecycle evidence, but no official guarantee that hooks expose complete model and token counters. |
-| CLI: explicit wrapper | 55 | Reject while file export works | Can own process environment and cleanup, but output parsing or process interception adds a second behavioral boundary without improving evidence. |
-| VS Code: documented file exporter settings | 70 provisional | Unsupported for stable capture | Strong official candidate, but no installed extension or authenticated real-device evidence exists for this build. |
-| VS Code: documented OTLP settings | 65 provisional | Unsupported for stable capture | Same missing runtime evidence, plus a persistent receiver requirement. |
+| Product / option | Weighted result | Decision |
+| --- | ---: | --- |
+| CLI: OTLP HTTP | 75/100 | Unsupported: the real loopback probe delivered no evidence. |
+| CLI: documented file exporter | 95/100 before veto | File exporter: diagnostic only; privacy veto remains because transient content and ownership bounds are unproved. |
+| CLI: documented lifecycle hooks | 40/100 | Rejected for usage: no complete model/token contract. |
+| CLI: explicit wrapper | 55/100 | Rejected: wrapping output or process behavior adds an unsupported interception boundary. |
+| VS Code: documented OTLP/file settings | 70/100 provisional | Unsupported without a pinned extension and authenticated real-device evidence. |
 
-Rejected alternatives include private APIs, undocumented databases, log scraping, UI interception or UI
-automation, and background packet interception are rejected. They are unstable,
-cannot provide a narrow ownership boundary, or inspect data outside the explicit
-telemetry contract.
+Private APIs, undocumented databases, log scraping, UI interception or UI
+automation, and background packet interception are rejected.
 
 ## Decision
 
-- **CLI: documented file exporter.** Implement a process-scoped launcher that
-  sets an output path owned by Quantum Log and keeps content capture false. Import
-  the append-only JSONL incrementally through a durable offset plus file-identity
-  checkpoint, sanitize before ledger persistence, fsync the checkpoint after a
-  committed batch, and remove only the qlog-owned file and checkpoint on
-  uninstall. This does not require a persistent collector. The decision does not
-  claim that the current adapter already implements this boundary.
-- **VS Code: unsupported for stable capture.** Keep its maturity below verified
-  until an installed, authenticated Copilot extension on a pinned VS Code and
-  extension version produces a sanitized real-device envelope. If that evidence
-  passes the same gates, evaluate the documented file exporter first. Do not
-  inherit the CLI result.
+- **CLI: unsupported for stable capture.** Keep the implemented OTLP HTTP path
+  accurately described as experimental and unverified. No replacement is
+  authorized. The file exporter may be used only for bounded diagnostics until
+  its privacy and lifecycle gates are proven.
+- **VS Code: unsupported for stable capture.** Do not inherit CLI evidence.
 
-Task 8 may implement only the CLI decision. A VS Code implementation remains
-blocked by external evidence rather than by assumed compatibility.
+A future accepted transport must have its own implementation task before
+real-agent acceptance. The acceptance framework must not replace or reconfigure
+the producer transport.
+
+## Required file-spool proof before reconsideration
+
+Any future file proposal must prove all of the following as one contract:
+
+1. Exact owned path: `$QLOG_HOME/spool/copilot-cli/<launch-id>.jsonl`, with one
+   file per Copilot process and an unpredictable UUID launch ID.
+2. The directory is owner-only (`0700` on POSIX; protected DACL for the current
+   Windows user) and each file is owner-only (`0600` on POSIX; the same protected
+   DACL on Windows).
+3. Every path component and opened handle is checked against symlinks and Windows
+   reparse points; creation is exclusive and the final handle identity is
+   revalidated before read, checkpoint, and delete.
+4. Each complete raw line gets a raw-line SHA-256. The ledger append and that
+   digest's idempotency record commit atomically; the byte checkpoint advances
+   only afterward. A crash between commit and checkpoint safely replays into the
+   digest deduplication gate.
+5. Partial final lines remain unread. Rotation starts a new file identity at byte
+   zero; same-identity truncation is quarantined rather than skipped. These are
+   explicit rotation and truncation tests.
+6. A hard numeric growth cap is enforced: 16 MiB per process file and 64 MiB for
+   the complete Copilot spool. The launcher must fail closed if it cannot enforce
+   those bounds while the producer runs; post-exit cleanup alone is insufficient.
+7. Successful import securely removes only the verified owned file and
+   checkpoint. Orphan recovery applies the same identity, privacy, cap, and
+   idempotency checks. Uninstall removes only verified qlog-owned spool artifacts
+   and leaves the ledger and unrelated files untouched.
+
+No implementation currently proves this complete contract. In particular, the
+producer controls append growth during a session, so the bounded transient-content
+policy remains unresolved.
 
 ## Privacy impact
 
-The CLI exporter is opt-in and process-scoped. Import must allowlist only the
-identity, correlation, timing, model, and numeric usage fields needed by the
-ledger. The observed `gen_ai.tool.definitions` attribute name is a specific
-minimization warning: Quantum Log must not persist that value. It must likewise
-discard prompt, response, message, tool argument/result, resource-path, and
-credential values even if a future producer emits them. Raw JSONL is transient
-ingestion material, never committed verification evidence.
+The file probe did not retain values, which protected the spike but also means it
+cannot prove the value behind `gen_ai.tool.definitions` was harmless. A bounded
+scanner may record only record type/count, schema hash, and forbidden-marker
+absence. It must never copy the disputed value into Git, logs, or review output.
+Until the source behavior and hard transient-storage bounds are proven, the
+privacy veto remains.
 
 ## Consequences
 
-- CLI capture can be durable and offline without keeping an OTLP receiver alive.
-- Incremental import must handle partial final lines, rotation/truncation, crash
-  replay, deduplication, and bounded file growth before it is called complete.
-- The observed schema hash and pinned producer version become drift gates, not a
-  promise that every attribute will always exist.
-- VS Code remains an explicit evidence gap; this ADR does not convert official
-  capability documentation into a successful E2E claim.
+- Task 7 closes with an honest unsupported decision rather than a speculative
+  implementation authorization.
+- Current OTLP setup remains unchanged but cannot be promoted from a zero-event
+  run.
+- Any later transport implementation is a separate, reviewable work unit before
+  acceptance collection.
+- Version or schema drift requires a new sanitized probe and hash.
 
 ## Rollback
 
-Before implementation, rollback is deletion of this ADR, its sanitized spike
-record, the structural test, and the two source-contract edits. After a CLI
-implementation exists, rollback disables the qlog-owned launcher/importer,
-removes only its output file and checkpoint, and restores the prior adapter
-maturity. It must not edit global profiles, VS Code settings, credentials, or
-unrelated telemetry configuration.
+Rollback removes this decision/evidence unit and its plan routing only. It does
+not change runtime configuration. A future transport rollback must be defined by
+its own accepted implementation task and exact ownership proof.

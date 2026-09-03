@@ -464,7 +464,13 @@ Write the ADR in `proposed` state with weighted gates: documented/stable source,
 
 - [ ] **Step 2: Capture real observed envelopes without raw content**
 
-On a disposable profile, run one Copilot CLI session and one Copilot VS Code session. Record only product version, OS, transport availability, attribute names, event counts, and SHA-256 of the sanitized schema. Never commit prompts, responses, tool inputs/outputs, raw trace payloads, user paths, or credentials.
+On a disposable profile, run one Copilot CLI session and one Copilot VS Code
+session only when that exact product is already installed and authenticated.
+Absence of an extension or login is recorded as `unsupported`; this task never
+installs or authenticates a product to manufacture evidence. Record only product
+version, OS, transport availability, attribute names, event counts, canonical
+sanitized schema, and its SHA-256. Never commit prompts, responses, tool
+inputs/outputs, raw trace payloads, user paths, or credentials.
 
 - [ ] **Step 3: Compare supported options**
 
@@ -472,7 +478,12 @@ Evaluate: official OTel, documented lifecycle hooks, extension settings, and an 
 
 - [ ] **Step 4: Accept or reject each adapter independently**
 
-Set ADR status to `accepted` only when the evidence identifies a stable transport and exact uninstall ownership. Otherwise set that product to `unsupported` and keep its public maturity below verified. Do not start Task 8 for a rejected product.
+Set the ADR status to `accepted` when the evidence-based decision is closed,
+including a decision that no transport is approved. Accept an individual
+transport only when evidence identifies a stable source, clears the privacy
+veto, and proves exact uninstall ownership. Otherwise set that product to
+`unsupported`, keep its public maturity below verified, and leave Task 7A
+blocked. Do not start Copilot acceptance work in Task 8 for a rejected product.
 
 - [ ] **Step 5: Structurally validate the ADR**
 
@@ -483,11 +494,64 @@ Expected: PASS only when the ADR names versions, sanitized evidence, decision, r
 - [ ] **Step 6: Commit the decision unit**
 
 ```bash
-git add docs/architecture/ADR-006-copilot-transport.md docs-int/verification/copilot-transport-spike.md docs/adapters/copilot-*/source-contract.md internal/distribution/installers_test.go
-git commit -m "docs(architecture): decide Copilot capture transports"
+git add docs/architecture/ADR-006-copilot-transport.md docs-int/verification/copilot-transport-spike.md docs/adapters/copilot-*/source-contract.md internal/distribution/installers_test.go docs/superpowers/plans/2026-09-03-product-finalization.md
+git commit -m "docs(architecture): close Copilot transport evidence gaps"
 ```
 
 Rollback boundary: transport decision and evidence only. No adapter runtime changes belong in this commit.
+
+---
+
+### Task 7A: Implement an Accepted Copilot Transport
+
+**Status:** blocked until ADR-006 approves a transport.
+
+**Files:**
+- The accepted ADR amendment must name the exact adapter, launcher, ingestion,
+  setup/uninstall, test, and public-contract files before this task starts.
+- No acceptance-framework file from Task 8 may implement producer transport.
+
+**Interfaces:**
+- Consumes: an ADR-006 amendment with one accepted transport, complete privacy
+  proof, exact ownership/removal boundary, canonical real-source schema, and
+  version-drift policy.
+- Produces: the transport implementation, deterministic contract tests, setup
+  and uninstall behavior, and one sanitized real-source proof ready for Task 8.
+
+- [ ] **Step 1: Enforce the decision gate**
+
+Stop unless ADR-006 accepts the specific product transport and names every
+runtime ownership and rollback invariant. `unsupported`, `proposed`, or
+diagnostic-only evidence is not implementation authorization.
+
+- [ ] **Step 2: Add transport tests before implementation**
+
+Write failing tests for source identity, model/token evidence, correlation,
+privacy allowlisting, content-disabled behavior, version drift, failure
+degradation, idempotency, bounded resource use, and exact uninstall ownership.
+For a file transport, include ACL/mode, symlink/reparse, per-process file,
+commit/checkpoint crash, rotation/truncation, numeric cap, orphan recovery, and
+uninstall cases from ADR-006.
+
+- [ ] **Step 3: Implement only the accepted boundary**
+
+Do not retain an OTLP fallback, add a wrapper, or combine transports unless the
+accepted ADR explicitly authorizes it. Preserve ledger availability when capture
+is disabled or the producer/exporter fails.
+
+- [ ] **Step 4: Prove the runtime and cleanup boundary**
+
+Run focused and full tests plus one privacy-safe real-source probe. Record only
+canonical sanitized evidence. Prove setup is idempotent and uninstall removes
+only qlog-owned artifacts while preserving the ledger.
+
+- [ ] **Step 5: Commit the implementation work unit**
+
+The accepted ADR amendment supplies the exact file list and conventional commit
+message. This task must complete before Task 8 begins.
+
+Rollback boundary: the accepted transport implementation and only its verified
+qlog-owned configuration/artifacts.
 
 ---
 
@@ -507,6 +571,11 @@ Rollback boundary: transport decision and evidence only. No adapter runtime chan
 **Interfaces:**
 - Consumes: adapter ID, evidence window start/end, installed adapter status, and ledger evidence produced by a real agent.
 - Produces: schema `qlog.acceptance.real-agent/v1` containing candidate identity, OS/architecture, agent version, adapter ID, observed metric names/quality, privacy scan result, replay/dedupe result, and `PASS|FAIL|PENDING_EXTERNAL_E2E`; no raw event content.
+
+Task 8 must not replace or reconfigure the Copilot transport. It packages and
+evaluates evidence only after Task 7A has implemented a transport accepted by
+ADR-006. If Task 7A remains blocked, Copilot remains
+`PENDING_EXTERNAL_E2E`/unsupported in this framework.
 
 - [ ] **Step 1: Write failing schema tests**
 
