@@ -126,6 +126,22 @@ func TestCleanGeneratedRejectsMissingQuantumLogProjectMarker(t *testing.T) {
 	})
 }
 
+func TestCleanGeneratedAcceptsCRLFModuleIdentity(t *testing.T) {
+	forEachPowerShell(t, func(t *testing.T, shell string) {
+		root := newRepositoryFixture(t)
+		mustWrite(t, root, "go.mod", "module github.com/janpereira-dev/quantum_log\r\n\r\ngo 1.26.0\r\n")
+		mustWrite(t, root, "coverage.out", "must remain during dry run")
+		ledgerBefore := snapshotLedger(t, root)
+
+		output, err := runCleaner(shell, root, true)
+		if err != nil {
+			t.Fatalf("cleanup rejected a valid CRLF Quantum Log module: %v\n%s", err, output)
+		}
+		assertFileContent(t, root, "coverage.out", "must remain during dry run")
+		assertLedgerUnchanged(t, root, ledgerBefore)
+	})
+}
+
 func forEachPowerShell(t *testing.T, test func(t *testing.T, shell string)) {
 	t.Helper()
 	available := 0

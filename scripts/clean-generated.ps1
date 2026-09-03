@@ -19,12 +19,18 @@ if (-not (Test-Path -LiteralPath $goModPath -PathType Leaf) -or
     throw "RepositoryRoot is not a Quantum Log checkout: $root"
 }
 
-$moduleMatch = [System.Text.RegularExpressions.Regex]::Match(
-    (Get-Content -LiteralPath $goModPath -Raw),
-    '(?m)^\s*module[ \t]+([^\s]+)[ \t]*(?://.*)?$'
-)
-if (-not $moduleMatch.Success -or
-    $moduleMatch.Groups[1].Value -cne 'github.com/janpereira-dev/quantum_log') {
+$modulePath = $null
+foreach ($line in @(Get-Content -LiteralPath $goModPath)) {
+    $moduleMatch = [System.Text.RegularExpressions.Regex]::Match(
+        $line,
+        '^\s*module[ \t]+([^\s]+)[ \t]*(?://.*)?$'
+    )
+    if ($moduleMatch.Success) {
+        $modulePath = $moduleMatch.Groups[1].Value
+        break
+    }
+}
+if ($modulePath -cne 'github.com/janpereira-dev/quantum_log') {
     throw "RepositoryRoot is not a Quantum Log checkout: $root"
 }
 
