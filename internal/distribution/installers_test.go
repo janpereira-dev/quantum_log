@@ -1,6 +1,8 @@
 package distribution
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +14,221 @@ import (
 func normalizeDocumentationText(contents []byte) string {
 	plain := strings.NewReplacer("`", "", "*", "", "_", " ").Replace(strings.ToLower(string(contents)))
 	return strings.Join(strings.Fields(plain), " ")
+}
+
+func releaseAuthenticityFixture(t *testing.T, root, version string, corruptArchive bool) (archive, sbom string) {
+	t.Helper()
+	platform := "linux"
+	arch := "amd64"
+	extension := "tar.gz"
+	if runtime.GOOS == "darwin" {
+		platform = "darwin"
+	}
+	if runtime.GOOS == "windows" {
+		platform = "windows"
+		extension = "zip"
+	}
+	if runtime.GOARCH == "arm64" {
+		arch = "arm64"
+	}
+	plainVersion := strings.TrimPrefix(version, "v")
+	archive = fmt.Sprintf("qlog_%s_%s_%s.%s", plainVersion, platform, arch, extension)
+	sbom = archive + ".sbom.json"
+	archiveBytes := []byte("verified archive fixture")
+	sbomBytes := []byte(`{"spdxVersion":"SPDX-2.3"}`)
+	if err := os.WriteFile(filepath.Join(root, archive), archiveBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, sbom), sbomBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	archiveHash := fmt.Sprintf("%x", sha256.Sum256(archiveBytes))
+	if corruptArchive {
+		archiveHash = strings.Repeat("0", 64)
+	}
+	sbomHash := fmt.Sprintf("%x", sha256.Sum256(sbomBytes))
+	manifest := fmt.Sprintf("%s  %s\n%s  %s\n", archiveHash, archive, sbomHash, sbom)
+	if err := os.WriteFile(filepath.Join(root, "checksums.txt"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "checksums.txt.sigstore.json"), []byte(`{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return archive, sbom
+}
+
+func TestReleaseAuthenticityVerifierContracts(t *testing.T) {
+	root := filepath.Join("..", "..")
+	workflowBytes, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := strings.ReplaceAll(string(workflowBytes), "\r\n", "\n")
+	for _, want := range []string{
+		"permissions:\n  contents: read", "prepublish:", "publish:", "needs: prepublish",
+		"contents: write", "id-token: write", "git rev-list -n 1", "go test -race ./...",
+		"args: check", "release --snapshot --clean --skip=publish",
+		"cosign sign-blob", "verify-release-authenticity.sh", "gh release edit", "--draft=false",
+	} {
+		if !strings.Contains(workflow, want) {
+			t.Errorf("release workflow missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"version: latest", "go-version: stable", "@v7", "@v3", "@v0\n"} {
+		if strings.Contains(workflow, forbidden) {
+			t.Errorf("release workflow contains mutable input %q", forbidden)
+		}
+	}
+	for _, line := range strings.Split(workflow, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "uses: ") || strings.HasPrefix(trimmed, "uses: ./") {
+			continue
+		}
+		at := strings.LastIndex(trimmed, "@")
+		ref := ""
+		if at >= 0 {
+			fields := strings.Fields(trimmed[at+1:])
+			if len(fields) > 0 {
+				ref = fields[0]
+			}
+		}
+		if len(ref) != 40 || strings.Trim(ref, "0123456789abcdef") != "" {
+			t.Errorf("external action is not pinned to a 40-character commit: %q", trimmed)
+		}
+	}
+
+	configBytes, err := os.ReadFile(filepath.Join(root, ".goreleaser.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := string(configBytes)
+	if strings.Contains(config, "go mod tidy") || strings.Contains(config, `version_template: "0.4.0-rc10"`) {
+		t.Error("GoReleaser config mutates source or pins a stale snapshot version")
+	}
+	if !strings.Contains(config, "draft: true") {
+		t.Error("GoReleaser must create a draft until authenticity verification passes")
+	}
+
+	for _, name := range []string{"scripts/acceptance/verify-release-authenticity.sh", "scripts/acceptance/verify-release-authenticity.ps1"} {
+		contents, readErr := os.ReadFile(filepath.Join(root, filepath.FromSlash(name)))
+		if readErr != nil {
+			t.Errorf("read %s: %v", name, readErr)
+			continue
+		}
+		text := string(contents)
+		for _, want := range []string{"https://token.actions.githubusercontent.com", "janpereira-dev/quantum_log/.github/workflows/release.yml@refs/tags/", "checksums.txt.sigstore.json", "latest", "https://"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s missing %q", name, want)
+			}
+		}
+	}
+}
+
+func TestPowerShellReleaseAuthenticityVerifier(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("PowerShell 5.1 behavior is covered on Windows")
+	}
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	version := "v9.8.7-rc1"
+	artifacts := t.TempDir()
+	releaseAuthenticityFixture(t, artifacts, version, false)
+	bin := t.TempDir()
+	cosign := "@echo off\r\necho %*>>\"%QLOG_COSIGN_CALLS%\"\r\nexit /b 0\r\n"
+	if err := os.WriteFile(filepath.Join(bin, "cosign.cmd"), []byte(cosign), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	calls := filepath.Join(t.TempDir(), "cosign-calls.txt")
+	run := func(args ...string) ([]byte, error) {
+		commandArgs := append([]string{"-NoProfile", "-ExecutionPolicy", "Bypass", "-File", filepath.Join(root, "scripts", "acceptance", "verify-release-authenticity.ps1")}, args...)
+		command := exec.Command("powershell.exe", commandArgs...)
+		command.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "QLOG_COSIGN_CALLS="+calls)
+		return command.CombinedOutput()
+	}
+	if output, runErr := run("-Version", version, "-ArtifactDir", artifacts); runErr != nil {
+		t.Fatalf("valid artifacts failed: %v\n%s", runErr, output)
+	}
+	callBytes, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	callText := string(callBytes)
+	for _, want := range []string{"verify-blob", "--certificate-oidc-issuer", "https://token.actions.githubusercontent.com", "release.yml@refs/tags/" + version} {
+		if !strings.Contains(callText, want) {
+			t.Errorf("cosign invocation missing %q: %s", want, callText)
+		}
+	}
+	if output, runErr := run("-Version", "latest", "-ArtifactDir", artifacts); runErr == nil || !strings.Contains(string(output), "immutable") {
+		t.Fatalf("mutable version accepted: err=%v output=%s", runErr, output)
+	}
+	if output, runErr := run("-Version", version, "-ReleaseBase", "http://example.invalid/releases/"+version); runErr == nil || !strings.Contains(string(output), "HTTPS") {
+		t.Fatalf("HTTP release base accepted: err=%v output=%s", runErr, output)
+	}
+	corrupt := t.TempDir()
+	releaseAuthenticityFixture(t, corrupt, version, true)
+	if output, runErr := run("-Version", version, "-ArtifactDir", corrupt); runErr == nil || !strings.Contains(string(output), "checksum") {
+		t.Fatalf("bad archive checksum accepted: err=%v output=%s", runErr, output)
+	}
+	command := exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", filepath.Join(root, "scripts", "acceptance", "verify-release-authenticity.ps1"), "-Version", version, "-ArtifactDir", artifacts)
+	command.Env = append(os.Environ(), "PATH="+t.TempDir())
+	if output, runErr := command.CombinedOutput(); runErr == nil || !strings.Contains(string(output), "cosign") {
+		t.Fatalf("missing cosign accepted: err=%v output=%s", runErr, output)
+	}
+}
+
+func TestPOSIXReleaseAuthenticityVerifier(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX behavior is covered on Linux CI")
+	}
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	version := "v9.8.7-rc1"
+	artifacts := t.TempDir()
+	releaseAuthenticityFixture(t, artifacts, version, false)
+	bin := t.TempDir()
+	cosign := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$QLOG_COSIGN_CALLS\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "cosign"), []byte(cosign), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	calls := filepath.Join(t.TempDir(), "cosign-calls.txt")
+	run := func(args ...string) ([]byte, error) {
+		command := exec.Command("sh", append([]string{filepath.Join(root, "scripts", "acceptance", "verify-release-authenticity.sh")}, args...)...)
+		command.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "QLOG_COSIGN_CALLS="+calls)
+		return command.CombinedOutput()
+	}
+	if output, runErr := run("--version", version, "--artifact-dir", artifacts); runErr != nil {
+		t.Fatalf("valid artifacts failed: %v\n%s", runErr, output)
+	}
+	callBytes, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	callText := string(callBytes)
+	for _, want := range []string{"verify-blob", "--certificate-oidc-issuer", "https://token.actions.githubusercontent.com", "release.yml@refs/tags/" + version} {
+		if !strings.Contains(callText, want) {
+			t.Errorf("cosign invocation missing %q: %s", want, callText)
+		}
+	}
+	if output, runErr := run("--version", "latest", "--artifact-dir", artifacts); runErr == nil || !strings.Contains(string(output), "immutable") {
+		t.Fatalf("mutable version accepted: err=%v output=%s", runErr, output)
+	}
+	if output, runErr := run("--version", version, "--release-base", "http://example.invalid/releases/"+version); runErr == nil || !strings.Contains(string(output), "HTTPS") {
+		t.Fatalf("HTTP release base accepted: err=%v output=%s", runErr, output)
+	}
+	corrupt := t.TempDir()
+	releaseAuthenticityFixture(t, corrupt, version, true)
+	if output, runErr := run("--version", version, "--artifact-dir", corrupt); runErr == nil || !strings.Contains(string(output), "checksum") {
+		t.Fatalf("bad archive checksum accepted: err=%v output=%s", runErr, output)
+	}
+	command := exec.Command("sh", filepath.Join(root, "scripts", "acceptance", "verify-release-authenticity.sh"), "--version", version, "--artifact-dir", artifacts)
+	command.Env = append(os.Environ(), "PATH="+t.TempDir())
+	if output, runErr := command.CombinedOutput(); runErr == nil || !strings.Contains(string(output), "cosign") {
+		t.Fatalf("missing cosign accepted: err=%v output=%s", runErr, output)
+	}
 }
 
 func TestInstallerContracts(t *testing.T) {

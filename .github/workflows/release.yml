@@ -5,41 +5,129 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
-  id-token: write
+  contents: read
 
 jobs:
-  release:
+  prepublish:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - name: Enforce release-candidate tag format
+          ref: ${{ github.sha }}
+      - name: Validate immutable release source
         shell: bash
         run: |
+          set -euo pipefail
           tag='${{ github.ref_name }}'
-          case "$tag" in
-            *-alpha.*|*-beta.*|*-rc.*)
-              echo "Release-candidate tags must use -alphaN, -betaN, or -rcN (for example v0.4.0-rc10)." >&2
-              exit 1
-              ;;
-          esac
-      - uses: actions/setup-go@v7
+          [[ '${{ github.ref_type }}' == 'tag' ]] || { echo 'NO-GO: release ref is not a tag' >&2; exit 1; }
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]] || {
+            echo 'NO-GO: release tag must be an immutable vX.Y.Z tag' >&2
+            exit 1
+          }
+          tag_sha="$(git rev-list -n 1 "$tag")"
+          [[ "$tag_sha" == '${{ github.sha }}' ]] || {
+            echo "NO-GO: tag resolves to $tag_sha, not workflow source ${{ github.sha }}" >&2
+            exit 1
+          }
+          [[ "$(git rev-parse HEAD)" == '${{ github.sha }}' ]] || { echo 'NO-GO: checkout differs from workflow source' >&2; exit 1; }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: stable
-      - uses: anchore/sbom-action/download-syft@v0
-      - uses: goreleaser/goreleaser-action@v7
+          go-version: 1.26.6
+          cache: true
+      - uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+      - name: Validate source and tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(gofmt -l .)"
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+          go vet ./...
+          go test ./...
+          go test -race ./...
+          go build ./...
+      - name: Check GoReleaser configuration
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
           distribution: goreleaser
-          version: latest
+          version: v2.18.0
+          args: check
+      - name: Build unpublished snapshot
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          distribution: goreleaser
+          version: v2.18.0
+          args: release --snapshot --clean --skip=publish
+      - name: Verify unpublished snapshot lifecycle
+        shell: bash
+        run: |
+          set -euo pipefail
+          while read -r checksum filename; do
+            [[ "$checksum" =~ ^[0-9a-f]{64}$ ]] || { echo "NO-GO: invalid checksum for $filename" >&2; exit 1; }
+            [[ "$filename" != */* && -f "dist/$filename" ]] || { echo "NO-GO: missing snapshot asset $filename" >&2; exit 1; }
+            printf '%s  %s\n' "$checksum" "dist/$filename" | sha256sum --check --strict -
+          done < dist/checksums.txt
+          archive="$(find dist -maxdepth 1 -type f -name 'qlog_*_linux_amd64.tar.gz' -print -quit)"
+          [[ -n "$archive" ]] || { echo 'NO-GO: linux amd64 snapshot archive is missing' >&2; exit 1; }
+          stage="$(mktemp -d)"
+          trap 'rm -rf "$stage"' EXIT
+          tar -xzf "$archive" -C "$stage"
+          "$stage/qlog" --version
+
+  publish:
+    needs: prepublish
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.26.6
+          cache: true
+      - uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+      - name: Build draft release
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          distribution: goreleaser
+          version: v2.18.0
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - uses: sigstore/cosign-installer@v3
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
       - name: Sign release checksums
+        shell: bash
         run: cosign sign-blob dist/checksums.txt --bundle dist/checksums.txt.sigstore.json --yes
       - name: Upload signature bundle
+        shell: bash
         run: gh release upload "${{ github.ref_name }}" dist/checksums.txt.sigstore.json --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Download published bundle into a clean directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf published-assets
+          mkdir published-assets
+          gh release download "${{ github.ref_name }}" --dir published-assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify published release authenticity
+        shell: bash
+        run: sh scripts/acceptance/verify-release-authenticity.sh --version "${{ github.ref_name }}" --artifact-dir published-assets
+      - name: Publish verified draft
+        shell: bash
+        run: gh release edit "${{ github.ref_name }}" --draft=false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Mark failed release as NO-GO
+        if: failure()
+        shell: bash
+        run: echo 'NO-GO - release verification failed; any created release remains a draft for manual inspection.' >&2

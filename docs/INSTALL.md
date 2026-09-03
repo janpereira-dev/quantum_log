@@ -44,6 +44,42 @@ The pushed `v*` tag triggers the release workflow. That workflow publishes the
 archives consumed by `installers/install.sh` and `installers/install.ps1`.
 RC10 is already published; do not recreate, move, or overwrite its tag.
 
+## Verify release authenticity
+
+The installers verify an archive's SHA-256 digest, which detects corruption but
+does not by itself prove who produced `checksums.txt`. Before evaluating a
+downloaded release, install [Cosign](https://docs.sigstore.dev/cosign/system_config/installation/)
+and verify the checksum bundle against the exact GitHub Actions issuer and this
+repository's release workflow identity.
+
+On macOS or Linux, the verifier downloads only the checksum manifest, its
+Sigstore bundle, and the archive plus SBOM for the current platform:
+
+```sh
+sh scripts/acceptance/verify-release-authenticity.sh \
+  --version v0.4.0-rc10 \
+  --release-base https://github.com/janpereira-dev/quantum_log/releases/download
+```
+
+On Windows PowerShell 5.1 or PowerShell 7:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/acceptance/verify-release-authenticity.ps1 `
+  -Version v0.4.0-rc10 `
+  -ReleaseBase https://github.com/janpereira-dev/quantum_log/releases/download
+```
+
+For an already downloaded release, replace `--release-base` with
+`--artifact-dir <directory>` (or `-ArtifactDir <directory>` in PowerShell).
+The verifier fails unless Cosign validates issuer
+`https://token.actions.githubusercontent.com`, the exact identity
+`https://github.com/janpereira-dev/quantum_log/.github/workflows/release.yml@refs/tags/<version>`,
+and the archive and its SBOM each have exactly one matching SHA-256 entry.
+
+This is publisher/workflow authenticity plus artifact integrity. It is not a
+separate SLSA build-provenance attestation, stable-release approval, or
+clean-device real-agent E2E evidence.
+
 ## Legacy historical packaging evidence
 
 The unpublished npm thin distributor remains pinned to `v0.3.2-rc.3`. Earlier

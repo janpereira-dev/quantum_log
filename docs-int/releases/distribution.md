@@ -53,6 +53,42 @@ grep '  qlog_VERSION_linux_amd64.tar.gz$' checksums.txt
 
 The two hashes must match before running `tar -xzf` or the installer. macOS users can replace `sha256sum` with `shasum -a 256`.
 
+SHA-256 alone proves only that the archive matches the downloaded manifest. To
+authenticate the manifest, use the cross-platform acceptance verifier with an
+exact immutable tag:
+
+```sh
+sh scripts/acceptance/verify-release-authenticity.sh \
+  --version v0.4.0-rc10 \
+  --release-base https://github.com/janpereira-dev/quantum_log/releases/download
+```
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/acceptance/verify-release-authenticity.ps1 `
+  -Version v0.4.0-rc10 `
+  -ReleaseBase https://github.com/janpereira-dev/quantum_log/releases/download
+```
+
+The verifier requires Cosign and binds the bundle to issuer
+`https://token.actions.githubusercontent.com` and certificate identity
+`https://github.com/janpereira-dev/quantum_log/.github/workflows/release.yml@refs/tags/<version>`.
+It then independently checks the current platform archive and its SBOM against
+unique entries in `checksums.txt`. Local mode uses `--artifact-dir` or
+`-ArtifactDir`; download mode rejects mutable versions, non-HTTPS URLs, query
+strings, and fragments.
+
+The release workflow first validates the tag/source SHA, formatting, module
+tidiness, vet, tests, race tests, build, GoReleaser configuration, and an
+unpublished snapshot. The write/OIDC job then creates a draft, signs and uploads
+the checksum bundle, downloads the hosted assets into a clean directory, runs
+the verifier, and only then removes draft status. A failure is NO-GO and leaves
+any created release as a draft for manual inspection; automation does not delete
+or advertise it as stable.
+
+This establishes checksum integrity and the signing workflow identity. It does
+not constitute a separate SLSA build-provenance attestation or real-agent E2E
+acceptance.
+
 ## Package Templates
 
 Populate one template per release using the archive URL and matching hash from `checksums.txt`:
