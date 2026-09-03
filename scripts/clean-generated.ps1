@@ -10,8 +10,21 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $root = [System.IO.Path]::GetFullPath($RepositoryRoot)
-if (-not (Test-Path -LiteralPath (Join-Path $root 'go.mod') -PathType Leaf) -or
-    -not (Test-Path -LiteralPath (Join-Path $root '.gitignore') -PathType Leaf)) {
+$goModPath = Join-Path $root 'go.mod'
+$gitIgnorePath = Join-Path $root '.gitignore'
+$projectMarkerPath = Join-Path $root 'QUANTUM_LOG_MASTER_PROMPT.md'
+if (-not (Test-Path -LiteralPath $goModPath -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $gitIgnorePath -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $projectMarkerPath -PathType Leaf)) {
+    throw "RepositoryRoot is not a Quantum Log checkout: $root"
+}
+
+$moduleMatch = [System.Text.RegularExpressions.Regex]::Match(
+    (Get-Content -LiteralPath $goModPath -Raw),
+    '(?m)^\s*module[ \t]+([^\s]+)[ \t]*(?://.*)?$'
+)
+if (-not $moduleMatch.Success -or
+    $moduleMatch.Groups[1].Value -cne 'github.com/janpereira-dev/quantum_log') {
     throw "RepositoryRoot is not a Quantum Log checkout: $root"
 }
 

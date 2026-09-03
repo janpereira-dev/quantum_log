@@ -85,6 +85,47 @@ func TestCleanGeneratedRejectsInvalidRepositoryRoot(t *testing.T) {
 	})
 }
 
+func TestCleanGeneratedRejectsUnrelatedGoRepository(t *testing.T) {
+	forEachPowerShell(t, func(t *testing.T, shell string) {
+		root := newRepositoryFixture(t)
+		mustWrite(t, root, "go.mod", "module example.com/not-quantum-log\n")
+		mustWrite(t, root, "dist/archive.zip", "must remain")
+		mustWrite(t, root, "coverage.out", "must remain")
+		ledgerBefore := snapshotLedger(t, root)
+
+		output, err := runCleaner(shell, root, false)
+		if err == nil {
+			t.Fatalf("cleanup accepted an unrelated Go repository:\n%s", output)
+		}
+		assertFileContent(t, root, "dist/archive.zip", "must remain")
+		assertFileContent(t, root, "coverage.out", "must remain")
+		assertLedgerUnchanged(t, root, ledgerBefore)
+		if !strings.Contains(output, "RepositoryRoot is not a Quantum Log checkout") {
+			t.Fatalf("unexpected unrelated-repository error:\n%s", output)
+		}
+	})
+}
+
+func TestCleanGeneratedRejectsMissingQuantumLogProjectMarker(t *testing.T) {
+	forEachPowerShell(t, func(t *testing.T, shell string) {
+		root := newRepositoryFixture(t)
+		marker := filepath.Join(root, "QUANTUM_LOG_MASTER_PROMPT.md")
+		if err := os.Remove(marker); err != nil {
+			t.Fatal(err)
+		}
+		mustWrite(t, root, "coverage.out", "must remain")
+
+		output, err := runCleaner(shell, root, false)
+		if err == nil {
+			t.Fatalf("cleanup accepted a repository without the Quantum Log project marker:\n%s", output)
+		}
+		assertFileContent(t, root, "coverage.out", "must remain")
+		if !strings.Contains(output, "RepositoryRoot is not a Quantum Log checkout") {
+			t.Fatalf("unexpected missing-marker error:\n%s", output)
+		}
+	})
+}
+
 func forEachPowerShell(t *testing.T, test func(t *testing.T, shell string)) {
 	t.Helper()
 	available := 0
@@ -119,8 +160,9 @@ func runCleaner(shell, root string, dryRun bool) (string, error) {
 func newRepositoryFixture(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	mustWrite(t, root, "go.mod", "module example.invalid/quantum-log-fixture\n")
+	mustWrite(t, root, "go.mod", "module github.com/janpereira-dev/quantum_log\n")
 	mustWrite(t, root, ".gitignore", "coverage.out\n")
+	mustWrite(t, root, "QUANTUM_LOG_MASTER_PROMPT.md", "# Quantum Log\n")
 	mustWrite(t, root, ".qlog/qlog.db", "ledger-sentinel\x00\x01")
 	mustWrite(t, root, ".qlog/qlog.db-wal", "wal-sentinel\x02\x03")
 	mustWrite(t, root, ".qlog/qlog.db-shm", "shm-sentinel\x04\x05")
