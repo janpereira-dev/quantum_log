@@ -34,6 +34,8 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
+[ -n "$INSTALL_DIR" ] || fail "--install-dir requires a non-empty value"
+
 profile=${QLOG_PROFILE:-$HOME/.profile}
 printf '%s\n' "binary: $INSTALL_DIR/qlog"
 if [ "$MODIFY_PATH" -eq 1 ]; then printf '%s\n' "profile: $profile"; fi

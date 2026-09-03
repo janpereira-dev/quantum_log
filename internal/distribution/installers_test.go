@@ -288,6 +288,29 @@ func TestShellUninstallerRetainsBinaryWhenOwnedCleanupFails(t *testing.T) {
 	}
 }
 
+func TestShellUninstallerRejectsEmptyInstallDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell test")
+	}
+	root := filepath.Join("..", "..")
+	for name, args := range map[string][]string{
+		"equals form":   {"--install-dir=", "--no-modify-path"},
+		"separate form": {"--install-dir", "", "--no-modify-path"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cmd := exec.Command("sh", append([]string{filepath.Join(root, "installers", "uninstall.sh")}, args...)...)
+			cmd.Env = append(os.Environ(), "HOME="+t.TempDir())
+			output, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("uninstall accepted an empty install directory:\n%s", output)
+			}
+			if strings.Contains(string(output), "binary: /qlog") {
+				t.Fatalf("uninstaller targeted /qlog before rejecting the empty directory:\n%s", output)
+			}
+		})
+	}
+}
+
 func TestShellInstallDryRunDoesNotWrite(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX shell smoke test runs on Unix CI jobs")
