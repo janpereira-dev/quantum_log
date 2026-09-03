@@ -38,9 +38,12 @@ authenticated prompt, and content capture explicitly false. No global profile,
 user environment, product configuration, or credential was changed.
 
 - **OTLP probe: 0 raw events.** A qlog collector built from this checkout was
-  healthy on an isolated loopback port with a temporary `QLOG_HOME`. Copilot
-  exited `0`, but qlog recorded zero raw events and zero model calls. The
-  producer diagnostic reported one HTTP export network error. This does not
+  healthy on an isolated loopback port with a temporary `QLOG_HOME`. The bound
+  source commit was `19a70213309e9c245d8e31363b17b487af2845a3`; the executed
+  qlog binary SHA-256 was
+  `4b37a3fb2c17c1a4d3a171e19a2f017fcb0470c06720de222d84204765b0a708`.
+  Copilot exited `0`, but qlog recorded zero raw events and zero model calls. One
+  producer diagnostic record reported HTTP export network failure. This does not
   support accepting OTLP.
 - **File probe: 10 records.** The process-scoped file exporter emitted two spans
   and eight metrics with model, conversation, and token attribute names. It also
@@ -100,6 +103,9 @@ Any future file proposal must prove all of the following as one contract:
 6. A hard numeric growth cap is enforced: 16 MiB per process file and 64 MiB for
    the complete Copilot spool. The launcher must fail closed if it cannot enforce
    those bounds while the producer runs; post-exit cleanup alone is insufficient.
+   Fail closed applies only to capture: qlog degrades capture, marks usage
+   unavailable, and stops retaining new spool data. It must not alter the Copilot
+   command result; the upstream agent result remains authoritative.
 7. Successful import securely removes only the verified owned file and
    checkpoint. Orphan recovery applies the same identity, privacy, cap, and
    idempotency checks. Uninstall removes only verified qlog-owned spool artifacts
@@ -126,6 +132,8 @@ privacy veto remains.
   run.
 - Any later transport implementation is a separate, reviewable work unit before
   acceptance collection.
+- Capture privacy, cap, or export failures mark Copilot usage unavailable and
+  must never alter the authoritative upstream command result.
 - Version or schema drift requires a new sanitized probe and hash.
 
 ## Rollback

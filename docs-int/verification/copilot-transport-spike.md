@@ -50,13 +50,21 @@ its collector on an isolated loopback port. Health returned ready before Copilot
 started. Only the Copilot child process received the OTLP endpoint/exporter and
 content-capture variables. No file exporter was set.
 
+The probe bound both source and executable identity before launch:
+
+- qlog source commit: `19a70213309e9c245d8e31363b17b487af2845a3`
+- qlog binary SHA-256: `4b37a3fb2c17c1a4d3a171e19a2f017fcb0470c06720de222d84204765b0a708`
+- Copilot version: `1.0.78`
+- content capture: `false`
+
 Result:
 
 - collector ready: true
 - Copilot exit code: `0`
 - qlog raw event count: `0`
 - qlog model-call count: `0`
-- producer diagnostic HTTP export network-error count: `1`
+- producer diagnostic HTTP export network-error count: `1` matching diagnostic
+  record (the count is by diagnostic line, not repeated marker text within it)
 - persisted prompt literal: absent
 - persisted credential markers: absent
 - persisted `gen_ai.tool.definitions` marker count: `0` (no event arrived)
@@ -67,10 +75,10 @@ events means the privacy scan is vacuous and cannot authorize OTLP.
 ### Canonical OTLP result
 
 The same canonical JSON rules produce SHA-256
-`2b0e1d3270ac381a5c16266047d99aa0840d21cfc8a88fcb7af60e6beb3900a3`:
+`5d4d516174a3b4b4886c6b1b269430184199ecbad3b5630baab7617f405f3064`:
 
 ```json
-{"collector_ready":true,"copilot_exit_code":0,"model_call_count":0,"raw_event_count":0,"transport":"otlp-http"}
+{"collector_ready":true,"content_capture":false,"copilot_exit_code":0,"copilot_version":"1.0.78","model_call_count":0,"network_error_count":1,"qlog_binary_sha256":"4b37a3fb2c17c1a4d3a171e19a2f017fcb0470c06720de222d84204765b0a708","qlog_commit":"19a70213309e9c245d8e31363b17b487af2845a3","raw_event_count":0,"transport":"otlp-http"}
 ```
 
 ## VS Code result

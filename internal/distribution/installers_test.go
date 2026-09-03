@@ -622,6 +622,7 @@ func TestCopilotTransportDecisionIsEvidenceBound(t *testing.T) {
 		"private APIs", "log scraping", "UI interception", "packet interception",
 		"one file per Copilot process", "raw-line SHA-256", "16 MiB", "64 MiB",
 		"symlinks and Windows reparse points", "rotation and truncation", "orphan recovery",
+		"must not alter the Copilot command result", "upstream agent result remains authoritative",
 		"## Privacy impact", "## Rollback",
 	} {
 		if !strings.Contains(adr, strings.ToLower(want)) {
@@ -636,8 +637,9 @@ func TestCopilotTransportDecisionIsEvidenceBound(t *testing.T) {
 		"2026-09-03", "Windows 11 x64", "GitHub Copilot CLI 1.0.78", "Visual Studio Code 1.136.0",
 		"`COPILOT_OTEL_FILE_EXPORTER_PATH`", "`false`", "exit code `0`", "10 JSONL records",
 		"2 spans", "8 metrics", "9b5022f32568bc1382e8463bcfed0a62e6c55026de080ce5454debc71a8ac131",
-		"2b0e1d3270ac381a5c16266047d99aa0840d21cfc8a88fcb7af60e6beb3900a3",
-		`{"collector_ready":true,"copilot_exit_code":0,"model_call_count":0,"raw_event_count":0,"transport":"otlp-http"}`,
+		"5d4d516174a3b4b4886c6b1b269430184199ecbad3b5630baab7617f405f3064",
+		`"network_error_count":1`, `"content_capture":false`, `"copilot_version":"1.0.78"`,
+		`"qlog_commit":"19a70213309e9c245d8e31363b17b487af2845a3"`, `"qlog_binary_sha256":`,
 		"prompt literal: absent", "response literal: absent", "credential markers: absent",
 		"No Copilot extension was installed", "No VS Code agent turn was run",
 		"Raw JSONL was deleted", "copilot help monitoring", "canonical JSON",
@@ -649,7 +651,7 @@ func TestCopilotTransportDecisionIsEvidenceBound(t *testing.T) {
 	canonical := spikeRaw
 	for index, wantHash := range []string{
 		"9b5022f32568bc1382e8463bcfed0a62e6c55026de080ce5454debc71a8ac131",
-		"2b0e1d3270ac381a5c16266047d99aa0840d21cfc8a88fcb7af60e6beb3900a3",
+		"5d4d516174a3b4b4886c6b1b269430184199ecbad3b5630baab7617f405f3064",
 	} {
 		start := strings.Index(canonical, "```json\n")
 		if start < 0 {
@@ -670,11 +672,15 @@ func TestCopilotTransportDecisionIsEvidenceBound(t *testing.T) {
 	cli := normalized("docs/adapters/copilot-cli/source-contract.md")
 	for _, want := range []string{
 		"unsupported for stable capture", "implemented transport remains OTLP HTTP", "no replacement is authorized",
-		"documented file exporter is diagnostic only", "privacy veto", "1.0.78",
+		"documented file exporter is diagnostic only", "privacy veto", "1.0.78", "PowerShell profile blocks",
+		"registry/HKCU environment behavior is legacy cleanup only",
 	} {
 		if !strings.Contains(cli, strings.ToLower(want)) {
 			t.Errorf("Copilot CLI source contract missing %q", want)
 		}
+	}
+	if strings.Contains(cli, "also writes matching qlog-owned current-user environment values") {
+		t.Error("Copilot CLI source contract presents legacy HKCU environment behavior as current install behavior")
 	}
 
 	vscode := normalized("docs/adapters/copilot-vscode/source-contract.md")

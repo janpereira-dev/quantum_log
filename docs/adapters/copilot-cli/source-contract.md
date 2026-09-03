@@ -17,7 +17,9 @@ retained. That leaves the privacy veto unresolved.
 
 ## Implemented configuration
 
-Current qlog setup configures a qlog-owned launcher/profile block for:
+Current Windows install writes qlog-owned PowerShell profile blocks. The managed
+`copilot` function sets these values only in the child process environment and
+restores the previous process values after Copilot exits:
 
 - `COPILOT_OTEL_ENABLED=true`
 - `COPILOT_OTEL_EXPORTER_TYPE=otlp-http`
@@ -25,12 +27,13 @@ Current qlog setup configures a qlog-owned launcher/profile block for:
 - `OTEL_EXPORTER_OTLP_PROTOCOL=http/json`
 - `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false`
 
-That path requires a reachable collector. Install/uninstall must preserve
-unrelated profile content and user-modified values. On Windows, current setup
-also writes matching qlog-owned current-user environment values; uninstall
-removes only values it owns and preserves user changes. Existing shells retain
-their inherited environment until restarted. These statements describe existing
-setup behavior, not verified telemetry delivery.
+That path requires a reachable collector. Install/uninstall owns and removes only
+the delimited PowerShell profile blocks and its profile ownership state while
+preserving unrelated profile content. Registry/HKCU environment behavior is
+legacy cleanup only: current install does not create persistent current-user
+environment values, while uninstall may remove values proven to be owned by an
+older qlog installation. These statements describe existing setup behavior, not
+verified telemetry delivery.
 
 ## Evidence gate
 
@@ -40,5 +43,9 @@ transport. The privacy scan must prove that prompt, response, message, tool
 definition/argument/result, credential, environment-value, and path values do not
 reach the ledger or an unbounded transient store. Missing values remain missing;
 zero is reported only when explicitly emitted.
+
+Any future capture path must fail closed on a privacy or growth-cap violation by
+discarding/quarantining capture and marking usage unavailable. It must not alter
+the Copilot command result; the upstream agent result remains authoritative.
 
 See [`docs-int/verification/copilot-transport-spike.md`](../../../docs-int/verification/copilot-transport-spike.md).
