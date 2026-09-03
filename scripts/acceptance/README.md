@@ -17,7 +17,7 @@ QLOG_TO_VERSION=v0.4.0-rc10
 
 Optionally set `QLOG_EVIDENCE_DIR` to retain evidence at a chosen location. Otherwise a new platform temporary evidence directory is retained and printed. Evidence is bounded to versions, command exit codes, sanitized doctor/verify output, and ledger SHA-256 values; it excludes the fixture, raw ledger rows, payloads, environment values, and release URLs.
 
-Use contract-only mode to validate isolation and explicit-version wiring without network access, release downloads, or persistent writes:
+Use contract-only mode to validate isolation and explicit-version wiring without network access, release downloads, or persistent writes. Contract-only mode requires the same three explicit release inputs as a full run, but it does not contact the configured HTTPS endpoint:
 
 ```sh
 sh scripts/acceptance/release-lifecycle.sh --contract-only
