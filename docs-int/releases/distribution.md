@@ -4,11 +4,11 @@ QUANTUM_LOG includes source-controlled installer and package-manager templates. 
 
 ## Published Status
 
-No npm package, Homebrew tap, Scoop bucket, WinGet package, or AUR package is published by this repository. `packaging/npm` is a publish-ready thin distributor for `@janpereira.dev/quantum-log` version `0.1.0`; it remains unpublished until a matching GitHub Release exists. Other `{{...}}` package templates must be populated from a real release's `checksums.txt` before submitting to an external registry.
+`v0.4.0-rc10` is a published GitHub prerelease. No stable `v0.4.0` release, npm package, Homebrew tap, Scoop bucket, WinGet package, or AUR package is published by this repository. `packaging/npm` and the other `{{...}}` package definitions are templates, not verified current distribution channels; populate them only from a real release's `checksums.txt` before submitting to an external registry.
 
 ## Native Installer
 
-`installers/install.sh` and `installers/install.ps1` resolve a GitHub Release from `janpereira-dev/quantum_log` by default. Until an actual release tag and its artifacts exist, they fail rather than install an unchecked binary. Set `QLOG_RELEASE_REPOSITORY` or the HTTPS-only `QLOG_RELEASE_BASE` only for an authorized mirror.
+`installers/install.sh` and `installers/install.ps1` resolve a GitHub Release from `janpereira-dev/quantum_log` by default. They fail rather than install an unchecked or unavailable binary. Set `QLOG_RELEASE_REPOSITORY` or the HTTPS-only `QLOG_RELEASE_BASE` only for an authorized mirror.
 
 All native installers:
 
@@ -27,6 +27,18 @@ Official installers expose `--bootstrap` and `--no-bootstrap`. Bootstrap require
 If bootstrap is skipped or unavailable, run `qlog setup --dry-run` and then `qlog setup --yes` manually. Check `qlog collector status --json`; use `qlog collector logs` for recovery and `qlog collector uninstall` to remove only qlog-owned lifecycle state. The collector defaults to `127.0.0.1:4318`; non-loopback listening requires explicit `--allow-non-loopback` with its security implications reviewed.
 
 Release documentation must keep source-evidence and clean-device real-agent acceptance separate from installer validation. A passing installer test, collector health check, or synthetic event is not real-agent E2E evidence.
+
+## Hosted Artifact Lifecycle Gate
+
+`.github/workflows/artifact-lifecycle.yml` is both manually dispatchable and reusable by other workflows. With no inputs it runs the lifecycle harness in contract-only mode on Linux, macOS, and Windows. Ordinary CI calls exactly that mode: it validates the cross-platform harness without downloading a release and MUST NOT be reported as live artifact E2E.
+
+A maintainer can intentionally run the live artifact lifecycle by supplying all three inputs together:
+
+- `from_version`: an exact immutable source tag;
+- `to_version`: a different exact immutable target tag; and
+- `release_base`: the HTTPS download base for those tagged artifacts.
+
+Partial input sets, mutable `latest` selectors, non-HTTPS bases, queries, and fragments fail before any lifecycle job downloads an artifact. The live job installs the source version, ingests a deterministic sentinel, upgrades to the target version, runs diagnostics, uninstalls without deleting the ledger, reinstalls, and uploads bounded sanitized evidence even when a lifecycle step fails. The workflow needs no agent credentials or repository secrets.
 
 `stable` and `latest` currently both resolve GitHub's latest non-prerelease release. A distinct latest channel needs a published release policy before its behavior can diverge.
 

@@ -792,3 +792,71 @@ func TestReleaseLifecycleHarnessContracts(t *testing.T) {
 		})
 	}
 }
+
+func TestHostedArtifactLifecycleWorkflowContract(t *testing.T) {
+	root := filepath.Join("..", "..")
+	contents, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "artifact-lifecycle.yml"))
+	if err != nil {
+		t.Fatalf("read hosted artifact lifecycle workflow: %v", err)
+	}
+	workflow := strings.ReplaceAll(string(contents), "\r\n", "\n")
+	required := []string{
+		"workflow_dispatch:",
+		"workflow_call:",
+		"from_version:",
+		"to_version:",
+		"release_base:",
+		"permissions:\n  contents: read",
+		"timeout-minutes:",
+		"os: [ubuntu-latest, macos-latest, windows-latest]",
+		"actions/checkout@v7",
+		"actions/upload-artifact@v6",
+		"if: always()",
+		"QLOG_FROM_VERSION:",
+		"QLOG_TO_VERSION:",
+		"QLOG_RELEASE_BASE:",
+		`default: ''`,
+		`[ "$supplied" -eq 0 ]`,
+		"echo 'live=false'",
+		`[ "$supplied" -ne 3 ]`,
+		"needs.validate-inputs.outputs.live != 'true'",
+		"needs.validate-inputs.outputs.live == 'true'",
+		"sh scripts/acceptance/release-lifecycle.sh --contract-only",
+		"sh scripts/acceptance/release-lifecycle.sh",
+		"pwsh -NoProfile -File scripts/acceptance/release-lifecycle.ps1 -ContractOnly",
+		"pwsh -NoProfile -File scripts/acceptance/release-lifecycle.ps1",
+	}
+	for _, want := range required {
+		if !strings.Contains(workflow, want) {
+			t.Errorf("artifact lifecycle workflow missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"version: latest", "releases/latest", "QLOG_FROM_VERSION: latest", "QLOG_TO_VERSION: latest", "secrets."} {
+		if strings.Contains(workflow, forbidden) {
+			t.Errorf("artifact lifecycle workflow contains unsafe or mutable selector %q", forbidden)
+		}
+	}
+}
+
+func TestCIUsesHostedLifecycleOnlyAsContractValidation(t *testing.T) {
+	contents, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := strings.ReplaceAll(string(contents), "\r\n", "\n")
+	for _, want := range []string{"artifact-lifecycle-contract:", "uses: ./.github/workflows/artifact-lifecycle.yml"} {
+		if !strings.Contains(workflow, want) {
+			t.Errorf("CI does not wire hosted lifecycle contract validation: missing %q", want)
+		}
+	}
+	jobStart := strings.Index(workflow, "artifact-lifecycle-contract:")
+	if jobStart < 0 {
+		return
+	}
+	job := workflow[jobStart:]
+	for _, forbidden := range []string{"from_version:", "to_version:", "release_base:"} {
+		if strings.Contains(job, forbidden) {
+			t.Errorf("ordinary CI supplies live artifact input %q", forbidden)
+		}
+	}
+}
