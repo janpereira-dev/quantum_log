@@ -142,15 +142,90 @@ func TestReleaseConfigKeepsPrereleaseTagsOutOfLatest(t *testing.T) {
 	}
 }
 
-func TestInstallGuideDocumentsVerifiedRCInstallerLifecycle(t *testing.T) {
+func TestInstallGuideDocumentsPublishedRCInstallerLifecycle(t *testing.T) {
 	contents, err := os.ReadFile(filepath.Join("..", "..", "docs", "INSTALL.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	guide := string(contents)
-	for _, want := range []string{"installers/install.sh", "installers/install.ps1", "--version v0.4.0-rc10", "--channel latest", "create and push the release tag", "The pushed `v*` tag triggers the release workflow"} {
+	for _, want := range []string{"installers/install.sh", "installers/install.ps1", "--version v0.4.0-rc10", "--channel latest", "`v0.4.0-rc10` is a published prerelease", "The pushed `v*` tag triggers the release workflow"} {
 		if !strings.Contains(guide, want) {
 			t.Fatalf("install guide missing %q", want)
+		}
+	}
+}
+
+func TestReleaseDocumentationDoesNotClaimUnsupportedEvidence(t *testing.T) {
+	root := filepath.Join("..", "..")
+	files := []string{
+		"docs-int/milestones/README.md",
+		"docs-int/verification/milestone-1-evidence.md",
+		"docs-int/verification/m4-evidence.md",
+		"docs-int/verification/m4-closure-backlog.md",
+		"docs/verification/five-agent-evidence.md",
+		"docs/verification/five-agent-external-evidence.md",
+		"docs/INSTALL.md",
+		"README.md",
+		"CHANGELOG.md",
+	}
+	forbidden := []string{
+		"M4 is VERIFIED",
+		"PASS means external verification",
+		"stable release is available",
+		"v0.4.0 is a stable public release",
+		"`PASS` means automated contract coverage or recorded external acceptance",
+		"`PASS` for recorded lifecycle acceptance",
+		"No public RC artifact exists yet",
+		"After `v0.4.0-rc10` is published",
+	}
+
+	for _, name := range []string{"README.md", "docs/verification/five-agent-evidence.md", "docs/verification/five-agent-external-evidence.md"} {
+		contents, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(name)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(contents), "v0.3.2-rc.1") {
+			t.Errorf("%s presents obsolete v0.3.2-rc.1 outside a dated history document", name)
+		}
+	}
+	for _, name := range files {
+		contents, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(name)))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		for _, phrase := range forbidden {
+			if strings.Contains(string(contents), phrase) {
+				t.Errorf("%s contains unsupported current claim %q", name, phrase)
+			}
+		}
+	}
+
+	install, err := os.ReadFile(filepath.Join(root, "docs", "INSTALL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"`v0.4.0-rc10` is a published prerelease",
+		"35ae43bd0031b3aca2621c52ede74731ae136357",
+		"Legacy historical packaging evidence",
+	} {
+		if !strings.Contains(string(install), want) {
+			t.Errorf("docs/INSTALL.md missing current release fact %q", want)
+		}
+	}
+
+	vocabulary, err := os.ReadFile(filepath.Join(root, "docs-int", "milestones", "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"`IMPLEMENTED` means code exists",
+		"`READY_FOR_EXTERNAL_E2E` means the implementation can be exercised",
+		"`PASS` means matching local evidence exists",
+		"`VERIFIED` requires a committed acceptance matrix and independent review",
+	} {
+		if !strings.Contains(string(vocabulary), want) {
+			t.Errorf("milestone vocabulary missing %q", want)
 		}
 	}
 }
