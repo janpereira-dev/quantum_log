@@ -40,11 +40,12 @@ run `qlog uninstall`. It always retains the local ledger in RC.10: automatic
 
 ## Quick start
 
-There is no stable public release yet. Published prerelease `v0.4.0-rc10`
+No stable `v0.4.0` release has been published. Published prerelease `v0.4.0-rc10`
 (`35ae43bd0031b3aca2621c52ede74731ae136357`) is available for evaluation, but
 does not have complete two-machine or five-agent external E2E evidence. Do not
 use `go install` or the legacy npm package: both bypass the published archive and
-checksum lifecycle. Install the RC explicitly with
+checksum lifecycle. The older stable release line is not the supported
+evaluation path. Install the RC explicitly with
 `install.sh --version v0.4.0-rc10` or `install.ps1 --version v0.4.0-rc10` as
 described in [Install](docs/INSTALL.md).
 

@@ -5,7 +5,8 @@
 `checksums.txt`, a Sigstore bundle for that checksum file, and per-archive SBOMs.
 This proves artifact availability, not stable-release readiness or external E2E.
 
-There is no stable public release yet.
+No stable `v0.4.0` release has been published. `v0.4.0-rc10` is a prerelease,
+and the older stable release line is not the supported evaluation path.
 
 ## Published RC installer
 

@@ -165,21 +165,27 @@ func TestReleaseDocumentationDoesNotClaimUnsupportedEvidence(t *testing.T) {
 		"docs/verification/five-agent-evidence.md",
 		"docs/verification/five-agent-external-evidence.md",
 		"docs/INSTALL.md",
+		"docs/TROUBLESHOOTING.md",
+		"packaging/npm/README.md",
 		"README.md",
 		"CHANGELOG.md",
 	}
+	normalize := func(contents []byte) string {
+		plain := strings.NewReplacer("`", "", "*", "", "_", " ").Replace(strings.ToLower(string(contents)))
+		return strings.Join(strings.Fields(plain), " ")
+	}
 	forbidden := []string{
-		"M4 is VERIFIED",
-		"PASS means external verification",
+		"m4 is verified",
+		"pass means external verification",
 		"stable release is available",
 		"v0.4.0 is a stable public release",
-		"`PASS` means automated contract coverage or recorded external acceptance",
-		"`PASS` for recorded lifecycle acceptance",
-		"No public RC artifact exists yet",
-		"After `v0.4.0-rc10` is published",
+		"pass means automated contract coverage or recorded external acceptance",
+		"pass for recorded lifecycle acceptance",
+		"no public rc artifact exists yet",
+		"after v0.4.0-rc10 is published",
 	}
 
-	for _, name := range []string{"README.md", "docs/verification/five-agent-evidence.md", "docs/verification/five-agent-external-evidence.md"} {
+	for _, name := range []string{"README.md", "docs/verification/five-agent-external-evidence.md"} {
 		contents, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(name)))
 		if err != nil {
 			t.Fatal(err)
@@ -193,11 +199,58 @@ func TestReleaseDocumentationDoesNotClaimUnsupportedEvidence(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
+		text := normalize(contents)
 		for _, phrase := range forbidden {
-			if strings.Contains(string(contents), phrase) {
+			if strings.Contains(text, phrase) {
 				t.Errorf("%s contains unsupported current claim %q", name, phrase)
 			}
 		}
+	}
+
+	troubleshooting, err := os.ReadFile(filepath.Join(root, "docs", "TROUBLESHOOTING.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	troubleshootingText := normalize(troubleshooting)
+	if strings.Contains(troubleshootingText, "blocked until signed https rc artifact exists") {
+		t.Error("docs/TROUBLESHOOTING.md says the signed RC is unavailable although RC10 is published")
+	}
+	if strings.Contains(troubleshootingText, "qlog_install_local_artifact_dir") && strings.Contains(troubleshootingText, "npm install") {
+		t.Error("docs/TROUBLESHOOTING.md promotes the legacy npm artifact route for current RC validation")
+	}
+
+	npmGuide, err := os.ReadFile(filepath.Join(root, "packaging", "npm", "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	npmText := normalize(npmGuide)
+	if strings.Contains(npmText, "distributor for verified quantum_log") ||
+		strings.Contains(npmText, "npm install -g @janpereira.dev/quantum-log") ||
+		(strings.Contains(npmText, "downloads matching") && strings.Contains(npmText, "v0.3.2-rc.3")) {
+		t.Error("packaging/npm/README.md presents the stale npm package as the verified current installation path")
+	}
+
+	for _, name := range []string{"README.md", "docs/INSTALL.md"} {
+		contents, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(name)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := normalize(contents)
+		if strings.Contains(text, "there is no stable public release yet") ||
+			!strings.Contains(text, "no stable v0.4.0 release has been published") ||
+			!strings.Contains(text, "older stable release line is not the supported evaluation path") {
+			t.Errorf("%s does not distinguish the absent stable v0.4.0 release from the published RC10 and older stable line", name)
+		}
+	}
+
+	fiveAgent, err := os.ReadFile(filepath.Join(root, "docs", "verification", "five-agent-evidence.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fiveAgentText := normalize(fiveAgent)
+	if strings.Contains(fiveAgentText, "partial:") || strings.Contains(fiveAgentText, "blocked external") ||
+		!strings.Contains(fiveAgentText, "ready for external e2e") || !strings.Contains(fiveAgentText, "2026-08-05") || !strings.Contains(fiveAgentText, "v0.3.2-rc.1") {
+		t.Error("docs/verification/five-agent-evidence.md uses PARTIAL outside the four-state vocabulary or leaves historical evidence unbound")
 	}
 
 	install, err := os.ReadFile(filepath.Join(root, "docs", "INSTALL.md"))
