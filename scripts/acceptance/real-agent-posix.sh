@@ -2,45 +2,49 @@
 set -eu
 
 usage() {
-  printf '%s\n' "usage: real-agent-posix.sh <agent-id> <agent-version> <candidate-tag> <candidate-commit> <output.zip> [privacy-status] [replay-status]"
+  printf '%s\n' "usage: real-agent-posix.sh <agent-id> <agent-version> <output.zip>"
 }
 
-[ "$#" -ge 5 ] && [ "$#" -le 7 ] || { usage >&2; exit 2; }
-
+[ "$#" -eq 3 ] || { usage >&2; exit 2; }
 agent_id=$1
 agent_version=$2
-candidate_tag=$3
-candidate_commit=$4
-output=$5
-privacy_status=${6:-PENDING_EXTERNAL_E2E}
-replay_status=${7:-PENDING_EXTERNAL_E2E}
-qlog_bin=${QLOG_BIN:-qlog}
+output=$3
 
-case "$agent_id" in
-  codex|claude-code|opencode|copilot|copilot-vscode) ;;
-  *) printf '%s\n' "unsupported agent id" >&2; exit 2 ;;
-esac
-case "$agent_version$candidate_tag" in
-  *[!A-Za-z0-9._/+:-]*) printf '%s\n' "agent version and candidate tag must contain sanitized metadata characters only" >&2; exit 2 ;;
-esac
-[ "${#candidate_commit}" -eq 40 ] || { printf '%s\n' "candidate commit must be a full 40-character hexadecimal commit" >&2; exit 2; }
-case "$candidate_commit" in
-  *[!0-9a-fA-F]*) printf '%s\n' "candidate commit must be a full 40-character hexadecimal commit" >&2; exit 2 ;;
-esac
-case "$privacy_status" in PASS|FAIL|PENDING_EXTERNAL_E2E) ;; *) printf '%s\n' "invalid privacy status" >&2; exit 2 ;; esac
-case "$replay_status" in PASS|FAIL|PENDING_EXTERNAL_E2E) ;; *) printf '%s\n' "invalid replay status" >&2; exit 2 ;; esac
+qlog_path=$(command -v qlog) || { printf '%s\n' "qlog executable not found" >&2; exit 1; }
+case "$qlog_path" in /*) ;; *) printf '%s\n' "qlog must resolve to an absolute path" >&2; exit 1 ;; esac
+[ -f "$qlog_path" ] && [ ! -L "$qlog_path" ] && [ -x "$qlog_path" ] || { printf '%s\n' "qlog must be a regular non-symlink executable" >&2; exit 1; }
 
-started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-printf '%s\n' "UTC evidence window started: $started_at"
+hash_qlog() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$qlog_path" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$qlog_path" | awk '{print $1}'
+  else
+    printf '%s\n' "no SHA-256 utility available" >&2
+    return 1
+  fi
+}
+
+qlog_hash=$(hash_qlog) || exit $?
+if boundary_id=$("$qlog_path" acceptance begin --agent "$agent_id" --agent-version "$agent_version"); then :; else
+  code=$?; printf '%s\n' "qlog could not create an acceptance boundary" >&2; exit "$code"
+fi
+case "$boundary_id" in
+  *[!0-9a-f]*|'') printf '%s\n' "qlog returned an invalid acceptance boundary" >&2; exit 1 ;;
+esac
+[ "${#boundary_id}" -eq 64 ] || { printf '%s\n' "qlog returned an invalid acceptance boundary" >&2; exit 1; }
+
 printf '%s\n' "Perform one normal authenticated $agent_id action now. Do not paste prompts, responses, paths, commands, environment values, or agent logs here."
 printf '%s' "Press Enter immediately after the action completes: "
 IFS= read -r _confirmation
-ended_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-platform=$(uname -s | tr '[:upper:]' '[:lower:]')/$(uname -m)
 
-evidence=$(printf '{"schema_version":"qlog.acceptance.real-agent/v1","candidate_tag":"%s","candidate_commit":"%s","platform":"%s","agent_id":"%s","agent_version":"%s","started_at":"%s","ended_at":"%s","source_evidence":true,"ledger_status":"PASS","privacy_status":"%s","replay_status":"%s","status":"PENDING_EXTERNAL_E2E"}' \
-  "$candidate_tag" "$candidate_commit" "$platform" "$agent_id" "$agent_version" "$started_at" "$ended_at" "$privacy_status" "$replay_status")
-
-"$qlog_bin" acceptance run --output "$output" --real-agent-evidence "$evidence"
-printf '%s\n' "Sanitized acceptance package: $output"
-printf '%s\n' "PASS is derived only when qlog finds matching ledger source evidence and every supplied gate is PASS."
+[ "$(hash_qlog)" = "$qlog_hash" ] || { printf '%s\n' "qlog changed after the boundary was created" >&2; exit 1; }
+if "$qlog_path" acceptance run --output "$output" --boundary "$boundary_id"; then :; else
+  code=$?; printf '%s\n' "qlog acceptance packaging failed" >&2; exit "$code"
+fi
+[ -s "$output" ] && [ -f "$output" ] && [ ! -L "$output" ] || { printf '%s\n' "acceptance package is missing, empty, or unsafe" >&2; exit 1; }
+[ "$(hash_qlog)" = "$qlog_hash" ] || { printf '%s\n' "qlog changed while packaging evidence" >&2; exit 1; }
+if "$qlog_path" acceptance inspect --package "$output"; then :; else
+  code=$?; printf '%s\n' "acceptance package inspection failed" >&2; exit "$code"
+fi
+printf '%s\n' "Sanitized acceptance package verified: $output"

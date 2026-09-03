@@ -86,43 +86,18 @@ func TestAcceptanceRunWritesSanitizedEvidencePackage(t *testing.T) {
 	}
 }
 
-func TestAcceptanceRunPackagesOnlyCandidateBoundRealSourceEvidence(t *testing.T) {
+func TestAcceptanceRunKeepsSyntheticPostBoundaryEvidencePending(t *testing.T) {
 	home := t.TempDir()
 	if _, err := runQLog(t, home, "init"); err != nil {
 		t.Fatalf("init: %v", err)
 	}
-	startedAt := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
-	service, err := app.Open(context.Background(), home)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := service.Store.EnsureSession(context.Background(), "session-real", "codex", startedAt); err != nil {
-		t.Fatal(err)
-	}
-	raw, err := service.Store.AppendRawEvent(context.Background(), sqlite.RawEventInput{Source: "otlp-http", SessionID: "session-real", EventType: "model.call", OccurredAt: startedAt.Add(10 * time.Second), Payload: []byte(`{"agent_name":"codex","capture_quality":"otel_reported","codex_response_completed":true}`)})
-	if err != nil || !raw.Accepted {
-		t.Fatalf("append source evidence: %#v, %v", raw, err)
-	}
-	if _, err := service.Store.RecordModelCall(context.Background(), sqlite.ModelCallInput{RawEventID: raw.ID, SessionID: "session-real", AgentName: "codex", Provider: "openai", ModelID: "gpt-5", CaptureQuality: "otel_reported", InputTokens: 1, OutputTokens: 2, OccurredAt: startedAt.Add(10 * time.Second)}); err != nil {
-		t.Fatal(err)
-	}
-	if err := service.Close(); err != nil {
-		t.Fatal(err)
-	}
-	evidence := acceptancecontract.RealAgentEvidence{
-		SchemaVersion: acceptancecontract.RealAgentSchemaVersion, CandidateTag: "v0.4.0-rc11",
-		CandidateCommit: strings.Repeat("a", 40), Platform: "windows/amd64", AgentID: "codex", AgentVersion: "0.151.0",
-		StartedAt: startedAt, EndedAt: startedAt.Add(2 * time.Minute), SourceEvidence: true,
-		LedgerStatus: acceptancecontract.StatusPass, PrivacyStatus: acceptancecontract.StatusPass,
-		ReplayStatus: acceptancecontract.StatusPass, Status: acceptancecontract.StatusFail,
-	}
-	encoded, err := json.Marshal(evidence)
-	if err != nil {
-		t.Fatal(err)
-	}
+	version := Version{Version: "0.4.0-rc11", Commit: strings.Repeat("a", 40)}
+	boundaryID := beginAcceptance(t, home, version, "codex", "0.151.0")
+	startedAt := time.Now().UTC()
+	appendCodexAcceptanceEvidence(t, home, startedAt)
 	output := filepath.Join(t.TempDir(), "acceptance.zip")
-	command := New(Version{Version: strings.TrimPrefix(evidence.CandidateTag, "v"), Commit: evidence.CandidateCommit})
-	command.SetArgs([]string{"--home", home, "acceptance", "run", "--output", output, "--real-agent-evidence", string(encoded)})
+	command := New(version)
+	command.SetArgs([]string{"--home", home, "acceptance", "run", "--output", output, "--boundary", boundaryID})
 	if err := command.Execute(); err != nil {
 		t.Fatalf("acceptance run: %v", err)
 	}
@@ -131,48 +106,138 @@ func TestAcceptanceRunPackagesOnlyCandidateBoundRealSourceEvidence(t *testing.T)
 	if err := json.Unmarshal(entries["real-agent-evidence.json"], &packaged); err != nil {
 		t.Fatalf("decode evidence: %v", err)
 	}
-	if len(packaged) != 1 || packaged[0].Status != acceptancecontract.StatusPass {
+	if len(packaged) != 1 || packaged[0].Status != acceptancecontract.StatusPendingExternalE2E || !packaged[0].SourceEvidence || packaged[0].PrivacyStatus != acceptancecontract.StatusPass || packaged[0].ReplayStatus != acceptancecontract.StatusPendingExternalE2E || packaged[0].CaptureQuality != "otel_reported" || len(packaged[0].ObservedMetrics) == 0 {
 		t.Fatalf("packaged evidence = %#v", packaged)
 	}
+	command = New(version)
+	command.SetArgs([]string{"acceptance", "inspect", "--package", output})
+	if err := command.Execute(); err != nil {
+		t.Fatalf("inspect exact package: %v", err)
+	}
 }
 
-func TestAcceptanceRunRejectsMismatchedCandidateEvidence(t *testing.T) {
+func appendCodexAcceptanceEvidence(t *testing.T, home string, occurredAt time.Time) {
+	t.Helper()
+	service, err := app.Open(context.Background(), home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "session-" + strings.ReplaceAll(occurredAt.Format(time.RFC3339Nano), ":", "-")
+	if err := service.Store.EnsureSession(context.Background(), sessionID, "codex", occurredAt); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := service.Store.AppendRawEvent(context.Background(), sqlite.RawEventInput{Source: "otlp-http", SessionID: sessionID, EventType: "model.call", OccurredAt: occurredAt, Payload: []byte(`{"agent_name":"codex","capture_quality":"otel_reported","codex_response_completed":true}`)})
+	if err != nil || !raw.Accepted {
+		t.Fatalf("append source evidence: %#v, %v", raw, err)
+	}
+	inputTokens, outputTokens := int64(1), int64(2)
+	if _, err := service.Store.RecordModelCall(context.Background(), sqlite.ModelCallInput{RawEventID: raw.ID, SessionID: sessionID, AgentName: "codex", Provider: "openai", ModelID: "gpt-5", CaptureQuality: "otel_reported", InputTokens: inputTokens, OutputTokens: outputTokens, OccurredAt: occurredAt, Metrics: []sqlite.MetricInput{{Name: "input_tokens", Value: &inputTokens, Source: "otel", RawKey: "input_tokens", Confidence: "reported"}, {Name: "output_tokens", Value: &outputTokens, Source: "otel", RawKey: "output_tokens", Confidence: "reported"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAcceptanceBoundaryExcludesStaleAndFutureLedgerRows(t *testing.T) {
+	for _, scenario := range []struct {
+		name       string
+		before     bool
+		occurredAt func() time.Time
+	}{{"stale", true, func() time.Time { return time.Now().UTC().Add(-time.Minute) }}, {"future", false, func() time.Time { return time.Now().UTC().Add(time.Hour) }}} {
+		t.Run(scenario.name, func(t *testing.T) {
+			home := t.TempDir()
+			if _, err := runQLog(t, home, "init"); err != nil {
+				t.Fatal(err)
+			}
+			if scenario.before {
+				appendCodexAcceptanceEvidence(t, home, scenario.occurredAt())
+			}
+			version := Version{Version: "0.4.0-rc11", Commit: strings.Repeat("a", 40)}
+			boundaryID := beginAcceptance(t, home, version, "codex", "0.151.0")
+			if !scenario.before {
+				appendCodexAcceptanceEvidence(t, home, scenario.occurredAt())
+			}
+			output := filepath.Join(t.TempDir(), "acceptance.zip")
+			command := New(version)
+			command.SetArgs([]string{"--home", home, "acceptance", "run", "--output", output, "--boundary", boundaryID})
+			if err := command.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			var packaged []acceptancecontract.RealAgentEvidence
+			if err := json.Unmarshal(readAcceptanceZIP(t, output)["real-agent-evidence.json"], &packaged); err != nil {
+				t.Fatal(err)
+			}
+			if len(packaged) != 1 || packaged[0].SourceEvidence || packaged[0].Status == acceptancecontract.StatusPass {
+				t.Fatalf("%s evidence = %#v", scenario.name, packaged)
+			}
+		})
+	}
+}
+
+func TestAcceptanceRunRejectsMismatchedAndReusedBoundary(t *testing.T) {
 	home := t.TempDir()
 	if _, err := runQLog(t, home, "init"); err != nil {
 		t.Fatal(err)
 	}
-	evidence := acceptancecontract.RealAgentEvidence{
-		SchemaVersion: acceptancecontract.RealAgentSchemaVersion, CandidateTag: "v0.4.0-rc11",
-		CandidateCommit: strings.Repeat("a", 40), Platform: "windows/amd64", AgentID: "codex", AgentVersion: "0.151.0",
-		StartedAt: time.Now().UTC().Add(-time.Minute), EndedAt: time.Now().UTC(), SourceEvidence: true,
-		LedgerStatus: acceptancecontract.StatusPass, PrivacyStatus: acceptancecontract.StatusPass, ReplayStatus: acceptancecontract.StatusPass,
-	}
-	encoded, _ := json.Marshal(evidence)
-	command := New(Version{Version: evidence.CandidateTag, Commit: strings.Repeat("b", 40)})
-	command.SetArgs([]string{"--home", home, "acceptance", "run", "--output", filepath.Join(t.TempDir(), "acceptance.zip"), "--real-agent-evidence", string(encoded)})
-	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "exact qlog candidate") {
+	version := Version{Version: "0.4.0-rc11", Commit: strings.Repeat("a", 40)}
+	boundaryID := beginAcceptance(t, home, version, "codex", "0.151.0")
+	command := New(Version{Version: version.Version, Commit: strings.Repeat("b", 40)})
+	command.SetArgs([]string{"--home", home, "acceptance", "run", "--output", filepath.Join(t.TempDir(), "acceptance.zip"), "--boundary", boundaryID})
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "exact qlog runtime") {
 		t.Fatalf("error = %v, want exact candidate mismatch", err)
 	}
+	output := filepath.Join(t.TempDir(), "acceptance.zip")
+	command = New(version)
+	command.SetArgs([]string{"--home", home, "acceptance", "run", "--output", output, "--boundary", boundaryID})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	command = New(version)
+	command.SetArgs([]string{"--home", home, "acceptance", "run", "--output", filepath.Join(t.TempDir(), "second.zip"), "--boundary", boundaryID})
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "already been used") {
+		t.Fatalf("reuse error = %v", err)
+	}
 }
 
-func TestAcceptanceRunRejectsNonContractEvidenceFields(t *testing.T) {
+func TestAcceptanceRunRejectsCallerGateSpoofingAndDuplicateBoundaryKeys(t *testing.T) {
 	home := t.TempDir()
 	if _, err := runQLog(t, home, "init"); err != nil {
 		t.Fatal(err)
 	}
-	evidence := acceptancecontract.RealAgentEvidence{
-		SchemaVersion: acceptancecontract.RealAgentSchemaVersion, CandidateTag: "v0.4.0-rc11",
-		CandidateCommit: strings.Repeat("a", 40), Platform: "windows/amd64", AgentID: "codex", AgentVersion: "0.151.0",
-		StartedAt: time.Now().UTC().Add(-time.Minute), EndedAt: time.Now().UTC(),
-		LedgerStatus: acceptancecontract.StatusPass, PrivacyStatus: acceptancecontract.StatusPass, ReplayStatus: acceptancecontract.StatusPass,
+	version := Version{Version: "0.4.0-rc11", Commit: strings.Repeat("a", 40)}
+	command := New(version)
+	command.SetArgs([]string{"--home", home, "acceptance", "run", "--output", filepath.Join(t.TempDir(), "acceptance.zip"), "--real-agent-evidence", `{"privacy_status":"PASS","replay_status":"PASS"}`})
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "unknown flag") {
+		t.Fatalf("spoofing error = %v", err)
 	}
-	encoded, _ := json.Marshal(evidence)
-	raw := strings.TrimSuffix(string(encoded), "}") + `,"prompt":"must-not-package"}`
-	command := New(Version{Version: evidence.CandidateTag, Commit: evidence.CandidateCommit})
-	command.SetArgs([]string{"--home", home, "acceptance", "run", "--output", filepath.Join(t.TempDir(), "acceptance.zip"), "--real-agent-evidence", raw})
-	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "unknown field") {
-		t.Fatalf("error = %v, want unknown field rejection", err)
+	boundaryID := beginAcceptance(t, home, version, "codex", "0.151.0")
+	path := filepath.Join(home, "acceptance", "boundaries", boundaryID+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
 	}
+	data = bytes.Replace(data, []byte(`"agent_id":"codex"`), []byte(`"agent_id":"codex","agent_id":"codex"`), 1)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command = New(version)
+	command.SetArgs([]string{"--home", home, "acceptance", "run", "--output", filepath.Join(t.TempDir(), "duplicate.zip"), "--boundary", boundaryID})
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "duplicate JSON key") {
+		t.Fatalf("duplicate-key error = %v", err)
+	}
+}
+
+func beginAcceptance(t *testing.T, home string, version Version, agentID, agentVersion string) string {
+	t.Helper()
+	output := new(bytes.Buffer)
+	command := New(version)
+	command.SetOut(output)
+	command.SetArgs([]string{"--home", home, "acceptance", "begin", "--agent", agentID, "--agent-version", agentVersion})
+	if err := command.Execute(); err != nil {
+		t.Fatalf("begin acceptance: %v", err)
+	}
+	return strings.TrimSpace(output.String())
 }
 
 func readAcceptanceZIP(t *testing.T, path string) map[string][]byte {
@@ -232,6 +297,42 @@ func TestAcceptanceExternalStatusPropagatesFailure(t *testing.T) {
 	}
 	if got := acceptanceExternalStatus(results); got != acceptanceFail {
 		t.Fatalf("external status = %q, want %q", got, acceptanceFail)
+	}
+}
+
+func TestAcceptancePrivacyScanRejectsForbiddenFieldsAndValues(t *testing.T) {
+	for name, files := range map[string]map[string][]byte{
+		"field": {"evidence.json": []byte(`{"prompt_body":"redacted"}`)},
+		"value": {"report.txt": []byte("github_pat_example")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := acceptancePackagePrivacyStatus(files, nil); got != acceptancecontract.StatusFail {
+				t.Fatalf("privacy status = %q", got)
+			}
+		})
+	}
+}
+
+func TestRealAgentRunnersCannotOverrideChecksOrPrintFalseSuccess(t *testing.T) {
+	for _, path := range []string{
+		filepath.Join("..", "..", "scripts", "acceptance", "real-agent-posix.sh"),
+		filepath.Join("..", "..", "scripts", "acceptance", "real-agent-windows.ps1"),
+	} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(data)
+		for _, forbidden := range []string{"QLOG_BIN", "PrivacyStatus", "ReplayStatus", "CandidateCommit", "CandidateTag"} {
+			if strings.Contains(text, forbidden) {
+				t.Fatalf("%s exposes forbidden override %s", path, forbidden)
+			}
+		}
+		inspect := strings.Index(text, "acceptance inspect")
+		success := strings.LastIndex(text, "Sanitized acceptance package verified")
+		if !strings.Contains(text, "acceptance begin") || inspect < 0 || success < inspect || !strings.Contains(text, "exit") {
+			t.Fatalf("%s can report success without the required boundary/inspection failure gates", path)
+		}
 	}
 }
 

@@ -18,6 +18,9 @@ const (
 )
 
 var fullCommitPattern = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
+var candidateTagPattern = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$`)
+var platformPattern = regexp.MustCompile(`^[a-z0-9]+/[a-z0-9]+$`)
+var agentVersionPattern = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$`)
 
 var supportedAgentIDs = map[string]bool{
 	"claude-code": true,
@@ -29,19 +32,23 @@ var supportedAgentIDs = map[string]bool{
 // real-agent exercise. It intentionally has no prompt, response, path, command,
 // environment, or raw-log fields.
 type RealAgentEvidence struct {
-	SchemaVersion   string    `json:"schema_version"`
-	CandidateTag    string    `json:"candidate_tag"`
-	CandidateCommit string    `json:"candidate_commit"`
-	Platform        string    `json:"platform"`
-	AgentID         string    `json:"agent_id"`
-	AgentVersion    string    `json:"agent_version"`
-	StartedAt       time.Time `json:"started_at"`
-	EndedAt         time.Time `json:"ended_at"`
-	SourceEvidence  bool      `json:"source_evidence"`
-	LedgerStatus    string    `json:"ledger_status"`
-	PrivacyStatus   string    `json:"privacy_status"`
-	ReplayStatus    string    `json:"replay_status"`
-	Status          string    `json:"status"`
+	SchemaVersion         string    `json:"schema_version"`
+	CandidateTag          string    `json:"candidate_tag"`
+	CandidateCommit       string    `json:"candidate_commit"`
+	Platform              string    `json:"platform"`
+	AgentID               string    `json:"agent_id"`
+	AgentVersion          string    `json:"agent_version"`
+	BoundaryID            string    `json:"boundary_id"`
+	CandidateBinarySHA256 string    `json:"candidate_binary_sha256"`
+	StartedAt             time.Time `json:"started_at"`
+	EndedAt               time.Time `json:"ended_at"`
+	SourceEvidence        bool      `json:"source_evidence"`
+	LedgerStatus          string    `json:"ledger_status"`
+	PrivacyStatus         string    `json:"privacy_status"`
+	ReplayStatus          string    `json:"replay_status"`
+	CaptureQuality        string    `json:"capture_quality"`
+	ObservedMetrics       []string  `json:"observed_metrics"`
+	Status                string    `json:"status"`
 }
 
 // EvaluateRealAgentEvidence validates evidence and derives Status. The input
@@ -56,6 +63,10 @@ func EvaluateRealAgentEvidence(e RealAgentEvidence) (RealAgentEvidence, error) {
 	if !supportedAgentIDs[e.AgentID] && !unsupportedCopilot {
 		return e, fmt.Errorf("agent_id %q is outside the real-agent acceptance contract", e.AgentID)
 	}
+	expectedQuality := map[string]string{"codex": "otel_reported", "claude-code": "otel_reported", "opencode": "agent_reported"}[e.AgentID]
+	if e.SourceEvidence && !unsupportedCopilot && (e.CaptureQuality != expectedQuality || !canonicalObservedMetrics(e.ObservedMetrics)) {
+		return e, errors.New("source evidence requires observed capture quality and metrics")
+	}
 	if e.LedgerStatus == StatusFail || e.PrivacyStatus == StatusFail || e.ReplayStatus == StatusFail {
 		e.Status = StatusFail
 		return e, nil
@@ -67,6 +78,18 @@ func EvaluateRealAgentEvidence(e RealAgentEvidence) (RealAgentEvidence, error) {
 		e.Status = StatusPass
 	}
 	return e, nil
+}
+
+func canonicalObservedMetrics(metrics []string) bool {
+	allowed := map[string]bool{"input_tokens": true, "output_tokens": true, "reasoning_tokens": true, "cached_input_tokens": true, "cache_write_tokens": true, "total_tokens": true, "estimated_cost_usd_micros": true, "duration_ms": true}
+	previous := ""
+	for _, metric := range metrics {
+		if !allowed[metric] || metric <= previous {
+			return false
+		}
+		previous = metric
+	}
+	return len(metrics) > 0
 }
 
 // EvaluateRealAgentEvidenceForCandidate additionally binds the evidence to the
@@ -100,6 +123,12 @@ func validateRealAgentEvidence(e RealAgentEvidence) error {
 	if !fullCommitPattern.MatchString(e.CandidateCommit) {
 		return errors.New("candidate_commit must be a full 40-character Git commit")
 	}
+	if !candidateTagPattern.MatchString(e.CandidateTag) || !platformPattern.MatchString(e.Platform) || !agentVersionPattern.MatchString(e.AgentVersion) || !fullSHA256(e.BoundaryID) || !fullSHA256(e.CandidateBinarySHA256) {
+		return errors.New("real-agent identity metadata is not canonical or privacy-safe")
+	}
+	if secretLikeMetadata(e.AgentVersion) {
+		return errors.New("agent_version resembles secret material")
+	}
 	if e.StartedAt.IsZero() || e.EndedAt.IsZero() || !e.EndedAt.After(e.StartedAt) {
 		return errors.New("real-agent evidence window must have ordered UTC timestamps")
 	}
@@ -121,6 +150,16 @@ func validateRealAgentEvidence(e RealAgentEvidence) error {
 		}
 	}
 	return nil
+}
+
+func secretLikeMetadata(value string) bool {
+	lower := strings.ToLower(value)
+	for _, marker := range []string{"sk-", "ghp_", "github_pat_", "akia", "secret", "token", "bearer", "password", "private"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func safeMetadata(value string) bool {

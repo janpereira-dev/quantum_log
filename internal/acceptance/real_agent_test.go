@@ -9,19 +9,38 @@ import (
 func validRealAgentEvidence() RealAgentEvidence {
 	start := time.Date(2026, 9, 3, 10, 0, 0, 0, time.UTC)
 	return RealAgentEvidence{
-		SchemaVersion:   RealAgentSchemaVersion,
-		CandidateTag:    "v0.4.0-rc11",
-		CandidateCommit: strings.Repeat("a", 40),
-		Platform:        "windows/amd64",
-		AgentID:         "codex",
-		AgentVersion:    "0.151.0",
-		StartedAt:       start,
-		EndedAt:         start.Add(5 * time.Minute),
-		SourceEvidence:  true,
-		LedgerStatus:    StatusPass,
-		PrivacyStatus:   StatusPass,
-		ReplayStatus:    StatusPass,
-		Status:          StatusFail,
+		SchemaVersion:         RealAgentSchemaVersion,
+		CandidateTag:          "v0.4.0-rc11",
+		CandidateCommit:       strings.Repeat("a", 40),
+		CandidateBinarySHA256: strings.Repeat("b", 64),
+		Platform:              "windows/amd64",
+		AgentID:               "codex",
+		AgentVersion:          "0.151.0",
+		BoundaryID:            strings.Repeat("d", 64),
+		StartedAt:             start,
+		EndedAt:               start.Add(5 * time.Minute),
+		SourceEvidence:        true,
+		LedgerStatus:          StatusPass,
+		PrivacyStatus:         StatusPass,
+		ReplayStatus:          StatusPass,
+		CaptureQuality:        "otel_reported",
+		ObservedMetrics:       []string{"input_tokens", "output_tokens"},
+		Status:                StatusFail,
+	}
+}
+
+func TestRealAgentEvidenceRejectsPathAndSecretLikeMetadata(t *testing.T) {
+	for name, mutate := range map[string]func(*RealAgentEvidence){
+		"path":   func(e *RealAgentEvidence) { e.AgentVersion = `C:\\Users\\name\\agent.exe` },
+		"secret": func(e *RealAgentEvidence) { e.AgentVersion = "sk-secretvalue" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			evidence := validRealAgentEvidence()
+			mutate(&evidence)
+			if got, err := EvaluateRealAgentEvidence(evidence); err == nil || got.Status == StatusPass {
+				t.Fatalf("unsafe metadata = %#v, %v", got, err)
+			}
+		})
 	}
 }
 
@@ -64,6 +83,8 @@ func TestRealAgentEvidenceRequiresIdentityWindowAndVerification(t *testing.T) {
 		"ledger":           func(e *RealAgentEvidence) { e.LedgerStatus = StatusPendingExternalE2E },
 		"privacy":          func(e *RealAgentEvidence) { e.PrivacyStatus = StatusPendingExternalE2E },
 		"replay":           func(e *RealAgentEvidence) { e.ReplayStatus = StatusPendingExternalE2E },
+		"capture quality":  func(e *RealAgentEvidence) { e.CaptureQuality = "lifecycle_only" },
+		"observed metrics": func(e *RealAgentEvidence) { e.ObservedMetrics = []string{"prompt_body"} },
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {

@@ -1,24 +1,27 @@
 # External Real-Agent Acceptance
 
-Quantum Log packages privacy-safe evidence after an operator performs one normal authenticated agent action. Packaging does not configure or replace an agent transport, execute an operator-provided command, or scrape agent logs.
+Quantum Log packages privacy-safe evidence around one normal authenticated agent action. This workflow does not configure or replace transports, execute operator-provided commands, or scrape agent logs.
 
-## Evidence contract
+## Evidence boundary
 
-Each repeatable `--real-agent-evidence <json>` value uses schema `qlog.acceptance.real-agent/v1` and contains only:
+`qlog acceptance begin` creates a persisted, one-use pre-action boundary. The boundary binds:
 
-- exact candidate tag and full 40-character commit;
-- platform, supported agent ID, and non-empty agent version;
-- UTC start/end timestamps covering no more than 30 minutes;
-- booleans/statuses for real source evidence, ledger verification, privacy, and replay/dedupe;
-- a derived status.
+- schema `qlog.acceptance.real-agent-boundary/v1` and a random challenge;
+- exact candidate tag, full commit, executable SHA-256, and actual `GOOS/GOARCH`;
+- supported agent ID and strictly sanitized agent version;
+- qlog-generated UTC start time, ledger position hash, and event count.
 
-The evaluator ignores a caller-supplied `status`. `PASS` requires the exact binary candidate identity, a supported agent identity, matching ledger source evidence inside the bounded window, ledger verification `PASS`, privacy `PASS`, and replay/dedupe `PASS`. Missing, setup-only, synthetic, mismatched, or incomplete evidence remains `PENDING_EXTERNAL_E2E`; an observed failed gate is `FAIL`.
+`qlog acceptance run --boundary <id>` rejects future, older-than-30-minute, modified, mismatched, duplicated, or previously consumed boundaries. Selected source evidence must occur strictly after the boundary and before packaging, and the ledger position must advance.
 
-GitHub Copilot CLI (`copilot`) and Copilot for VS Code (`copilot-vscode`) are unsupported for stable capture under ADR-006. Their evidence can be packaged for diagnosis but cannot become `PASS`. This command does not implement or alter those transports.
+The resulting evidence uses `qlog.acceptance.real-agent/v1`. Qlog derives source evidence, ledger verification, privacy, observed metric names, and capture quality from the selected ledger/package data. Caller-provided JSON and caller-provided `PASS` values are not accepted. Privacy scans reject forbidden content fields and secret-like values.
+
+Replay/dedupe remains `PENDING_EXTERNAL_E2E` because Task 8 has no safe executable real-source replay operation. Therefore a package cannot report real-agent `PASS` yet. Synthetic or setup-only rows also remain pending. This is intentional and release-safe.
+
+GitHub Copilot CLI (`copilot`) and Copilot for VS Code (`copilot-vscode`) remain unsupported for stable capture under ADR-006 and cannot become `PASS`. Task 8 does not implement or modify either transport.
 
 ## Operator runners
 
-Use a signed candidate and record its exact tag, commit, and agent version. The runners start a UTC window, pause while you perform one normal agent action, and pass only sanitized metadata to `qlog acceptance run`. They do not read or modify global agent configuration.
+The runners resolve only the installed `qlog` executable. They reject aliases, symlinks/reparse points, non-regular files, changed executable hashes, missing/empty packages, and packages that fail `qlog acceptance inspect`. There is no `QLOG_BIN`, `-Qlog`, arbitrary command, candidate identity, privacy, or replay override.
 
 Windows:
 
@@ -26,39 +29,35 @@ Windows:
 scripts/acceptance/real-agent-windows.ps1 `
   -AgentId codex `
   -AgentVersion 0.151.0 `
-  -CandidateTag v0.4.0-rc11 `
-  -CandidateCommit <40-character-commit> `
-  -Output qlog-external-acceptance.zip `
-  -PrivacyStatus PASS `
-  -ReplayStatus PASS
+  -Output qlog-external-acceptance.zip
 ```
 
 Linux/macOS:
 
 ```sh
 scripts/acceptance/real-agent-posix.sh \
-  codex 0.151.0 v0.4.0-rc11 <40-character-commit> \
-  qlog-external-acceptance.zip PASS PASS
+  codex 0.151.0 qlog-external-acceptance.zip
 ```
 
-Use `PASS` for privacy or replay only when the corresponding documented check was actually observed. The default is `PENDING_EXTERNAL_E2E`.
+The runners create the boundary, instruct the operator to perform one normal action, package the bounded evidence, verify that the output is a non-empty regular file, and inspect its manifest/checksums with the same unchanged qlog binary. They read and write no global agent configuration.
 
-For already prepared versioned JSON summaries, package one or more values directly:
+Manual equivalent:
 
 ```sh
-qlog acceptance run \
-  --output qlog-external-acceptance.zip \
-  --real-agent-evidence '{"schema_version":"qlog.acceptance.real-agent/v1",...}'
+boundary=$(qlog acceptance begin --agent codex --agent-version 0.151.0)
+# Perform one normal authenticated Codex action immediately.
+qlog acceptance run --output qlog-external-acceptance.zip --boundary "$boundary"
+qlog acceptance inspect --package qlog-external-acceptance.zip
 ```
 
-The ZIP contains `manifest.json`, `real-agent-evidence.json` when inputs are present, sanitized aggregate reports, diagnostics, and `SHA256SUMS`. It excludes raw events, payloads, paths, prompts, responses, tool data, commands, environment values, credentials, authorization data, and log contents.
+The ZIP contains `manifest.json`, `real-agent-evidence.json` when boundaries are supplied, sanitized aggregate reports, diagnostics, and `SHA256SUMS`. It excludes raw events, payloads, paths, prompts, responses, tool arguments/results, commands, environment values, credentials, authorization data, and log contents.
 
 ## Status semantics
 
-- `IMPLEMENTATION_COMPLETE`: packaging and evaluation exist; this is not external verification.
+- `IMPLEMENTATION_COMPLETE`: boundary, packaging, and evaluation exist; this is not external verification.
 - `READY_FOR_EXTERNAL_E2E`: local setup is available; this is not source evidence.
-- `PASS`: every contract gate passed for the exact candidate and supported agent.
-- `PENDING_EXTERNAL_E2E`: evidence is absent, synthetic/setup-only, unsupported, mismatched, or incomplete.
-- `FAIL`: a recorded verification, privacy, replay, or local ledger gate failed.
+- `PASS`: reserved for evidence where every qlog-derived contract gate passes.
+- `PENDING_EXTERNAL_E2E`: evidence is absent, synthetic/setup-only, unsupported, stale, or missing an executable replay proof.
+- `FAIL`: a qlog-derived ledger, privacy, package, or future replay gate failed.
 
-The package is an input to independent two-machine acceptance. It does not by itself claim external review or a stable-release GO.
+The package is input to independent two-machine acceptance. It does not by itself claim external review or a stable-release GO.
