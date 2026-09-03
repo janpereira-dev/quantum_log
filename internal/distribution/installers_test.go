@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func normalizeDocumentationText(contents []byte) string {
@@ -926,7 +927,14 @@ printf '%s\n' "$*" >> "$QLOG_FAKE_CALLS"
 [ "$#" -eq 6 ] && [ "$1" = --version ] && [ "$3" = --install-dir ] && [ "$5" = --no-modify-path ] && [ "$6" = --no-bootstrap ] || exit 22
 version=$2
 case "${QLOG_FAKE_ADVERSARIAL_VERSION:-}:$version" in source:v1|target:v2) version="${version}0" ;; esac
-mkdir -p "$4"; cp "$QLOG_FAKE_BINARY" "$4/qlog"; chmod +x "$4/qlog"; printf '%s\n' "$version" > "$4/version.txt"
+mkdir -p "$4"
+candidate="$4/.qlog.install.$$"
+trap 'rm -f "$candidate"' 0 HUP INT TERM
+cp "$QLOG_FAKE_BINARY" "$candidate"
+chmod +x "$candidate"
+mv -f "$candidate" "$4/qlog"
+trap - 0 HUP INT TERM
+printf '%s\n' "$version" > "$4/version.txt"
 `
 	uninstallScript := `#!/bin/sh
 set -eu
@@ -941,6 +949,53 @@ printf 'uninstaller|%s\n' "$*" >> "$QLOG_FAKE_CALLS"
 		t.Fatal(err)
 	}
 	return installer, uninstaller
+}
+
+func TestPOSIXLifecycleMockAtomicallyReplacesExecutingBinary(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX executable replacement contract")
+	}
+	for _, required := range []string{"/bin/sleep", "/bin/true"} {
+		if _, err := os.Stat(required); err != nil {
+			t.Skipf("%s is unavailable", required)
+		}
+	}
+	directory := t.TempDir()
+	installer, _ := writeLifecycleMocks(t, directory, false)
+	installDir := filepath.Join(directory, "bin")
+	if err := os.MkdirAll(installDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(installDir, "qlog")
+	sleepBytes, err := os.ReadFile("/bin/sleep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, sleepBytes, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	running := exec.Command(target, "30")
+	if err := running.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = running.Process.Kill()
+		_ = running.Wait()
+	}()
+	time.Sleep(100 * time.Millisecond)
+
+	command := exec.Command("sh", installer, "--version", "v2", "--install-dir", installDir, "--no-modify-path", "--no-bootstrap")
+	command.Env = lifecycleEnvironment("QLOG_FAKE_BINARY=/bin/true", "QLOG_FAKE_CALLS="+filepath.Join(directory, "calls.txt"))
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("replace executing mock qlog: %v\n%s", err, output)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Fatalf("replacement lost executable permissions: %v", info.Mode())
+	}
 }
 
 func runAdversarialLifecycleVersion(t *testing.T, engine lifecycleEngine, mode string) ([]byte, error) {
