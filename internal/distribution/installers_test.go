@@ -496,3 +496,115 @@ func TestPowerShellInstallDryRunPinsRequestedCandidateWithoutWrites(t *testing.T
 		}
 	}
 }
+
+func TestReleaseLifecycleHarnessContracts(t *testing.T) {
+	root := filepath.Join("..", "..")
+	cases := []struct {
+		name     string
+		command  string
+		script   string
+		required []string
+	}{
+		{
+			name:    "POSIX",
+			command: "sh",
+			script:  "scripts/acceptance/release-lifecycle.sh",
+			required: []string{
+				"QLOG_FROM_VERSION", "QLOG_TO_VERSION", "QLOG_RELEASE_BASE", "mktemp -d",
+				`--version "$QLOG_FROM_VERSION"`, `--version "$QLOG_TO_VERSION"`,
+				"--install-dir", "--no-modify-path", "--no-bootstrap", "ingest file",
+				"doctor --json", "verify", "uninstall.sh", "qlog.db", "sha256",
+				"--contract-only", "PASS contract: explicit versions and isolated home",
+			},
+		},
+		{
+			name:    "PowerShell",
+			command: "pwsh",
+			script:  "scripts/acceptance/release-lifecycle.ps1",
+			required: []string{
+				"QLOG_FROM_VERSION", "QLOG_TO_VERSION", "QLOG_RELEASE_BASE", "[guid]::NewGuid()",
+				"--version', $fromVersion", "--version', $toVersion", "--install-dir",
+				"--no-modify-path", "--no-bootstrap", "ingest', 'file", "doctor', '--json",
+				"verify", "uninstall.ps1", "qlog.db", "Get-FileHash", "ContractOnly",
+				"PASS contract: explicit versions and isolated home",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name+" source", func(t *testing.T) {
+			contents, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(tc.script)))
+			if err != nil {
+				t.Fatalf("read %s: %v", tc.script, err)
+			}
+			script := strings.ReplaceAll(string(contents), "\r\n", "\n")
+			for _, want := range tc.required {
+				if !strings.Contains(script, want) {
+					t.Errorf("%s missing %q", tc.script, want)
+				}
+			}
+			if strings.Contains(strings.ToLower(script), "releases/latest") || strings.Contains(script, "--purge-data") {
+				t.Errorf("%s uses a moving release or destructive uninstall", tc.script)
+			}
+		})
+
+		t.Run(tc.name+" contract only", func(t *testing.T) {
+			executable, err := exec.LookPath(tc.command)
+			if err != nil {
+				t.Skipf("%s is unavailable", tc.command)
+			}
+			sandbox := t.TempDir()
+			var command *exec.Cmd
+			if tc.command == "pwsh" {
+				command = exec.Command(executable, "-NoProfile", "-File", filepath.Join(root, filepath.FromSlash(tc.script)), "-ContractOnly")
+			} else {
+				command = exec.Command(executable, filepath.Join(root, filepath.FromSlash(tc.script)), "--contract-only")
+			}
+			command.Env = []string{"HOME=" + sandbox, "TMPDIR=" + sandbox, "TEMP=" + sandbox, "TMP=" + sandbox, "PATH=" + os.Getenv("PATH")}
+			output, err := command.CombinedOutput()
+			if err != nil {
+				t.Fatalf("contract-only failed: %v\n%s", err, output)
+			}
+			if !strings.Contains(string(output), "PASS contract: explicit versions and isolated home") {
+				t.Fatalf("contract-only output = %q", output)
+			}
+			entries, err := os.ReadDir(sandbox)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 0 {
+				t.Fatalf("contract-only left filesystem writes in sandbox: %v", entries)
+			}
+		})
+
+		t.Run(tc.name+" rejects missing and equal versions", func(t *testing.T) {
+			executable, err := exec.LookPath(tc.command)
+			if err != nil {
+				t.Skipf("%s is unavailable", tc.command)
+			}
+			sandbox := t.TempDir()
+			baseEnv := []string{"HOME=" + sandbox, "TMPDIR=" + sandbox, "TEMP=" + sandbox, "TMP=" + sandbox, "PATH=" + os.Getenv("PATH")}
+			newCommand := func() *exec.Cmd {
+				if tc.command == "pwsh" {
+					return exec.Command(executable, "-NoProfile", "-File", filepath.Join(root, filepath.FromSlash(tc.script)))
+				}
+				return exec.Command(executable, filepath.Join(root, filepath.FromSlash(tc.script)))
+			}
+
+			missing := newCommand()
+			missing.Env = baseEnv
+			output, err := missing.CombinedOutput()
+			if err == nil || !strings.Contains(string(output), "QLOG_FROM_VERSION is required") {
+				t.Fatalf("missing versions were not rejected before execution: err=%v output=%q", err, output)
+			}
+
+			equal := newCommand()
+			equal.Env = append(append([]string{}, baseEnv...),
+				"QLOG_FROM_VERSION=v0.0.1", "QLOG_TO_VERSION=v0.0.1", "QLOG_RELEASE_BASE=https://invalid.example/releases")
+			output, err = equal.CombinedOutput()
+			if err == nil || !strings.Contains(string(output), "must differ") {
+				t.Fatalf("equal versions were not rejected before execution: err=%v output=%q", err, output)
+			}
+		})
+	}
+}
