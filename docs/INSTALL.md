@@ -80,6 +80,19 @@ This is publisher/workflow authenticity plus artifact integrity. It is not a
 separate SLSA build-provenance attestation, stable-release approval, or
 clean-device real-agent E2E evidence.
 
+The authenticity verifier checks the exact complete release set: archives and
+SBOMs for macOS, Linux, and Windows on both amd64 and arm64. A missing,
+additional, duplicated, or corrupted manifest entry is a failure even when the
+current machine's own archive is valid.
+
+Release tags are serialized by the workflow. Before creating a draft, the
+privileged job confirms that the remote tag still resolves to the triggering
+commit and that no draft or published release already exists for that tag. It
+checks the remote tag again immediately before publication. Any pre-existing,
+moved, unavailable, or ambiguous state is **NO-GO** and requires a maintainer to
+reconcile the tag and GitHub Release manually before starting a new release;
+the workflow never overwrites or deletes that state automatically.
+
 ## Legacy historical packaging evidence
 
 The unpublished npm thin distributor remains pinned to `v0.3.2-rc.3`. Earlier

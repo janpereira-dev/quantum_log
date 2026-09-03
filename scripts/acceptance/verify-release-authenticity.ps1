@@ -36,21 +36,21 @@ if (-not (Get-Command cosign -ErrorAction SilentlyContinue)) {
     Fail 'cosign is required'
 }
 
-$platform = if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) { 'windows' } else {
-    try {
-        if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::OSX)) { 'darwin' } else { 'linux' }
-    } catch { 'linux' }
-}
-$architecture = try { [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString().ToLowerInvariant() } catch { $env:PROCESSOR_ARCHITECTURE.ToLowerInvariant() }
-$arch = switch -Regex ($architecture) {
-    '^(x64|amd64)$' { 'amd64'; break }
-    '^(arm64|aarch64)$' { 'arm64'; break }
-    default { Fail "unsupported architecture: $architecture" }
-}
-$extension = if ($platform -eq 'windows') { 'zip' } else { 'tar.gz' }
 $plainVersion = $Version.Substring(1)
-$archive = "qlog_${plainVersion}_${platform}_${arch}.${extension}"
-$sbom = "$archive.sbom.json"
+$expectedAssets = @(
+    "qlog_${plainVersion}_darwin_amd64.tar.gz",
+    "qlog_${plainVersion}_darwin_amd64.tar.gz.sbom.json",
+    "qlog_${plainVersion}_darwin_arm64.tar.gz",
+    "qlog_${plainVersion}_darwin_arm64.tar.gz.sbom.json",
+    "qlog_${plainVersion}_linux_amd64.tar.gz",
+    "qlog_${plainVersion}_linux_amd64.tar.gz.sbom.json",
+    "qlog_${plainVersion}_linux_arm64.tar.gz",
+    "qlog_${plainVersion}_linux_arm64.tar.gz.sbom.json",
+    "qlog_${plainVersion}_windows_amd64.zip",
+    "qlog_${plainVersion}_windows_amd64.zip.sbom.json",
+    "qlog_${plainVersion}_windows_arm64.zip",
+    "qlog_${plainVersion}_windows_arm64.zip.sbom.json"
+)
 
 $temporaryDirectory = $null
 try {
@@ -66,7 +66,7 @@ try {
         [void](New-Item -ItemType Directory -Path $temporaryDirectory)
         $ArtifactDir = $temporaryDirectory
         $base = $ReleaseBase.TrimEnd('/')
-        foreach ($name in @('checksums.txt', 'checksums.txt.sigstore.json', $archive, $sbom)) {
+        foreach ($name in @('checksums.txt', 'checksums.txt.sigstore.json') + $expectedAssets) {
             $response = Invoke-WebRequest -UseBasicParsing -Uri "$base/$Version/$name" -OutFile (Join-Path $ArtifactDir $name) -PassThru
             $baseResponse = $response.BaseResponse
             $finalUri = $null
@@ -85,7 +85,7 @@ try {
 
     $manifest = Join-Path $ArtifactDir 'checksums.txt'
     $bundle = Join-Path $ArtifactDir 'checksums.txt.sigstore.json'
-    foreach ($required in @($manifest, $bundle, (Join-Path $ArtifactDir $archive), (Join-Path $ArtifactDir $sbom))) {
+    foreach ($required in @($manifest, $bundle) + @($expectedAssets | ForEach-Object { Join-Path $ArtifactDir $_ })) {
         if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
             Fail "required artifact is missing: $([System.IO.Path]::GetFileName($required))"
         }
@@ -97,19 +97,26 @@ try {
         Fail 'checksum signature or workflow identity is invalid'
     }
 
-    foreach ($name in @($archive, $sbom)) {
-        $matches = @(Get-Content -LiteralPath $manifest | ForEach-Object {
-            if ($_ -match '^([0-9A-Fa-f]{64})\s{2}(.+)$' -and $Matches[2] -ceq $name) { $Matches[1].ToLowerInvariant() }
-        })
+    $manifestEntries = @(Get-Content -LiteralPath $manifest | ForEach-Object {
+        if ($_ -notmatch '^([0-9A-Fa-f]{64})\s{2}([^/\\]+)$') {
+            Fail 'checksums.txt does not contain the exact expected asset set'
+        }
+        [PSCustomObject]@{ Hash = $Matches[1].ToLowerInvariant(); Name = $Matches[2] }
+    })
+    if ($manifestEntries.Count -ne $expectedAssets.Count) {
+        Fail 'checksums.txt does not contain the exact expected asset set'
+    }
+    foreach ($name in $expectedAssets) {
+        $matches = @($manifestEntries | Where-Object { $_.Name -ceq $name })
         if ($matches.Count -ne 1) {
             Fail "checksums.txt must contain exactly one checksum entry for $name"
         }
         $actual = Get-Sha256 (Join-Path $ArtifactDir $name)
-        if ($actual -cne $matches[0]) {
+        if ($actual -cne $matches[0].Hash) {
             Fail "checksum mismatch for $name"
         }
     }
-    Write-Output "PASS authenticity: $Version ($archive and $sbom)"
+    Write-Output "PASS authenticity: $Version (all 12 archives and SBOMs)"
 } finally {
     if ($null -ne $temporaryDirectory -and (Test-Path -LiteralPath $temporaryDirectory)) {
         Remove-Item -LiteralPath $temporaryDirectory -Recurse -Force

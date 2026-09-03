@@ -77,6 +77,11 @@ unique entries in `checksums.txt`. Local mode uses `--artifact-dir` or
 `-ArtifactDir`; download mode rejects mutable versions, non-HTTPS URLs, query
 strings, and fragments.
 
+Verification covers the exact expected twelve-entry manifest: one archive and
+one archive SBOM for each macOS, Linux, and Windows amd64/arm64 target. Every
+entry is hashed regardless of the runner platform. Missing, extra, duplicated,
+malformed, or corrupt non-host assets therefore block publication too.
+
 The release workflow first validates the tag/source SHA, formatting, module
 tidiness, vet, tests, race tests, build, GoReleaser configuration, and an
 unpublished snapshot. The write/OIDC job then creates a draft, signs and uploads
@@ -84,6 +89,15 @@ the checksum bundle, downloads the hosted assets into a clean directory, runs
 the verifier, and only then removes draft status. A failure is NO-GO and leaves
 any created release as a draft for manual inspection; automation does not delete
 or advertise it as stable.
+
+The workflow serializes runs by tag. At privileged-job start, it re-reads the
+remote tag and requires its resolved commit to equal the event SHA. Before any
+draft is created it queries the GitHub Releases API and continues only on an
+unambiguous `404`; an existing draft, published release, API error, or ambiguous
+response is **NO-GO**. The remote tag is checked again immediately before
+undrafting. Maintainers must manually reconcile pre-existing releases, partial
+drafts, moved tags, or uncertain API state before starting another run. The
+workflow does not overwrite, move, or delete them automatically.
 
 This establishes checksum integrity and the signing workflow identity. It does
 not constitute a separate SLSA build-provenance attestation or real-agent E2E

@@ -16,45 +16,67 @@ func normalizeDocumentationText(contents []byte) string {
 	return strings.Join(strings.Fields(plain), " ")
 }
 
-func releaseAuthenticityFixture(t *testing.T, root, version string, corruptArchive bool) (archive, sbom string) {
-	t.Helper()
-	platform := "linux"
-	arch := "amd64"
-	extension := "tar.gz"
-	if runtime.GOOS == "darwin" {
-		platform = "darwin"
-	}
-	if runtime.GOOS == "windows" {
-		platform = "windows"
-		extension = "zip"
-	}
-	if runtime.GOARCH == "arm64" {
-		arch = "arm64"
-	}
+func releaseAssetNames(version string) []string {
 	plainVersion := strings.TrimPrefix(version, "v")
-	archive = fmt.Sprintf("qlog_%s_%s_%s.%s", plainVersion, platform, arch, extension)
-	sbom = archive + ".sbom.json"
-	archiveBytes := []byte("verified archive fixture")
-	sbomBytes := []byte(`{"spdxVersion":"SPDX-2.3"}`)
-	if err := os.WriteFile(filepath.Join(root, archive), archiveBytes, 0o600); err != nil {
-		t.Fatal(err)
+	var names []string
+	for _, platform := range []string{"darwin", "linux", "windows"} {
+		for _, arch := range []string{"amd64", "arm64"} {
+			extension := "tar.gz"
+			if platform == "windows" {
+				extension = "zip"
+			}
+			archive := fmt.Sprintf("qlog_%s_%s_%s.%s", plainVersion, platform, arch, extension)
+			names = append(names, archive, archive+".sbom.json")
+		}
 	}
-	if err := os.WriteFile(filepath.Join(root, sbom), sbomBytes, 0o600); err != nil {
-		t.Fatal(err)
+	return names
+}
+
+func releaseAuthenticityFixture(t *testing.T, root, version, corruptAsset string) {
+	t.Helper()
+	var manifest strings.Builder
+	for _, name := range releaseAssetNames(version) {
+		contents := []byte("verified fixture: " + name)
+		if err := os.WriteFile(filepath.Join(root, name), contents, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		hash := fmt.Sprintf("%x", sha256.Sum256(contents))
+		if name == corruptAsset {
+			hash = strings.Repeat("0", 64)
+		}
+		fmt.Fprintf(&manifest, "%s  %s\n", hash, name)
 	}
-	archiveHash := fmt.Sprintf("%x", sha256.Sum256(archiveBytes))
-	if corruptArchive {
-		archiveHash = strings.Repeat("0", 64)
-	}
-	sbomHash := fmt.Sprintf("%x", sha256.Sum256(sbomBytes))
-	manifest := fmt.Sprintf("%s  %s\n%s  %s\n", archiveHash, archive, sbomHash, sbom)
-	if err := os.WriteFile(filepath.Join(root, "checksums.txt"), []byte(manifest), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "checksums.txt"), []byte(manifest.String()), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "checksums.txt.sigstore.json"), []byte(`{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return archive, sbom
+}
+
+func workflowRunBlocks(workflow string) string {
+	lines := strings.Split(strings.ReplaceAll(workflow, "\r\n", "\n"), "\n")
+	var blocks strings.Builder
+	for index := 0; index < len(lines); index++ {
+		line := lines[index]
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "run:") {
+			continue
+		}
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		blocks.WriteString(strings.TrimSpace(strings.TrimPrefix(trimmed, "run:")))
+		blocks.WriteByte('\n')
+		for index+1 < len(lines) {
+			next := lines[index+1]
+			if strings.TrimSpace(next) != "" && len(next)-len(strings.TrimLeft(next, " ")) <= indent {
+				break
+			}
+			index++
+			blocks.WriteString(next)
+			blocks.WriteByte('\n')
+		}
+	}
+	return blocks.String()
 }
 
 func TestReleaseAuthenticityVerifierContracts(t *testing.T) {
@@ -66,13 +88,32 @@ func TestReleaseAuthenticityVerifierContracts(t *testing.T) {
 	workflow := strings.ReplaceAll(string(workflowBytes), "\r\n", "\n")
 	for _, want := range []string{
 		"permissions:\n  contents: read", "prepublish:", "publish:", "needs: prepublish",
+		"concurrency:", "group: release-${{ github.ref }}", "cancel-in-progress: false",
 		"contents: write", "id-token: write", "git rev-list -n 1", "go test -race ./...",
 		"args: check", "release --snapshot --clean --skip=publish",
+		"Reject pre-existing release", "Revalidate remote tag at privileged job start", "Revalidate remote tag before publishing draft",
+		"git ls-remote --exit-code --tags origin", "HTTP_STATUS", "404)", "manual reconciliation",
 		"cosign sign-blob", "verify-release-authenticity.sh", "gh release edit", "--draft=false",
 	} {
 		if !strings.Contains(workflow, want) {
 			t.Errorf("release workflow missing %q", want)
 		}
+	}
+	for _, forbidden := range []string{"${{ github.ref_name }}", "${{ github.ref_type }}", "${{ github.sha }}"} {
+		if strings.Contains(workflowRunBlocks(workflow), forbidden) {
+			t.Errorf("release workflow interpolates untrusted context directly into shell: %q", forbidden)
+		}
+	}
+	revalidateStart := strings.Index(workflow, "- name: Revalidate remote tag at privileged job start")
+	rejectExisting := strings.Index(workflow, "- name: Reject pre-existing release")
+	buildDraft := strings.Index(workflow, "- name: Build draft release")
+	revalidateFinal := strings.Index(workflow, "- name: Revalidate remote tag before publishing draft")
+	publishDraft := strings.Index(workflow, "- name: Publish verified draft")
+	if revalidateStart < 0 || rejectExisting < revalidateStart || buildDraft < rejectExisting {
+		t.Error("privileged release must revalidate the remote tag and reject any existing release before draft creation")
+	}
+	if revalidateFinal < buildDraft || publishDraft < revalidateFinal {
+		t.Error("remote tag must be revalidated immediately before removing draft status")
 	}
 	for _, forbidden := range []string{"version: latest", "go-version: stable", "@v7", "@v3", "@v0\n"} {
 		if strings.Contains(workflow, forbidden) {
@@ -121,6 +162,11 @@ func TestReleaseAuthenticityVerifierContracts(t *testing.T) {
 				t.Errorf("%s missing %q", name, want)
 			}
 		}
+		for _, asset := range []string{"darwin_amd64", "darwin_arm64", "linux_amd64", "linux_arm64", "windows_amd64", "windows_arm64"} {
+			if !strings.Contains(text, asset) {
+				t.Errorf("%s does not require full release asset %q", name, asset)
+			}
+		}
 	}
 }
 
@@ -134,7 +180,7 @@ func TestPowerShellReleaseAuthenticityVerifier(t *testing.T) {
 	}
 	version := "v9.8.7-rc1"
 	artifacts := t.TempDir()
-	releaseAuthenticityFixture(t, artifacts, version, false)
+	releaseAuthenticityFixture(t, artifacts, version, "")
 	bin := t.TempDir()
 	cosign := "@echo off\r\necho %*>>\"%QLOG_COSIGN_CALLS%\"\r\nexit /b 0\r\n"
 	if err := os.WriteFile(filepath.Join(bin, "cosign.cmd"), []byte(cosign), 0o600); err != nil {
@@ -167,9 +213,27 @@ func TestPowerShellReleaseAuthenticityVerifier(t *testing.T) {
 		t.Fatalf("HTTP release base accepted: err=%v output=%s", runErr, output)
 	}
 	corrupt := t.TempDir()
-	releaseAuthenticityFixture(t, corrupt, version, true)
+	nonHostAsset := "qlog_9.8.7-rc1_linux_arm64.tar.gz"
+	releaseAuthenticityFixture(t, corrupt, version, nonHostAsset)
 	if output, runErr := run("-Version", version, "-ArtifactDir", corrupt); runErr == nil || !strings.Contains(string(output), "checksum") {
-		t.Fatalf("bad archive checksum accepted: err=%v output=%s", runErr, output)
+		t.Fatalf("bad non-host archive checksum accepted: err=%v output=%s", runErr, output)
+	}
+	extra := t.TempDir()
+	releaseAuthenticityFixture(t, extra, version, "")
+	extraContents := []byte("unexpected")
+	if err := os.WriteFile(filepath.Join(extra, "unexpected.txt"), extraContents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	extraHash := fmt.Sprintf("%x", sha256.Sum256(extraContents))
+	manifestPath := filepath.Join(extra, "checksums.txt")
+	file, err := os.OpenFile(manifestPath, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = fmt.Fprintf(file, "%s  unexpected.txt\n", extraHash)
+	_ = file.Close()
+	if output, runErr := run("-Version", version, "-ArtifactDir", extra); runErr == nil || !strings.Contains(string(output), "expected asset set") {
+		t.Fatalf("unexpected manifest asset accepted: err=%v output=%s", runErr, output)
 	}
 	command := exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", filepath.Join(root, "scripts", "acceptance", "verify-release-authenticity.ps1"), "-Version", version, "-ArtifactDir", artifacts)
 	command.Env = append(os.Environ(), "PATH="+t.TempDir())
@@ -188,7 +252,7 @@ func TestPOSIXReleaseAuthenticityVerifier(t *testing.T) {
 	}
 	version := "v9.8.7-rc1"
 	artifacts := t.TempDir()
-	releaseAuthenticityFixture(t, artifacts, version, false)
+	releaseAuthenticityFixture(t, artifacts, version, "")
 	bin := t.TempDir()
 	cosign := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$QLOG_COSIGN_CALLS\"\n"
 	if err := os.WriteFile(filepath.Join(bin, "cosign"), []byte(cosign), 0o700); err != nil {
@@ -220,9 +284,27 @@ func TestPOSIXReleaseAuthenticityVerifier(t *testing.T) {
 		t.Fatalf("HTTP release base accepted: err=%v output=%s", runErr, output)
 	}
 	corrupt := t.TempDir()
-	releaseAuthenticityFixture(t, corrupt, version, true)
+	nonHostAsset := "qlog_9.8.7-rc1_windows_arm64.zip"
+	releaseAuthenticityFixture(t, corrupt, version, nonHostAsset)
 	if output, runErr := run("--version", version, "--artifact-dir", corrupt); runErr == nil || !strings.Contains(string(output), "checksum") {
-		t.Fatalf("bad archive checksum accepted: err=%v output=%s", runErr, output)
+		t.Fatalf("bad non-host archive checksum accepted: err=%v output=%s", runErr, output)
+	}
+	extra := t.TempDir()
+	releaseAuthenticityFixture(t, extra, version, "")
+	extraContents := []byte("unexpected")
+	if err := os.WriteFile(filepath.Join(extra, "unexpected.txt"), extraContents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	extraHash := fmt.Sprintf("%x", sha256.Sum256(extraContents))
+	manifestPath := filepath.Join(extra, "checksums.txt")
+	file, err := os.OpenFile(manifestPath, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = fmt.Fprintf(file, "%s  unexpected.txt\n", extraHash)
+	_ = file.Close()
+	if output, runErr := run("--version", version, "--artifact-dir", extra); runErr == nil || !strings.Contains(string(output), "expected asset set") {
+		t.Fatalf("unexpected manifest asset accepted: err=%v output=%s", runErr, output)
 	}
 	command := exec.Command("sh", filepath.Join(root, "scripts", "acceptance", "verify-release-authenticity.sh"), "--version", version, "--artifact-dir", artifacts)
 	command.Env = append(os.Environ(), "PATH="+t.TempDir())

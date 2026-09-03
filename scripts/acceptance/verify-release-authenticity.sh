@@ -53,20 +53,19 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-case "$(uname -s)" in
-  Linux) platform=linux ;;
-  Darwin) platform=darwin ;;
-  *) fail 'unsupported platform' ;;
-esac
-case "$(uname -m)" in
-  x86_64|amd64) arch=amd64 ;;
-  arm64|aarch64) arch=arm64 ;;
-  *) fail 'unsupported architecture' ;;
-esac
-
 plain_version=${VERSION#v}
-archive="qlog_${plain_version}_${platform}_${arch}.tar.gz"
-sbom="${archive}.sbom.json"
+expected_assets="qlog_${plain_version}_darwin_amd64.tar.gz
+qlog_${plain_version}_darwin_amd64.tar.gz.sbom.json
+qlog_${plain_version}_darwin_arm64.tar.gz
+qlog_${plain_version}_darwin_arm64.tar.gz.sbom.json
+qlog_${plain_version}_linux_amd64.tar.gz
+qlog_${plain_version}_linux_amd64.tar.gz.sbom.json
+qlog_${plain_version}_linux_arm64.tar.gz
+qlog_${plain_version}_linux_arm64.tar.gz.sbom.json
+qlog_${plain_version}_windows_amd64.zip
+qlog_${plain_version}_windows_amd64.zip.sbom.json
+qlog_${plain_version}_windows_arm64.zip
+qlog_${plain_version}_windows_arm64.zip.sbom.json"
 
 if [ -n "$RELEASE_BASE" ]; then
   case "$RELEASE_BASE" in
@@ -80,7 +79,7 @@ if [ -n "$RELEASE_BASE" ]; then
   cleanup_dir=$(mktemp -d) || fail 'could not create temporary directory'
   ARTIFACT_DIR=$cleanup_dir
   base=${RELEASE_BASE%/}
-  for name in checksums.txt checksums.txt.sigstore.json "$archive" "$sbom"; do
+  for name in checksums.txt checksums.txt.sigstore.json $expected_assets; do
     curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
       --output "$ARTIFACT_DIR/$name" "$base/$VERSION/$name" || fail "download failed: $name"
   done
@@ -92,8 +91,9 @@ manifest="$ARTIFACT_DIR/checksums.txt"
 bundle="$ARTIFACT_DIR/checksums.txt.sigstore.json"
 [ -f "$manifest" ] || fail 'checksums.txt is missing'
 [ -f "$bundle" ] || fail 'checksum Sigstore bundle is missing'
-[ -f "$ARTIFACT_DIR/$archive" ] || fail "platform archive is missing: $archive"
-[ -f "$ARTIFACT_DIR/$sbom" ] || fail "platform SBOM is missing: $sbom"
+for name in $expected_assets; do
+  [ -f "$ARTIFACT_DIR/$name" ] || fail "expected release asset is missing: $name"
+done
 
 identity="https://github.com/janpereira-dev/quantum_log/.github/workflows/release.yml@refs/tags/$VERSION"
 cosign verify-blob \
@@ -107,7 +107,7 @@ verify_entry() {
   matches=$(awk -v name="$name" '$2 == name { print $1 }' "$manifest")
   count=$(printf '%s\n' "$matches" | awk 'NF { count++ } END { print count+0 }')
   [ "$count" -eq 1 ] || fail "checksums.txt must contain exactly one entry for $name"
-  expected=$(printf '%s\n' "$matches" | awk 'NF { print; exit }')
+  expected=$(printf '%s\n' "$matches" | awk 'NF { print tolower($0); exit }')
   case "$expected" in
     *[!0-9a-fA-F]*|'') fail "invalid checksum entry for $name" ;;
   esac
@@ -122,6 +122,10 @@ verify_entry() {
   [ "$actual" = "$expected" ] || fail "checksum mismatch for $name"
 }
 
-verify_entry "$archive"
-verify_entry "$sbom"
-printf 'PASS authenticity: %s (%s and %s)\n' "$VERSION" "$archive" "$sbom"
+awk 'NF != 2 || length($1) != 64 || $1 !~ /^[0-9A-Fa-f]+$/ || $2 ~ /\// { exit 1 }
+     END { if (NR != 12) exit 1 }' "$manifest" ||
+  fail 'checksums.txt does not contain the exact expected asset set'
+for name in $expected_assets; do
+  verify_entry "$name"
+done
+printf 'PASS authenticity: %s (all 12 archives and SBOMs)\n' "$VERSION"
