@@ -9,6 +9,11 @@ import (
 	"testing"
 )
 
+func normalizeDocumentationText(contents []byte) string {
+	plain := strings.NewReplacer("`", "", "*", "", "_", " ").Replace(strings.ToLower(string(contents)))
+	return strings.Join(strings.Fields(plain), " ")
+}
+
 func TestInstallerContracts(t *testing.T) {
 	root := filepath.Join("..", "..")
 	cases := map[string][]string{
@@ -170,10 +175,6 @@ func TestReleaseDocumentationDoesNotClaimUnsupportedEvidence(t *testing.T) {
 		"README.md",
 		"CHANGELOG.md",
 	}
-	normalize := func(contents []byte) string {
-		plain := strings.NewReplacer("`", "", "*", "", "_", " ").Replace(strings.ToLower(string(contents)))
-		return strings.Join(strings.Fields(plain), " ")
-	}
 	forbidden := []string{
 		"m4 is verified",
 		"pass means external verification",
@@ -199,7 +200,7 @@ func TestReleaseDocumentationDoesNotClaimUnsupportedEvidence(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
-		text := normalize(contents)
+		text := normalizeDocumentationText(contents)
 		for _, phrase := range forbidden {
 			if strings.Contains(text, phrase) {
 				t.Errorf("%s contains unsupported current claim %q", name, phrase)
@@ -211,11 +212,11 @@ func TestReleaseDocumentationDoesNotClaimUnsupportedEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	troubleshootingText := normalize(troubleshooting)
+	troubleshootingText := normalizeDocumentationText(troubleshooting)
 	if strings.Contains(troubleshootingText, "blocked until signed https rc artifact exists") {
 		t.Error("docs/TROUBLESHOOTING.md says the signed RC is unavailable although RC10 is published")
 	}
-	if strings.Contains(troubleshootingText, "qlog_install_local_artifact_dir") && strings.Contains(troubleshootingText, "npm install") {
+	if strings.Contains(troubleshootingText, "qlog install local artifact dir") && strings.Contains(troubleshootingText, "npm install") {
 		t.Error("docs/TROUBLESHOOTING.md promotes the legacy npm artifact route for current RC validation")
 	}
 
@@ -223,7 +224,7 @@ func TestReleaseDocumentationDoesNotClaimUnsupportedEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	npmText := normalize(npmGuide)
+	npmText := normalizeDocumentationText(npmGuide)
 	if strings.Contains(npmText, "distributor for verified quantum_log") ||
 		strings.Contains(npmText, "npm install -g @janpereira.dev/quantum-log") ||
 		(strings.Contains(npmText, "downloads matching") && strings.Contains(npmText, "v0.3.2-rc.3")) {
@@ -235,7 +236,7 @@ func TestReleaseDocumentationDoesNotClaimUnsupportedEvidence(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		text := normalize(contents)
+		text := normalizeDocumentationText(contents)
 		if strings.Contains(text, "there is no stable public release yet") ||
 			!strings.Contains(text, "no stable v0.4.0 release has been published") ||
 			!strings.Contains(text, "older stable release line is not the supported evaluation path") {
@@ -247,7 +248,7 @@ func TestReleaseDocumentationDoesNotClaimUnsupportedEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fiveAgentText := normalize(fiveAgent)
+	fiveAgentText := normalizeDocumentationText(fiveAgent)
 	if strings.Contains(fiveAgentText, "partial:") || strings.Contains(fiveAgentText, "blocked external") ||
 		!strings.Contains(fiveAgentText, "ready for external e2e") || !strings.Contains(fiveAgentText, "2026-08-05") || !strings.Contains(fiveAgentText, "v0.3.2-rc.1") {
 		t.Error("docs/verification/five-agent-evidence.md uses PARTIAL outside the four-state vocabulary or leaves historical evidence unbound")
@@ -280,6 +281,14 @@ func TestReleaseDocumentationDoesNotClaimUnsupportedEvidence(t *testing.T) {
 		if !strings.Contains(string(vocabulary), want) {
 			t.Errorf("milestone vocabulary missing %q", want)
 		}
+	}
+}
+
+func TestDocumentationNormalizationMakesLegacyEnvironmentTokenSearchable(t *testing.T) {
+	normalized := normalizeDocumentationText([]byte("Use QLOG_INSTALL_LOCAL_ARTIFACT_DIR with npm install for RC validation"))
+	legacyRouteDetected := strings.Contains(normalized, "qlog install local artifact dir") && strings.Contains(normalized, "npm install")
+	if !legacyRouteDetected {
+		t.Fatalf("normalized legacy environment token = %q", normalized)
 	}
 }
 
