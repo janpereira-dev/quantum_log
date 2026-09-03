@@ -793,6 +793,24 @@ func TestReleaseLifecycleHarnessContracts(t *testing.T) {
 	}
 }
 
+func workflowStepRun(workflow, stepName string) (string, bool) {
+	inStep := false
+	for _, line := range strings.Split(strings.ReplaceAll(workflow, "\r\n", "\n"), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "- name: "+stepName {
+			inStep = true
+			continue
+		}
+		if inStep && strings.HasPrefix(trimmed, "- name: ") {
+			return "", false
+		}
+		if inStep && strings.HasPrefix(trimmed, "run: ") {
+			return strings.TrimSpace(strings.TrimPrefix(trimmed, "run: ")), true
+		}
+	}
+	return "", false
+}
+
 func TestHostedArtifactLifecycleWorkflowContract(t *testing.T) {
 	root := filepath.Join("..", "..")
 	contents, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "artifact-lifecycle.yml"))
@@ -821,10 +839,6 @@ func TestHostedArtifactLifecycleWorkflowContract(t *testing.T) {
 		`[ "$supplied" -ne 3 ]`,
 		"needs.validate-inputs.outputs.live != 'true'",
 		"needs.validate-inputs.outputs.live == 'true'",
-		"sh scripts/acceptance/release-lifecycle.sh --contract-only",
-		"sh scripts/acceptance/release-lifecycle.sh",
-		"pwsh -NoProfile -File scripts/acceptance/release-lifecycle.ps1 -ContractOnly",
-		"pwsh -NoProfile -File scripts/acceptance/release-lifecycle.ps1",
 	}
 	for _, want := range required {
 		if !strings.Contains(workflow, want) {
@@ -834,6 +848,22 @@ func TestHostedArtifactLifecycleWorkflowContract(t *testing.T) {
 	for _, forbidden := range []string{"version: latest", "releases/latest", "QLOG_FROM_VERSION: latest", "QLOG_TO_VERSION: latest", "secrets."} {
 		if strings.Contains(workflow, forbidden) {
 			t.Errorf("artifact lifecycle workflow contains unsafe or mutable selector %q", forbidden)
+		}
+	}
+	stepCommands := map[string]string{
+		"Validate POSIX lifecycle contract":      "sh scripts/acceptance/release-lifecycle.sh --contract-only",
+		"Validate PowerShell lifecycle contract": "pwsh -NoProfile -File scripts/acceptance/release-lifecycle.ps1 -ContractOnly",
+		"Run POSIX artifact lifecycle":           "sh scripts/acceptance/release-lifecycle.sh",
+		"Run PowerShell artifact lifecycle":      "pwsh -NoProfile -File scripts/acceptance/release-lifecycle.ps1",
+	}
+	for name, want := range stepCommands {
+		got, found := workflowStepRun(workflow, name)
+		if !found {
+			t.Errorf("artifact lifecycle workflow is missing named step %q with a run command", name)
+			continue
+		}
+		if got != want {
+			t.Errorf("artifact lifecycle workflow step %q runs %q, want exactly %q", name, got, want)
 		}
 	}
 }
@@ -857,6 +887,40 @@ func TestCIUsesHostedLifecycleOnlyAsContractValidation(t *testing.T) {
 	for _, forbidden := range []string{"from_version:", "to_version:", "release_base:"} {
 		if strings.Contains(job, forbidden) {
 			t.Errorf("ordinary CI supplies live artifact input %q", forbidden)
+		}
+	}
+}
+
+func TestWorkflowStepRunDistinguishesLiveFromContractOnly(t *testing.T) {
+	workflow := `steps:
+  - name: Validate POSIX lifecycle contract
+    run: sh scripts/acceptance/release-lifecycle.sh --contract-only
+  - name: Run POSIX artifact lifecycle
+    run: sh scripts/acceptance/release-lifecycle.sh --contract-only
+  - name: Validate PowerShell lifecycle contract
+    run: pwsh -NoProfile -File scripts/acceptance/release-lifecycle.ps1 -ContractOnly
+  - name: Run PowerShell artifact lifecycle
+    run: pwsh -NoProfile -File scripts/acceptance/release-lifecycle.ps1 -ContractOnly
+`
+	for name, commands := range map[string][2]string{
+		"Run POSIX artifact lifecycle": {
+			"sh scripts/acceptance/release-lifecycle.sh --contract-only",
+			"sh scripts/acceptance/release-lifecycle.sh",
+		},
+		"Run PowerShell artifact lifecycle": {
+			"pwsh -NoProfile -File scripts/acceptance/release-lifecycle.ps1 -ContractOnly",
+			"pwsh -NoProfile -File scripts/acceptance/release-lifecycle.ps1",
+		},
+	} {
+		command, found := workflowStepRun(workflow, name)
+		if !found {
+			t.Fatalf("synthetic workflow step %q was not found", name)
+		}
+		if command != commands[0] {
+			t.Errorf("synthetic workflow step %q parsed as %q, want %q", name, command, commands[0])
+		}
+		if command == commands[1] {
+			t.Errorf("contract-only command for %q was mistaken for live command %q", name, commands[1])
 		}
 	}
 }
