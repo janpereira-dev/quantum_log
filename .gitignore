@@ -1,5 +1,8 @@
 /qlog
 /qlog.exe
+/.qlog/
+/.claude/worktrees/
+/.claude/*.patch
 /dist
 *.db
 *.db-shm
