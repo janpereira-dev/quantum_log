@@ -222,6 +222,72 @@ func TestM4EvidenceDocumentsStableScopeAndCleanDeviceGate(t *testing.T) {
 	}
 }
 
+func TestShellUninstallerRunsOwnedCleanupBeforeRemovingBinary(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell test")
+	}
+	root := filepath.Join("..", "..")
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	calls := filepath.Join(dir, "calls.txt")
+	qlog := filepath.Join(bin, "qlog")
+	fake := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$QLOG_TEST_CALLS\"\n"
+	if err := os.WriteFile(qlog, []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sh", filepath.Join(root, "installers", "uninstall.sh"), "--install-dir", bin, "--no-modify-path")
+	cmd.Env = append(os.Environ(), "QLOG_TEST_CALLS="+calls)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("uninstall: %v\n%s", err, output)
+	}
+	got, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "uninstall --json\n" {
+		t.Fatalf("cleanup call = %q", got)
+	}
+	if _, err := os.Stat(qlog); !os.IsNotExist(err) {
+		t.Fatalf("binary remains: %v", err)
+	}
+}
+
+func TestShellUninstallerRetainsBinaryWhenOwnedCleanupFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell test")
+	}
+	root := filepath.Join("..", "..")
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	calls := filepath.Join(dir, "calls.txt")
+	qlog := filepath.Join(bin, "qlog")
+	fake := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$QLOG_TEST_CALLS\"\nexit 23\n"
+	if err := os.WriteFile(qlog, []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sh", filepath.Join(root, "installers", "uninstall.sh"), "--install-dir", bin, "--no-modify-path")
+	cmd.Env = append(os.Environ(), "QLOG_TEST_CALLS="+calls)
+	if output, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("uninstall succeeded after cleanup failure:\n%s", output)
+	}
+	got, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "uninstall --json\n" {
+		t.Fatalf("cleanup call = %q", got)
+	}
+	if _, err := os.Stat(qlog); err != nil {
+		t.Fatalf("binary was not retained: %v", err)
+	}
+}
+
 func TestShellInstallDryRunDoesNotWrite(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX shell smoke test runs on Unix CI jobs")
