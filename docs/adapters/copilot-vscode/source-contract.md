@@ -1,22 +1,40 @@
 # GitHub Copilot for VS Code Source Contract
 
-Source: VS Code Copilot telemetry settings and OpenTelemetry GenAI semantic conventions.
+Sources: GitHub's
+[OpenTelemetry agent-monitoring overview](https://docs.github.com/en/copilot/concepts/agents/opentelemetry)
+and the linked official
+[VS Code Copilot monitoring reference](https://code.visualstudio.com/docs/agents/guides/monitoring-agents).
 
-## Supported Configuration
+## Decision status
 
-`qlog adapter install copilot-vscode` manages only these user settings:
+Copilot for VS Code is unsupported for stable capture. Visual Studio Code 1.136.0
+was present during the 2026-09-03 spike, but no Copilot extension was installed
+and no authenticated real-device editor turn was available. The CLI observation
+is a different product boundary and must not claim VS Code evidence.
 
-- `github.copilot.chat.otel.enabled = true`
-- `github.copilot.chat.otel.exporterType = "otlp-http"`
-- `github.copilot.chat.otel.otlpEndpoint = "http://127.0.0.1:4318"`
-- `github.copilot.chat.otel.captureContent = false`
+The official documentation lists both OTLP and file exporter settings, including
+`github.copilot.chat.otel.exporterType = "file"`,
+`github.copilot.chat.otel.outfile`, and content capture disabled by default. The
+file exporter is the preferred next candidate because it may avoid a persistent
+collector, but capability documentation is not an E2E result.
 
-Existing user settings are preserved, repeated installation is byte-identical when settings already match, and uninstall restores values qlog changed. qlog does not configure headers, prompt capture, response capture, tool arguments, tool results, credentials, or authorization fields.
+## Evidence required before implementation
 
-## Ingest Contract
+A stable decision requires an installed, authenticated real-device run with
+pinned VS Code and Copilot extension versions. The sanitized record must include
+signal/event counts, attribute names, a schema hash, content-capture state,
+privacy scan, and exact setting ownership and restoration behavior. It must prove
+reported model and token fields plus project/session correlation.
 
-qlog accepts a Copilot span only with trace and span IDs, a recognized Copilot service identity, a model, and at least one explicitly emitted non-negative token metric. It prefers `gen_ai.conversation.id` as session identity and retains `session.id` only as sanitized window-session metadata when different.
+Until that record exists, qlog must not claim stable VS Code capture, verified
+tokens, or compatibility inherited from Copilot CLI. Existing experimental OTLP
+settings are not acceptance evidence.
 
-Project attribution follows explicit project, local CWD, then a unique registered Git root plus normalized remote. A remote URL is never treated as a local directory and is not persisted. Ambiguous or unmatched Git context remains unattributed.
+## Future ownership boundary
 
-Accepted token metrics retain their emitted GenAI raw key with `otel` source and `reported` confidence. Missing attributes remain not emitted; emitted `0` remains reported zero. Real VS Code session evidence remains required for full E2E acceptance.
+If the documented file exporter passes the evidence gate, setup may manage only
+the specific qlog-owned VS Code setting values and output/checkpoint files. It
+must preserve unrelated settings, back up before mutation, restore only values it
+changed, and keep content capture false. Private APIs, debug databases, log
+scraping, UI automation/interception, and packet interception remain outside this
+contract.

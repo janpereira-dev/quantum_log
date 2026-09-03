@@ -592,6 +592,73 @@ func TestDocumentationNormalizationMakesLegacyEnvironmentTokenSearchable(t *test
 	}
 }
 
+func TestCopilotTransportDecisionIsEvidenceBound(t *testing.T) {
+	root := filepath.Join("..", "..")
+	read := func(name string) string {
+		t.Helper()
+		contents, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(name)))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		return string(contents)
+	}
+	normalized := func(name string) string {
+		return strings.Join(strings.Fields(strings.ToLower(read(name))), " ")
+	}
+
+	adr := normalized("docs/architecture/ADR-006-copilot-transport.md")
+	for _, want := range []string{
+		"Status: accepted",
+		"## Weighted criteria frozen before observation",
+		"Documented and stable source | 20",
+		"Privacy and clean removal are veto gates",
+		"GitHub Copilot CLI 1.0.78",
+		"Visual Studio Code 1.136.0",
+		"CLI: documented file exporter",
+		"VS Code: unsupported for stable capture",
+		"private APIs", "log scraping", "UI interception", "packet interception",
+		"## Privacy impact", "## Rollback",
+	} {
+		if !strings.Contains(adr, strings.ToLower(want)) {
+			t.Errorf("Copilot transport ADR missing %q", want)
+		}
+	}
+
+	spike := normalized("docs-int/verification/copilot-transport-spike.md")
+	for _, want := range []string{
+		"2026-09-03", "Windows 11 x64", "GitHub Copilot CLI 1.0.78", "Visual Studio Code 1.136.0",
+		"`COPILOT_OTEL_FILE_EXPORTER_PATH`", "`false`", "exit code `0`", "10 JSONL records",
+		"2 spans", "8 metrics", "1f891d72e02a6d1765098848a1d1a517ab37b2cc134663ff44fdd4c61c8bde8c",
+		"prompt literal: absent", "response literal: absent", "credential markers: absent",
+		"No Copilot extension was installed", "No VS Code agent turn was run",
+		"Raw JSONL was deleted", "copilot help monitoring",
+	} {
+		if !strings.Contains(spike, strings.ToLower(want)) {
+			t.Errorf("Copilot transport spike missing %q", want)
+		}
+	}
+
+	cli := normalized("docs/adapters/copilot-cli/source-contract.md")
+	for _, want := range []string{
+		"documented file exporter", "incremental", "durable", "content capture remains false",
+		"does not require a persistent collector", "1.0.78",
+	} {
+		if !strings.Contains(cli, strings.ToLower(want)) {
+			t.Errorf("Copilot CLI source contract missing %q", want)
+		}
+	}
+
+	vscode := normalized("docs/adapters/copilot-vscode/source-contract.md")
+	for _, want := range []string{
+		"unsupported for stable capture", "1.136.0", "No Copilot extension was installed",
+		"authenticated real-device", "must not claim", "file exporter",
+	} {
+		if !strings.Contains(vscode, strings.ToLower(want)) {
+			t.Errorf("Copilot VS Code source contract missing %q", want)
+		}
+	}
+}
+
 func TestWindowsSmokeGuideStartsItsOwnForegroundCollector(t *testing.T) {
 	contents, err := os.ReadFile(filepath.Join("..", "..", "scripts", "smoke-v0.3.2-rc.1-windows.ps1"))
 	if err != nil {
