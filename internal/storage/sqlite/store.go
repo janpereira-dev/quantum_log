@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1260,11 +1261,11 @@ func (s *Store) VerifyLedger(ctx context.Context, sessionID string) error {
 	if err := rows.Close(); err != nil {
 		return fmt.Errorf("close ledger rows: %w", err)
 	}
-	return s.verifyAllocationRevisionChain(ctx)
+	return s.verifyAllocationRevisionChain(ctx, sessionID)
 }
 
-func (s *Store) verifyAllocationRevisionChain(ctx context.Context) error {
-	rows, err := s.db.QueryContext(ctx, `SELECT revision_id, subject_type, subject_id, revision_number, parent_revision_id, idempotency_key, MAX(project_id), MAX(allocation_basis_points), MAX(allocation_method), MAX(confidence), author, source, reason, created_at, previous_revision_hash, revision_hash FROM allocation_revisions GROUP BY revision_id, subject_type, subject_id, revision_number, parent_revision_id, idempotency_key, author, source, reason, created_at, previous_revision_hash, revision_hash ORDER BY subject_type, subject_id, revision_number, revision_id`)
+func (s *Store) verifyAllocationRevisionChain(ctx context.Context, sessionID string) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT revision_id, subject_type, subject_id, revision_number, parent_revision_id, idempotency_key, MAX(project_id), MAX(allocation_basis_points), MAX(allocation_method), MAX(confidence), author, source, reason, created_at, previous_revision_hash, revision_hash FROM allocation_revisions r WHERE (? = '' OR EXISTS (SELECT 1 FROM model_calls c WHERE c.id = r.subject_id AND c.session_id = ?)) GROUP BY revision_id, subject_type, subject_id, revision_number, parent_revision_id, idempotency_key, author, source, reason, created_at, previous_revision_hash, revision_hash ORDER BY subject_type, subject_id, revision_number, revision_id`, sessionID, sessionID)
 	if err != nil {
 		return fmt.Errorf("query allocation revisions: %w", err)
 	}
@@ -1314,14 +1315,14 @@ func (s *Store) verifyAllocationRevisionChain(ctx context.Context) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	if err := s.verifyAllocationRevisionContents(ctx); err != nil {
+	if err := s.verifyAllocationRevisionContents(ctx, sessionID); err != nil {
 		return err
 	}
-	return s.verifyAllocationRevisionHeads(ctx)
+	return s.verifyAllocationRevisionHeads(ctx, sessionID)
 }
 
-func (s *Store) verifyAllocationRevisionHeads(ctx context.Context) error {
-	rows, err := s.db.QueryContext(ctx, `SELECT h.subject_type,h.subject_id,h.revision_id,h.revision_hash FROM allocation_revision_heads h`)
+func (s *Store) verifyAllocationRevisionHeads(ctx context.Context, sessionID string) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT h.subject_type,h.subject_id,h.revision_id,h.revision_hash FROM allocation_revision_heads h WHERE (? = '' OR EXISTS (SELECT 1 FROM model_calls c WHERE c.id = h.subject_id AND c.session_id = ?))`, sessionID, sessionID)
 	if err != nil {
 		return err
 	}
@@ -1353,8 +1354,8 @@ func (s *Store) verifyAllocationRevisionHeads(ctx context.Context) error {
 	return nil
 }
 
-func (s *Store) verifyAllocationRevisionContents(ctx context.Context) error {
-	history, err := s.db.QueryContext(ctx, `SELECT revision_id, subject_type, subject_id, revision_number, parent_revision_id, idempotency_key, author, source, reason, created_at, previous_revision_hash, revision_hash FROM allocation_revisions GROUP BY revision_id, subject_type, subject_id, revision_number, parent_revision_id, idempotency_key, author, source, reason, created_at, previous_revision_hash, revision_hash ORDER BY subject_type, subject_id, revision_number`)
+func (s *Store) verifyAllocationRevisionContents(ctx context.Context, sessionID string) error {
+	history, err := s.db.QueryContext(ctx, `SELECT revision_id, subject_type, subject_id, revision_number, parent_revision_id, idempotency_key, author, source, reason, created_at, previous_revision_hash, revision_hash FROM allocation_revisions r WHERE (? = '' OR EXISTS (SELECT 1 FROM model_calls c WHERE c.id = r.subject_id AND c.session_id = ?)) GROUP BY revision_id, subject_type, subject_id, revision_number, parent_revision_id, idempotency_key, author, source, reason, created_at, previous_revision_hash, revision_hash ORDER BY subject_type, subject_id, revision_number`, sessionID, sessionID)
 	if err != nil {
 		return err
 	}
@@ -1419,7 +1420,7 @@ func (s *Store) verifyAllocationProjection(ctx context.Context, revisions []Allo
 		if err != nil {
 			return err
 		}
-		actual := make(map[string]bool)
+		actual := make([]string, 0, count)
 		for rows.Next() {
 			var p, m, c string
 			var bp int64
@@ -1429,13 +1430,22 @@ func (s *Store) verifyAllocationProjection(ctx context.Context, revisions []Allo
 				}
 				return err
 			}
-			actual[fmt.Sprintf("%s|%d|%s|%s", p, bp, m, c)] = true
+			actual = append(actual, fmt.Sprintf("%s|%d|%s|%s", p, bp, m, c))
 		}
 		if err := rows.Close(); err != nil {
 			return err
 		}
+		expected := make([]string, 0, len(revision.Allocations))
 		for _, a := range revision.Allocations {
-			if !actual[fmt.Sprintf("%s|%d|%s|%s", a.ProjectID, a.BasisPoints, a.Method, a.Confidence)] {
+			expected = append(expected, fmt.Sprintf("%s|%d|%s|%s", a.ProjectID, a.BasisPoints, a.Method, a.Confidence))
+		}
+		sort.Strings(actual)
+		sort.Strings(expected)
+		if len(actual) != len(expected) {
+			return errors.New("allocation projection does not match latest revision")
+		}
+		for i := range expected {
+			if actual[i] != expected[i] {
 				return errors.New("allocation projection entry does not match latest revision")
 			}
 		}
@@ -2097,7 +2107,9 @@ func (s *Store) AssignUnattributedModelCall(ctx context.Context, modelCallID, pr
 	if strings.TrimSpace(modelCallID) == "" || strings.TrimSpace(projectID) == "" {
 		return errors.New("model call id and project id are required")
 	}
-	_, err := s.AppendAllocationRevision(ctx, AllocationRevisionInput{SubjectType: "model_call", SubjectID: modelCallID, Allocations: []AllocationInput{{ProjectID: projectID, BasisPoints: 10000}}, IdempotencyKey: newID(), Source: "manual", Reason: "assign unattributed allocation", Method: "manual", RequireUnallocated: true})
+	// The subject-scoped key makes concurrent retries converge on one
+	// assignment instead of creating two independent revisions.
+	_, err := s.AppendAllocationRevision(ctx, AllocationRevisionInput{SubjectType: "model_call", SubjectID: modelCallID, Allocations: []AllocationInput{{ProjectID: projectID, BasisPoints: 10000}}, IdempotencyKey: "assign:" + modelCallID, Source: "manual", Reason: "assign unattributed allocation", Method: "manual", RequireUnallocated: true})
 	return err
 }
 
@@ -2123,6 +2135,9 @@ func (s *Store) AppendAllocationRevision(ctx context.Context, input AllocationRe
 	defer rollback(tx)
 	var existing AllocationRevision
 	if err := readAllocationRevision(ctx, tx, input.SubjectType, input.SubjectID, input.IdempotencyKey, &existing); err == nil {
+		if input.RequireUnallocated && !sameAllocationInputs(existing.Allocations, input.Allocations) {
+			return AllocationRevision{}, errors.New("allocation idempotency key already belongs to a different assignment")
+		}
 		return existing, tx.Commit()
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return AllocationRevision{}, err
@@ -2172,6 +2187,22 @@ func (s *Store) AppendAllocationRevision(ctx context.Context, input AllocationRe
 		return AllocationRevision{}, err
 	}
 	return revision, nil
+}
+
+func sameAllocationInputs(existing []Allocation, requested []AllocationInput) bool {
+	if len(existing) != len(requested) {
+		return false
+	}
+	left, right := make([]string, 0, len(existing)), make([]string, 0, len(requested))
+	for _, a := range existing {
+		left = append(left, fmt.Sprintf("%s|%d", a.ProjectID, a.BasisPoints))
+	}
+	for _, a := range requested {
+		right = append(right, fmt.Sprintf("%s|%d", a.ProjectID, a.BasisPoints))
+	}
+	sort.Strings(left)
+	sort.Strings(right)
+	return slices.Equal(left, right)
 }
 
 // AllocationHistory returns immutable revisions in deterministic order.
@@ -2292,7 +2323,7 @@ func allocationRevisionHash(revision AllocationRevision, allocations []Allocatio
 }
 
 func revisionAllocations(ctx context.Context, q allocationQueryer, revisionID string) (result []Allocation, err error) {
-	rows, err := q.QueryContext(ctx, `SELECT project_id, allocation_basis_points, allocation_method, confidence FROM allocation_revisions WHERE revision_id = ? ORDER BY entry_id`, revisionID)
+	rows, err := q.QueryContext(ctx, `SELECT r.project_id, COALESCE(p.slug, 'unattributed'), r.allocation_basis_points, r.allocation_method, r.confidence FROM allocation_revisions r LEFT JOIN projects p ON p.id = r.project_id WHERE r.revision_id = ? ORDER BY r.entry_id`, revisionID)
 	if err != nil {
 		return nil, err
 	}
@@ -2304,9 +2335,11 @@ func revisionAllocations(ctx context.Context, q allocationQueryer, revisionID st
 	result = make([]Allocation, 0)
 	for rows.Next() {
 		var a Allocation
-		if err := rows.Scan(&a.ProjectID, &a.BasisPoints, &a.Method, &a.Confidence); err != nil {
+		var projectID sql.NullString
+		if err := rows.Scan(&projectID, &a.ProjectSlug, &a.BasisPoints, &a.Method, &a.Confidence); err != nil {
 			return nil, err
 		}
+		a.ProjectID = projectID.String
 		result = append(result, a)
 	}
 	return result, rows.Err()

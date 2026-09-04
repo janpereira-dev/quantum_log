@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func allocationFixture(t *testing.T) (*Store, string, string, string) {
@@ -47,8 +48,16 @@ func TestAllocationRevisionHistoryIsAppendOnly(t *testing.T) {
 	if err != nil || len(history) != 3 {
 		t.Fatalf("history = %#v, %v", history, err)
 	}
-	if history[0].IdempotencyKey != "direct:"+call || len(history[0].Allocations) != 1 || history[0].Allocations[0].BasisPoints != 10000 {
+	if history[0].IdempotencyKey != "direct:"+call || len(history[0].Allocations) != 1 || history[0].Allocations[0].BasisPoints != 10000 || history[0].Allocations[0].ProjectSlug != "a" {
 		t.Fatalf("first revision mutated: %#v", history[0])
+	}
+	for _, a := range history[2].Allocations {
+		if a.ProjectSlug != "a" && a.ProjectSlug != "b" {
+			t.Fatalf("missing history project slug: %#v", a)
+		}
+	}
+	if history[0].Allocations[0].ProjectSlug != "a" || history[2].Allocations[0].ProjectSlug != "a" {
+		t.Fatalf("history project slugs = %#v", history)
 	}
 }
 
@@ -146,5 +155,76 @@ func TestVerifyLedgerDetectsDeletedAllocationRevision(t *testing.T) {
 	}
 	if err := s.VerifyLedger(ctx, ""); err == nil {
 		t.Fatal("VerifyLedger accepted deleted allocation revision")
+	}
+}
+
+func TestVerifyLedgerSessionScopesAllocationRevisions(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "qlog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	a, _, err := s.RegisterProject(ctx, "A", "a", filepath.Join(t.TempDir(), "a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.EnsureSession(ctx, "one", "test", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.EnsureSession(ctx, "two", "test", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.RecordModelCall(ctx, ModelCallInput{ProjectID: a.ID, SessionID: "one", Provider: "test", ModelID: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.RecordModelCall(ctx, ModelCallInput{ProjectID: a.ID, SessionID: "two", Provider: "test", ModelID: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE allocation_revisions SET reason='tampered' WHERE subject_id=?`, second); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.VerifyLedger(ctx, "one"); err != nil {
+		t.Fatalf("session-scoped verification = %v", err)
+	}
+	if err := s.VerifyLedger(ctx, ""); err == nil {
+		t.Fatal("global verification accepted tampered other session")
+	}
+}
+
+func TestAssignUnattributedConcurrentRetriesConverge(t *testing.T) {
+	ctx := context.Background()
+	s, call, _, project := allocationFixture(t)
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM usage_allocations WHERE subject_id=?`, call); err != nil {
+		t.Fatal(err)
+	}
+	results := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		go func() { results <- s.AssignUnattributedModelCall(ctx, call, project) }()
+	}
+	for i := 0; i < 2; i++ {
+		if err := <-results; err != nil {
+			t.Fatal(err)
+		}
+	}
+	h, err := s.AllocationHistory(ctx, "model_call", call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(h) != 2 {
+		t.Fatalf("concurrent assignment revisions = %d, want direct plus one assignment", len(h))
+	}
+}
+
+func TestVerifyLedgerDetectsProjectionRowMismatch(t *testing.T) {
+	ctx := context.Background()
+	s, call, _, _ := allocationFixture(t)
+	if _, err := s.db.ExecContext(ctx, `UPDATE usage_allocations SET project_id=NULL WHERE subject_id=?`, call); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.VerifyLedger(ctx, ""); err == nil {
+		t.Fatal("VerifyLedger accepted projection row mismatch")
 	}
 }
