@@ -2086,8 +2086,15 @@ func readAllocationRevision(ctx context.Context, q allocationQueryer, subjectTyp
 		return err
 	}
 	result.SubjectType, result.SubjectID, result.IdempotencyKey = subjectType, subjectID, key
-	result.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
-	result.Allocations, _ = revisionAllocations(ctx, q, result.ID)
+	parsed, err := time.Parse(time.RFC3339Nano, created)
+	if err != nil {
+		return err
+	}
+	result.CreatedAt = parsed
+	result.Allocations, err = revisionAllocations(ctx, q, result.ID)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
