@@ -314,6 +314,16 @@ func (s *server) splitUsage(ctx context.Context, _ *mcp.CallToolRequest, input s
 	if err != nil {
 		return nil, allocationsOutput{}, err
 	}
+	history, err := service.Store.AllocationHistory(ctx, "model_call", input.ModelCallID)
+	if err != nil {
+		return nil, allocationsOutput{}, err
+	}
+	for _, item := range history {
+		if item.ID == revision.ID {
+			revision.Allocations = item.Allocations
+			break
+		}
+	}
 	return nil, allocationsOutput{Allocations: revision.Allocations, RevisionID: revision.ID, RevisionHash: revision.RevisionHash}, nil
 }
 

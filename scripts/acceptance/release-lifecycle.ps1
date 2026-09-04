@@ -11,7 +11,7 @@ $releaseBase = $env:QLOG_RELEASE_BASE
 if ([string]::IsNullOrWhiteSpace($fromVersion)) { throw 'QLOG_FROM_VERSION is required' }
 if ([string]::IsNullOrWhiteSpace($toVersion)) { throw 'QLOG_TO_VERSION is required' }
 if ($fromVersion -eq $toVersion) { throw 'QLOG_FROM_VERSION and QLOG_TO_VERSION must differ' }
-if ($ContractOnly -and ($fromVersion -notmatch '^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$' -or $toVersion -notmatch '^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$')) { throw 'release versions must be immutable tags (vMAJOR.MINOR.PATCH[-suffix])' }
+if ($fromVersion -notmatch '^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$' -or $toVersion -notmatch '^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') { throw 'release versions must be immutable tags (vMAJOR.MINOR.PATCH[-suffix])' }
 if ([string]::IsNullOrWhiteSpace($releaseBase)) { throw 'QLOG_RELEASE_BASE is required' }
 if (-not $releaseBase.StartsWith('https://', [StringComparison]::OrdinalIgnoreCase)) { throw 'QLOG_RELEASE_BASE must use HTTPS' }
 

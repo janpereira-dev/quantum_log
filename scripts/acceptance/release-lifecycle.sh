@@ -21,10 +21,8 @@ make_temp_root() {
   exit 2
 }
 is_tag() { printf '%s' "$1" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; }
-if [ "$CONTRACT_ONLY" -eq 1 ]; then
-  is_tag "$QLOG_FROM_VERSION" || { printf '%s\n' 'QLOG_FROM_VERSION must be an immutable release tag' >&2; exit 1; }
-  is_tag "$QLOG_TO_VERSION" || { printf '%s\n' 'QLOG_TO_VERSION must be an immutable release tag' >&2; exit 1; }
-fi
+is_tag "$QLOG_FROM_VERSION" || { printf '%s\n' 'QLOG_FROM_VERSION must be an immutable release tag' >&2; exit 1; }
+is_tag "$QLOG_TO_VERSION" || { printf '%s\n' 'QLOG_TO_VERSION must be an immutable release tag' >&2; exit 1; }
 case "$QLOG_RELEASE_BASE" in https://*) ;; *) printf '%s\n' 'QLOG_RELEASE_BASE must use HTTPS' >&2; exit 2 ;; esac
 
 if [ "$CONTRACT_ONLY" -eq 1 ]; then
