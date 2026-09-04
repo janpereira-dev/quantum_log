@@ -48,6 +48,10 @@ func createAcceptanceBoundary(ctx context.Context, home string, version Version,
 	if err != nil {
 		return acceptancecontract.RealAgentBoundary{}, fmt.Errorf("read pre-action agent position: %w", err)
 	}
+	preActionSequence, err := service.Store.CurrentRawEventSequence(ctx)
+	if err != nil {
+		return acceptancecontract.RealAgentBoundary{}, fmt.Errorf("read pre-action ledger sequence: %w", err)
+	}
 	challengeBytes := make([]byte, 32)
 	if _, err := rand.Read(challengeBytes); err != nil {
 		return acceptancecontract.RealAgentBoundary{}, fmt.Errorf("create acceptance challenge: %w", err)
@@ -57,12 +61,13 @@ func createAcceptanceBoundary(ctx context.Context, home string, version Version,
 		CandidateTag: tag, CandidateCommit: commit, CandidateBinarySHA256: binaryHash, Platform: platform,
 		AgentID: agentID, AgentVersion: agentVersion, StartedAt: time.Now().UTC(),
 		LedgerPositionSHA256: ledgerPositionSHA256(anchors), LedgerEventCount: ledgerEventCount(anchors), AgentSourceModelCalls: sourceModelCallCount(preActionReport, contract),
+		LedgerEventSequence: preActionSequence,
 	}
 	boundary.ID = acceptancecontract.BoundaryID(boundary)
 	if err := acceptancecontract.ValidateRealAgentBoundary(boundary, boundary.StartedAt, tag, commit, binaryHash, platform); err != nil {
 		return acceptancecontract.RealAgentBoundary{}, err
 	}
-	marker := sqlite.AcceptanceBoundaryMarker{BoundaryID: boundary.ID, Challenge: boundary.Challenge, LedgerPositionSHA256: boundary.LedgerPositionSHA256, LedgerEventCount: boundary.LedgerEventCount}
+	marker := sqlite.AcceptanceBoundaryMarker{BoundaryID: boundary.ID, Challenge: boundary.Challenge, LedgerPositionSHA256: boundary.LedgerPositionSHA256, LedgerEventCount: boundary.LedgerEventCount, LedgerEventSequence: boundary.LedgerEventSequence}
 	if _, err := service.Store.AppendAcceptanceBoundaryMarker(ctx, marker, boundary.StartedAt); err != nil {
 		return acceptancecontract.RealAgentBoundary{}, fmt.Errorf("persist acceptance boundary in ledger: %w", err)
 	}
@@ -109,7 +114,7 @@ func evaluateAcceptanceBoundaries(ctx context.Context, service *app.Service, tag
 		if err := acceptancecontract.ValidateRealAgentBoundary(boundary, now, tag, commit, binaryHash, platform); err != nil {
 			return nil, err
 		}
-		marker := sqlite.AcceptanceBoundaryMarker{BoundaryID: boundary.ID, Challenge: boundary.Challenge, LedgerPositionSHA256: boundary.LedgerPositionSHA256, LedgerEventCount: boundary.LedgerEventCount}
+		marker := sqlite.AcceptanceBoundaryMarker{BoundaryID: boundary.ID, Challenge: boundary.Challenge, LedgerPositionSHA256: boundary.LedgerPositionSHA256, LedgerEventCount: boundary.LedgerEventCount, LedgerEventSequence: boundary.LedgerEventSequence}
 		markerFound, err := service.Store.HasAcceptanceBoundaryMarker(ctx, marker)
 		if err != nil {
 			return nil, err
@@ -133,7 +138,23 @@ func evaluateAcceptanceBoundaries(ctx context.Context, service *app.Service, tag
 		positionAdvanced := ledgerEventCount(anchors) > boundary.LedgerEventCount && ledgerPositionSHA256(anchors) != boundary.LedgerPositionSHA256 && sourceModelCallCount(currentAgentReport, contract) > boundary.AgentSourceModelCalls
 		found := false
 		if positionAdvanced {
-			found, err = hasAdapterEvidence(ctx, service.Store, boundary.AgentID, "", boundary.StartedAt.Add(time.Nanosecond), now, contract)
+			postBoundaryIDs, idsErr := service.Store.RawEventIDsAfterAcceptanceBoundary(ctx, marker)
+			if idsErr != nil {
+				return nil, idsErr
+			}
+			for _, rawID := range postBoundaryIDs {
+				hasCall, callErr := service.Store.HasModelCallForRawEvent(ctx, rawID)
+				if callErr != nil {
+					return nil, callErr
+				}
+				if hasCall {
+					found = true
+					break
+				}
+			}
+			if found {
+				found, err = hasAdapterEvidence(ctx, service.Store, boundary.AgentID, "", boundary.StartedAt.Add(time.Nanosecond), now, contract)
+			}
 			if err != nil {
 				return nil, err
 			}

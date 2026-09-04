@@ -988,6 +988,9 @@ func (s *Store) AppendRawEvent(ctx context.Context, input RawEventInput) (RawEve
 		if err := json.Unmarshal(payload, &marker); err != nil {
 			return RawEventAppendResult{}, fmt.Errorf("decode acceptance boundary marker: %w", err)
 		}
+		if marker.LedgerEventSequence != 0 && marker.LedgerEventSequence != sequence-1 {
+			return RawEventAppendResult{}, errors.New("acceptance boundary sequence is stale")
+		}
 		marker.LedgerEventSequence = sequence - 1
 		payload, err = json.Marshal(marker)
 		if err != nil {
@@ -1018,6 +1021,16 @@ func (s *Store) AppendAcceptanceBoundaryMarker(ctx context.Context, marker Accep
 		return RawEventAppendResult{}, fmt.Errorf("encode acceptance boundary marker: %w", err)
 	}
 	return s.AppendRawEvent(ctx, RawEventInput{Source: acceptanceBoundarySource, EventType: acceptanceBoundaryEventType, Payload: payload, OccurredAt: occurredAt, OmitOccurredAtFromIdentity: false, acceptanceBoundaryMarker: true})
+}
+
+// CurrentRawEventSequence returns the append-order position used for a new
+// acceptance boundary lower bound.
+func (s *Store) CurrentRawEventSequence(ctx context.Context) (int64, error) {
+	var sequence int64
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(event_sequence), 0) FROM raw_events`).Scan(&sequence); err != nil {
+		return 0, err
+	}
+	return sequence, nil
 }
 
 // RawEventIDsAfterAcceptanceBoundary returns only ledger events appended after

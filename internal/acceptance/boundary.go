@@ -26,6 +26,7 @@ type RealAgentBoundary struct {
 	StartedAt             time.Time `json:"started_at"`
 	LedgerPositionSHA256  string    `json:"ledger_position_sha256"`
 	LedgerEventCount      int64     `json:"ledger_event_count"`
+	LedgerEventSequence   int64     `json:"ledger_event_sequence"`
 	AgentSourceModelCalls int64     `json:"agent_source_model_calls"`
 }
 
@@ -48,7 +49,7 @@ func ValidateRealAgentBoundary(boundary RealAgentBoundary, now time.Time, candid
 	if boundary.CandidateTag != candidateTag || !strings.EqualFold(boundary.CandidateCommit, candidateCommit) || !strings.EqualFold(boundary.CandidateBinarySHA256, binarySHA256) || boundary.Platform != platform {
 		return errors.New("real-agent boundary does not match the exact qlog runtime")
 	}
-	if !fullSHA256(boundary.LedgerPositionSHA256) || boundary.LedgerEventCount < 0 || boundary.AgentSourceModelCalls < 0 {
+	if !fullSHA256(boundary.LedgerPositionSHA256) || boundary.LedgerEventCount < 0 || boundary.LedgerEventSequence < 0 || boundary.AgentSourceModelCalls < 0 {
 		return errors.New("real-agent boundary has an invalid ledger position")
 	}
 	if boundary.StartedAt.IsZero() || boundary.StartedAt.After(now) || now.Sub(boundary.StartedAt) > MaxRealAgentEvidenceWindow {
