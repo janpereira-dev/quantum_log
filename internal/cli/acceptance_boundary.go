@@ -505,6 +505,9 @@ func inspectAcceptancePackage(path string, version Version) error {
 			}
 		}
 	}
+	if err := validateAcceptanceArtifactSchemas(entries); err != nil {
+		return err
+	}
 	for _, required := range []string{"manifest.json", "diagnostics.json", "collector.json", "report.json", "report.csv", "report.txt", "sessions.json", "SHA256SUMS"} {
 		if _, found := entries[required]; !found {
 			return fmt.Errorf("acceptance package missing %s", required)
@@ -620,6 +623,33 @@ func inspectAcceptancePackage(path string, version Version) error {
 	}
 	if acceptancePackagePrivacyStatus(entries, manifest.RealAgentEvidence) != acceptancecontract.StatusPass {
 		return errors.New("acceptance package privacy scan failed")
+	}
+	return nil
+}
+
+func validateAcceptanceArtifactSchemas(entries map[string][]byte) error {
+	allowed := map[string]map[string]bool{
+		"collector.json":   {"installed": true, "running": true, "reachable": true, "mode": true, "listen": true, "service_id": true, "endpoints": true, "scope": true},
+		"diagnostics.json": {"ledger_status": true, "collector_log_sha256": true, "collector_log_fingerprint": true},
+		"report.json":      {"from": true, "to": true, "project_slug": true, "agent_name": true, "session_id": true, "model_calls": true, "interactions": true, "prompts": true, "tokens": true, "lifecycle_events": true, "tool_calls": true, "mcp_calls": true, "errors": true, "unattributed_model_calls": true, "unattributed_tokens": true, "metric_coverage": true, "sources": true},
+		"sessions.json":    {"session_id": true, "agent_name": true, "raw_event_count": true, "model_call_count": true, "started_at": true, "last_seen_at": true, "measurements": true},
+	}
+	for name, keys := range allowed {
+		data, ok := entries[name]
+		if !ok {
+			continue
+		}
+		var raw any
+		if err := json.Unmarshal(data, &raw); err != nil {
+			return fmt.Errorf("invalid %s: %w", name, err)
+		}
+		if obj, ok := raw.(map[string]any); ok {
+			for key := range obj {
+				if !keys[key] {
+					return fmt.Errorf("unknown %s field %q", name, key)
+				}
+			}
+		}
 	}
 	return nil
 }
