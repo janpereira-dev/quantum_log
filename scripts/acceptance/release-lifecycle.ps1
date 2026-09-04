@@ -32,6 +32,15 @@ $installer = if ($env:QLOG_INSTALLER_PS1) { $env:QLOG_INSTALLER_PS1 } else { Joi
 $uninstaller = if ($env:QLOG_UNINSTALLER_PS1) { $env:QLOG_UNINSTALLER_PS1 } else { Join-Path $repoRoot 'installers/uninstall.ps1' }
 $evidenceDir = if ($env:QLOG_EVIDENCE_DIR) { $env:QLOG_EVIDENCE_DIR } else { Join-Path $tempBase ("qlog-release-evidence-{0}" -f [guid]::NewGuid()) }
 $installDir = Join-Path $runRoot 'bin'
+$originalEnvironment = @{}
+foreach ($name in @('HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME')) { $originalEnvironment[$name] = [Environment]::GetEnvironmentVariable($name) }
+$isolatedUserHome = Join-Path $runRoot 'user-home'
+$env:HOME = $isolatedUserHome
+$env:USERPROFILE = $isolatedUserHome
+$env:APPDATA = Join-Path $isolatedUserHome 'AppData/Roaming'
+$env:LOCALAPPDATA = Join-Path $isolatedUserHome 'AppData/Local'
+$env:XDG_CONFIG_HOME = Join-Path $isolatedUserHome '.config'
+$env:XDG_DATA_HOME = Join-Path $isolatedUserHome '.local/share'
 $env:QLOG_HOME = Join-Path $runRoot 'home'
 $ledger = Join-Path $env:QLOG_HOME 'qlog.db'
 $fixture = Join-Path $runRoot 'sentinel.ndjson'
@@ -97,6 +106,11 @@ try {
     $afterVersionText = (& $qlog --version | Out-String).Trim()
     $afterVersionText | Set-Content -LiteralPath (Join-Path $evidenceDir 'after-version.txt') -Encoding UTF8
     Assert-Version $afterVersionText $toVersion 'target'
+    Invoke-Recorded 'migrate' { $arguments = @('--home', $env:QLOG_HOME, 'migrate'); & $qlog @arguments | Out-Null }
+    Get-SHA256 $ledger | Set-Content -LiteralPath (Join-Path $evidenceDir 'ledger-after-migration.sha256') -Encoding ASCII
+    $verifyMigration = & $qlog --home $env:QLOG_HOME verify | Out-String
+    if ($LASTEXITCODE -ne 0) { throw 'verify after migration failed' }
+    Write-Sanitized $verifyMigration (Join-Path $evidenceDir 'verify-migration.txt')
     $arguments = @('--home', $env:QLOG_HOME, 'doctor', '--json')
     $doctor = & $qlog @arguments | Out-String
     if ($LASTEXITCODE -ne 0) { throw 'doctor failed' }
@@ -110,13 +124,14 @@ try {
     $beforeHash = (Get-Content -LiteralPath (Join-Path $evidenceDir 'ledger-before.sha256') -Raw).Trim()
     $upgradeHash = Get-SHA256 $ledger
     $upgradeHash | Set-Content -LiteralPath (Join-Path $evidenceDir 'ledger-after-upgrade.sha256') -Encoding ASCII
-    if ($beforeHash -ne $upgradeHash) { throw 'ledger hash changed during upgrade diagnostics' }
+    $migrationHash = (Get-Content -LiteralPath (Join-Path $evidenceDir 'ledger-after-migration.sha256') -Raw).Trim()
+    if ($migrationHash -ne $upgradeHash) { throw 'ledger hash changed during upgrade diagnostics' }
 
     Invoke-Recorded 'uninstall' { $arguments = @('--install-dir', $installDir, '--no-modify-path'); & $uninstaller @arguments | Out-Null }
     if (-not (Test-Path -LiteralPath $ledger -PathType Leaf)) { throw 'qlog.db was removed by uninstall' }
     $uninstallHash = Get-SHA256 $ledger
     $uninstallHash | Set-Content -LiteralPath (Join-Path $evidenceDir 'ledger-after-uninstall.sha256') -Encoding ASCII
-    if ($beforeHash -ne $uninstallHash) { throw 'ledger hash changed during uninstall' }
+    if ($migrationHash -ne $uninstallHash) { throw 'ledger hash changed during uninstall' }
 
     Invoke-Recorded 'reinstall-to' { Invoke-Installer -InstallerArguments @('--version', $toVersion, '--install-dir', $installDir, '--no-modify-path', '--no-bootstrap') }
     $arguments = @('--home', $env:QLOG_HOME, 'verify')
@@ -126,9 +141,10 @@ try {
     Write-Sanitized $verifyReinstall (Join-Path $evidenceDir 'verify-reinstall.txt')
     $reinstallHash = Get-SHA256 $ledger
     $reinstallHash | Set-Content -LiteralPath (Join-Path $evidenceDir 'ledger-after-reinstall.sha256') -Encoding ASCII
-    if ($beforeHash -ne $reinstallHash) { throw 'ledger hash changed during reinstall' }
+    if ($migrationHash -ne $reinstallHash) { throw 'ledger hash changed during reinstall' }
     Write-Output "PASS lifecycle: $fromVersion -> $toVersion"
     Write-Output "evidence: $evidenceDir"
 } finally {
+    foreach ($name in $originalEnvironment.Keys) { [Environment]::SetEnvironmentVariable($name, $originalEnvironment[$name]) }
     if (Test-Path -LiteralPath $runRoot) { Remove-Item -LiteralPath $runRoot -Recurse -Force }
 }

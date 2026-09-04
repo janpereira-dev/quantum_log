@@ -4,6 +4,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -80,8 +81,9 @@ type assignUsageInput struct {
 }
 
 type splitUsageInput struct {
-	ModelCallID string           `json:"model_call_id" jsonschema:"model call identifier"`
-	Allocations []allocationPart `json:"allocations" jsonschema:"allocation shares totaling 10000 basis points"`
+	ModelCallID    string           `json:"model_call_id" jsonschema:"model call identifier"`
+	Allocations    []allocationPart `json:"allocations" jsonschema:"allocation shares totaling 10000 basis points"`
+	IdempotencyKey string           `json:"idempotency_key" jsonschema:"stable replay key for this split"`
 }
 
 type allocationHistoryInput struct {
@@ -303,7 +305,10 @@ func (s *server) splitUsage(ctx context.Context, _ *mcp.CallToolRequest, input s
 		}
 		allocations = append(allocations, sqlite.AllocationInput{ProjectID: project.ID, BasisPoints: part.BasisPoints})
 	}
-	if err := service.Store.ReplaceAllocations(ctx, "model_call", input.ModelCallID, allocations); err != nil {
+	if strings.TrimSpace(input.IdempotencyKey) == "" {
+		return nil, allocationsOutput{}, errors.New("idempotency_key is required for split_usage")
+	}
+	if err := service.Store.ReplaceAllocationsWithKey(ctx, "model_call", input.ModelCallID, allocations, input.IdempotencyKey); err != nil {
 		return nil, allocationsOutput{}, err
 	}
 	result, err := service.Store.ModelCallAllocations(ctx, input.ModelCallID)

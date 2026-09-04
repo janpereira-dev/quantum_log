@@ -57,8 +57,20 @@ func New(version Version) *cobra.Command {
 	}
 	root.PersistentFlags().StringVar(&home, "home", "", "override the local QUANTUM_LOG data directory")
 	root.SetVersionTemplate("{{.Version}}\n")
-	root.AddCommand(newInitCommand(&home), newConfigCommand(&home), newDoctorCommand(&home), newVerifyCommand(&home), newMaintenanceCommand(&home), newProjectCommand(&home), newIngestCommand(&home), newUsageCommand(&home), newLogCommand(&home), newReportCommand(&home), newLegacySummaryCommand(&home), newAllocationCommand(&home), newPricingCommand(&home), newTaskCommand(&home), newSessionCommand(&home), newExportCommand(&home), newTUICommand(&home), newAdapterCommand(&home), newSetupCommand(&home), newCollectorCommand(&home), newHookCommand(&home), newUninstallCommand(&home), newRunCommand(&home), newMCPCommand(&home, version), newUnattributedCommand(&home), newBudgetCommand(&home), newAnchorCommand(&home), newAcceptanceCommand(&home, version))
+	root.AddCommand(newInitCommand(&home), newMigrateCommand(&home), newConfigCommand(&home), newDoctorCommand(&home), newVerifyCommand(&home), newMaintenanceCommand(&home), newProjectCommand(&home), newIngestCommand(&home), newUsageCommand(&home), newLogCommand(&home), newReportCommand(&home), newLegacySummaryCommand(&home), newAllocationCommand(&home), newPricingCommand(&home), newTaskCommand(&home), newSessionCommand(&home), newExportCommand(&home), newTUICommand(&home), newAdapterCommand(&home), newSetupCommand(&home), newCollectorCommand(&home), newHookCommand(&home), newUninstallCommand(&home), newRunCommand(&home), newMCPCommand(&home, version), newUnattributedCommand(&home), newBudgetCommand(&home), newAnchorCommand(&home), newAcceptanceCommand(&home, version))
 	return root
+}
+
+func newMigrateCommand(home *string) *cobra.Command {
+	return &cobra.Command{Use: "migrate", Short: "Apply pending local ledger migrations", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+		service, err := app.Open(command.Context(), *home)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = service.Close() }()
+		_, err = fmt.Fprintln(command.OutOrStdout(), "ledger: migrated")
+		return err
+	}}
 }
 
 func newInitCommand(home *string) *cobra.Command {

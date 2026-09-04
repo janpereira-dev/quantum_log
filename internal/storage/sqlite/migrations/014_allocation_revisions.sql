@@ -31,7 +31,7 @@ SELECT
     'legacy:' || a.subject_type || ':' || a.subject_id,
     'legacy-entry:' || a.id,
     a.subject_type, a.subject_id, 1,
-    'legacy:' || a.id,
+    'legacy:' || a.subject_type || ':' || a.subject_id,
     a.project_id, a.allocation_basis_points, a.allocation_method,
     a.confidence, 'migration', 'legacy_projection', 'pre-014 allocation', a.created_at
 FROM usage_allocations a

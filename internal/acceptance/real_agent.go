@@ -28,6 +28,10 @@ var supportedAgentIDs = map[string]bool{
 	"opencode":    true,
 }
 
+// IsSupportedAgentID reports whether an adapter has an approved acceptance
+// contract. Deferred and unsupported adapters must never create boundaries.
+func IsSupportedAgentID(id string) bool { return supportedAgentIDs[id] }
+
 // RealAgentEvidence is the sanitized result of one bounded, operator-observed
 // real-agent exercise. It intentionally has no prompt, response, path, command,
 // environment, or raw-log fields.

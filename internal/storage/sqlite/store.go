@@ -1688,9 +1688,16 @@ func (s *Store) RecordModelCall(ctx context.Context, input ModelCallInput) (stri
 		}
 	}
 	if input.ProjectID != "" {
-		_, err = tx.ExecContext(ctx, `INSERT INTO usage_allocations (id, subject_type, subject_id, project_id, allocation_basis_points, allocation_method, confidence, created_at) VALUES (?, 'model_call', ?, ?, 10000, 'direct', 'high', ?)`, newID(), id, input.ProjectID, now)
+		allocationID := newID()
+		_, err = tx.ExecContext(ctx, `INSERT INTO usage_allocations (id, subject_type, subject_id, project_id, allocation_basis_points, allocation_method, confidence, created_at) VALUES (?, 'model_call', ?, ?, 10000, 'direct', 'high', ?)`, allocationID, id, input.ProjectID, now)
 		if err != nil {
 			return "", fmt.Errorf("insert direct allocation: %w", err)
+		}
+		// The initial direct allocation and its immutable history entry are one
+		// transaction. This keeps every model call auditable from creation.
+		revisionID := newID()
+		if _, err := tx.ExecContext(ctx, `INSERT INTO allocation_revisions (revision_id, entry_id, subject_type, subject_id, revision_number, parent_revision_id, idempotency_key, project_id, allocation_basis_points, allocation_method, confidence, author, source, reason, created_at) VALUES (?, ?, 'model_call', ?, 1, '', ?, ?, 10000, 'direct', 'high', 'system', 'record_model_call', 'initial direct allocation', ?)`, revisionID, newID(), id, "direct:"+id, input.ProjectID, now); err != nil {
+			return "", fmt.Errorf("insert direct allocation revision: %w", err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -1870,7 +1877,13 @@ func (s *Store) EnsureSession(ctx context.Context, id, agentName string, started
 }
 
 func (s *Store) ReplaceAllocations(ctx context.Context, subjectType, subjectID string, allocations []AllocationInput) error {
-	_, err := s.AppendAllocationRevision(ctx, AllocationRevisionInput{SubjectType: subjectType, SubjectID: subjectID, Allocations: allocations, IdempotencyKey: newID(), Source: "split", Reason: "replace allocation", Method: "split"})
+	return s.ReplaceAllocationsWithKey(ctx, subjectType, subjectID, allocations, newID())
+}
+
+// ReplaceAllocationsWithKey makes split retries idempotent at the public
+// boundary while preserving the compatibility wrapper above.
+func (s *Store) ReplaceAllocationsWithKey(ctx context.Context, subjectType, subjectID string, allocations []AllocationInput, idempotencyKey string) error {
+	_, err := s.AppendAllocationRevision(ctx, AllocationRevisionInput{SubjectType: subjectType, SubjectID: subjectID, Allocations: allocations, IdempotencyKey: idempotencyKey, Source: "split", Reason: "replace allocation", Method: "split"})
 	return err
 }
 

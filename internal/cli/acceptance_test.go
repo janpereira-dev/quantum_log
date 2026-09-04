@@ -200,6 +200,33 @@ func TestAcceptanceRunRejectsMismatchedAndReusedBoundary(t *testing.T) {
 	}
 }
 
+func TestAcceptanceBeginRejectsUnsupportedAgentBeforeLedgerMarker(t *testing.T) {
+	home := t.TempDir()
+	if _, err := runQLog(t, home, "init"); err != nil {
+		t.Fatal(err)
+	}
+	version := Version{Version: "0.4.0-rc11", Commit: strings.Repeat("a", 40)}
+	command := New(version)
+	command.SetArgs([]string{"--home", home, "acceptance", "begin", "--agent", "pi", "--agent-version", "1.0.0"})
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "unsupported or deferred") {
+		t.Fatalf("unsupported begin error = %v", err)
+	}
+	service, err := app.OpenSnapshotReadOnly(context.Background(), home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = service.Close() }()
+	anchors, err := service.Store.LedgerAnchors(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, anchor := range anchors {
+		if anchor.Events != 0 {
+			t.Fatalf("unsupported begin appended ledger marker: %#v", anchors)
+		}
+	}
+}
+
 func TestAcceptanceRunRejectsCallerGateSpoofingAndDuplicateBoundaryKeys(t *testing.T) {
 	home := t.TempDir()
 	if _, err := runQLog(t, home, "init"); err != nil {

@@ -44,10 +44,10 @@ func TestAllocationRevisionHistoryIsAppendOnly(t *testing.T) {
 		t.Fatalf("revision chain = %#v -> %#v", first, second)
 	}
 	history, err := s.AllocationHistory(ctx, "model_call", call)
-	if err != nil || len(history) != 2 {
+	if err != nil || len(history) != 3 {
 		t.Fatalf("history = %#v, %v", history, err)
 	}
-	if len(history[0].Allocations) != 1 || history[0].Allocations[0].BasisPoints != 10000 {
+	if history[0].IdempotencyKey != "direct:"+call || len(history[0].Allocations) != 1 || history[0].Allocations[0].BasisPoints != 10000 {
 		t.Fatalf("first revision mutated: %#v", history[0])
 	}
 }
@@ -89,7 +89,7 @@ func TestAllocationRevisionIdempotency(t *testing.T) {
 		t.Fatalf("replay IDs = %s and %s", one.ID, two.ID)
 	}
 	h, err := s.AllocationHistory(ctx, "model_call", call)
-	if err != nil || len(h) != 1 {
+	if err != nil || len(h) != 2 {
 		t.Fatalf("history after replay = %#v, %v", h, err)
 	}
 }

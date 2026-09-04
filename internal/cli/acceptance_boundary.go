@@ -27,6 +27,9 @@ import (
 )
 
 func createAcceptanceBoundary(ctx context.Context, home string, version Version, agentID, agentVersion string) (acceptancecontract.RealAgentBoundary, error) {
+	if !acceptancecontract.IsSupportedAgentID(agentID) {
+		return acceptancecontract.RealAgentBoundary{}, fmt.Errorf("agent %q is unsupported or deferred for acceptance", agentID)
+	}
 	service, err := app.Open(ctx, home)
 	if err != nil {
 		return acceptancecontract.RealAgentBoundary{}, err
@@ -451,7 +454,7 @@ func inspectAcceptancePackage(path string, version Version) error {
 			}
 		}
 	}
-	for _, required := range []string{"manifest.json", "diagnostics.json", "report.json", "sessions.json", "SHA256SUMS"} {
+	for _, required := range []string{"manifest.json", "diagnostics.json", "collector.json", "report.json", "report.csv", "report.txt", "sessions.json", "SHA256SUMS"} {
 		if _, found := entries[required]; !found {
 			return fmt.Errorf("acceptance package missing %s", required)
 		}
@@ -470,6 +473,9 @@ func inspectAcceptancePackage(path string, version Version) error {
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&manifest); err != nil {
 		return err
+	}
+	if manifest.SchemaVersion != 1 {
+		return fmt.Errorf("unsupported acceptance manifest schema version %d", manifest.SchemaVersion)
 	}
 	_, commit, binaryHash, platform, err := acceptanceRuntimeIdentity(version)
 	if err != nil {
@@ -557,6 +563,18 @@ func validAcceptanceEntryName(name string) bool {
 }
 
 func validateAcceptanceManifestStatuses(manifest acceptanceManifest) error {
+	const stableAgentCount = 5
+	if len(manifest.Agents) != stableAgentCount {
+		return fmt.Errorf("acceptance manifest requires exactly %d stable agents", stableAgentCount)
+	}
+	expected := map[string]bool{"claude-code": true, "codex": true, "copilot": true, "copilot-vscode": true, "opencode": true}
+	seen := make(map[string]bool, len(manifest.Agents))
+	for _, agent := range manifest.Agents {
+		if !expected[agent.AdapterID] || seen[agent.AdapterID] {
+			return fmt.Errorf("acceptance manifest has invalid stable agent matrix entry %q", agent.AdapterID)
+		}
+		seen[agent.AdapterID] = true
+	}
 	evidence := make([]acceptancecontract.RealAgentEvidence, len(manifest.RealAgentEvidence))
 	copy(evidence, manifest.RealAgentEvidence)
 	agents := applyRealAgentEvidence(append([]acceptanceAgentResult(nil), manifest.Agents...), evidence)

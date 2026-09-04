@@ -986,6 +986,7 @@ func main() {
  switch command {
  case "init": if len(args) != 3 { fail("bad init argv") }; _ = os.MkdirAll(home, 0700); if err := os.WriteFile(ledger, []byte("ledger-v1\n"), 0600); err != nil { fail(err.Error()) }
  case "ingest": if len(args) != 5 || args[3] != "file" { fail("bad ingest argv") }; fixture, err := os.ReadFile(args[4]); if err != nil || !strings.Contains(string(fixture), "qlog-release-lifecycle-v1") { fail("bad sentinel") }; f, err := os.OpenFile(ledger, os.O_APPEND|os.O_WRONLY, 0600); if err != nil { fail(err.Error()) }; _, _ = f.Write([]byte("sentinel-v1\n")); _ = f.Close()
+ case "migrate": if len(args) != 3 { fail("bad migrate argv") }
  case "doctor": if len(args) != 4 || args[3] != "--json" { fail("bad doctor argv") }; fmt.Printf("{\"database\":%q,\"status\":\"ok\"}\n", ledger)
  case "verify": if len(args) != 3 { fail("bad verify argv") }; fmt.Printf("verified %s\n", home)
  default: fail("unknown command")
@@ -1205,7 +1206,7 @@ func TestReleaseLifecycleHarnessContracts(t *testing.T) {
 			}
 			callsText := strings.ReplaceAll(string(callBytes), "\r\n", "\n")
 			normalizedCalls := strings.ReplaceAll(callsText, " ", "|")
-			for _, want := range []string{"--version|v1|--install-dir|", "--version|v2|--install-dir|", "qlog|--home|", "|ingest|file|", "qlog|uninstall|--json", "uninstaller|--install-dir|"} {
+			for _, want := range []string{"--version|v1|--install-dir|", "--version|v2|--install-dir|", "qlog|--home|", "|ingest|file|", "|migrate\n", "qlog|uninstall|--json", "uninstaller|--install-dir|"} {
 				if !strings.Contains(normalizedCalls, want) {
 					t.Errorf("argv log missing %q:\n%s", want, callsText)
 				}
@@ -1213,10 +1214,10 @@ func TestReleaseLifecycleHarnessContracts(t *testing.T) {
 			if got := strings.Count(normalizedCalls, "|doctor|--json"); got != 1 {
 				t.Errorf("doctor execution count = %d, want 1:\n%s", got, callsText)
 			}
-			if got := strings.Count(normalizedCalls, "|verify\n"); got != 2 {
-				t.Errorf("verify execution count = %d, want 2:\n%s", got, callsText)
+			if got := strings.Count(normalizedCalls, "|verify\n"); got != 3 {
+				t.Errorf("verify execution count = %d, want 3:\n%s", got, callsText)
 			}
-			before, err := os.ReadFile(filepath.Join(evidence, "ledger-before.sha256"))
+			before, err := os.ReadFile(filepath.Join(evidence, "ledger-after-migration.sha256"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1229,7 +1230,7 @@ func TestReleaseLifecycleHarnessContracts(t *testing.T) {
 					t.Errorf("ledger hash changed in %s", name)
 				}
 			}
-			for _, name := range []string{"doctor.json", "verify.txt", "verify-reinstall.txt"} {
+			for _, name := range []string{"doctor.json", "verify-migration.txt", "verify.txt", "verify-reinstall.txt"} {
 				contents, readErr := os.ReadFile(filepath.Join(evidence, name))
 				if readErr != nil {
 					t.Fatal(readErr)
