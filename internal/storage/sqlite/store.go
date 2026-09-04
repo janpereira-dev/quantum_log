@@ -1043,7 +1043,7 @@ func (s *Store) VerifyRawEventSentinel(ctx context.Context, source, sourceVersio
 	if err != nil {
 		return false, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var payload string
 		if err := rows.Scan(&payload); err != nil {
@@ -1083,7 +1083,7 @@ func (s *Store) RawEventIDsAfterAcceptanceBoundary(ctx context.Context, marker A
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	ids := make([]string, 0)
 	for rows.Next() {
 		var id string
