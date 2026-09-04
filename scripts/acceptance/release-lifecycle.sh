@@ -75,19 +75,17 @@ assert_version() {
 }
 
 sanitize_output() {
-  short_run_root=''
-  if command -v cmd.exe >/dev/null 2>&1; then
-    short_run_root=$(cmd.exe /c "for %I in (\"$RUN_ROOT\") do @echo %~sI" 2>/dev/null | tr -d '\r' | sed -n '/./{p;q;}')
-  fi
-  awk -v needle="$RUN_ROOT" -v short="$short_run_root" '
+  awk -v needle="$RUN_ROOT" '
     {
       line = $0
       while ((position = index(line, needle)) > 0) {
         line = substr(line, 1, position - 1) "<TEMP>" substr(line, position + length(needle))
       }
-      while (short != "" && (position = index(line, short)) > 0) {
-        line = substr(line, 1, position - 1) "<TEMP>" substr(line, position + length(short))
-      }
+      # Go may render the same Windows temp directory with a short 8.3 user
+      # component. Redact the lifecycle run anchor even when its parent path
+      # spelling differs from the shell path.
+      gsub(/[A-Za-z]:[\/\\][^ \t"]*[\/\\]qlog-release-lifecycle[^ \t"\/\\]*/, "<TEMP>", line)
+      gsub(/\/[^ \t"]*\/qlog-release-lifecycle[^ \t"\/\\]*/, "<TEMP>", line)
       print line
     }
   '
