@@ -79,30 +79,14 @@ sanitize_output() {
   if command -v cmd.exe >/dev/null 2>&1; then
     short_run_root=$(cmd.exe /c "for %I in (\"$RUN_ROOT\") do @echo %~sI" 2>/dev/null | tr -d '\r' | sed -n '/./{p;q;}')
   fi
-  run_root_forward=$(printf '%s' "$RUN_ROOT" | tr '\\' '/')
-  run_root_backslash=$(printf '%s' "$RUN_ROOT" | sed 's|/|\\\\|g')
-  export QLOG_SANITIZE_RUN_ROOT="$RUN_ROOT"
-  export QLOG_SANITIZE_RUN_ROOT_FORWARD="$run_root_forward"
-  export QLOG_SANITIZE_RUN_ROOT_BACKSLASH="$run_root_backslash"
-  export QLOG_SANITIZE_SHORT_RUN_ROOT="$short_run_root"
-  awk '
-    BEGIN {
-      needle = ENVIRON["QLOG_SANITIZE_RUN_ROOT"]
-      forward = ENVIRON["QLOG_SANITIZE_RUN_ROOT_FORWARD"]
-      backslash = ENVIRON["QLOG_SANITIZE_RUN_ROOT_BACKSLASH"]
-      short = ENVIRON["QLOG_SANITIZE_SHORT_RUN_ROOT"]
-    }
+  awk -v needle="$RUN_ROOT" -v short="$short_run_root" '
     {
       line = $0
-      for (i = 1; i <= 4; i++) {
-        if (i == 1) value = needle
-        else if (i == 2) value = forward
-        else if (i == 3) value = backslash
-        else value = short
-        if (length(value) == 0) continue
-        while ((position = index(line, value)) > 0) {
-          line = substr(line, 1, position - 1) "<TEMP>" substr(line, position + length(value))
-        }
+      while ((position = index(line, needle)) > 0) {
+        line = substr(line, 1, position - 1) "<TEMP>" substr(line, position + length(needle))
+      }
+      while (short != "" && (position = index(line, short)) > 0) {
+        line = substr(line, 1, position - 1) "<TEMP>" substr(line, position + length(short))
       }
       print line
     }
