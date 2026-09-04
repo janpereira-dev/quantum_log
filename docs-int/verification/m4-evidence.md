@@ -1,6 +1,6 @@
 # M4 Evidence
 
-M4 is `IN_PROGRESS`. The current audit candidate is repository `HEAD` `3f09212eee520b63e424d7c3fb00f0758a5c1d8d` (2026-09-04), not a published stable release. Published RC10 archives and repository tests establish availability and implementation, not two-machine or five-agent external verification. Synthetic tests, historical runs, and local setup state do not prove current-candidate real-agent capture.
+M4 is `IN_PROGRESS`. The current audit candidate is repository `HEAD` `72acc4f` (2026-09-04), not a published stable release. Published RC10 archives and repository tests establish availability and implementation, not two-machine or five-agent external verification. Synthetic tests, historical runs, and local setup state do not prove current-candidate real-agent capture. Technical CI may be green for repository checks, but it does not substitute for independent multi-device real-agent evidence.
 
 Status semantics are strict: `IMPLEMENTED` means code exists; `READY_FOR_EXTERNAL_E2E` means the implementation can be exercised; `PASS` means matching local evidence exists for a recorded command, platform, and candidate; `VERIFIED` requires the committed acceptance matrix and independent review.
 
