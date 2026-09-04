@@ -656,6 +656,13 @@ func validateAcceptanceManifestStatuses(manifest acceptanceManifest) error {
 			return fmt.Errorf("acceptance manifest has invalid stable agent matrix entry %q", agent.AdapterID)
 		}
 		seen[agent.AdapterID] = true
+		observedReadiness := acceptancePendingExternalE2E
+		if manifest.CollectorReachable && agent.Available && agent.Installed {
+			observedReadiness = acceptanceReadyForExternalE2E
+		}
+		if agent.Readiness != observedReadiness {
+			return fmt.Errorf("acceptance readiness is not derived from observed adapter state for %s", agent.AdapterID)
+		}
 	}
 	evidence := make([]acceptancecontract.RealAgentEvidence, len(manifest.RealAgentEvidence))
 	copy(evidence, manifest.RealAgentEvidence)

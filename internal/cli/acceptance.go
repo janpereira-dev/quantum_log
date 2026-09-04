@@ -51,6 +51,7 @@ type acceptanceManifest struct {
 	Commit                string                                 `json:"commit"`
 	BuildDate             string                                 `json:"build_date"`
 	Platform              string                                 `json:"platform"`
+	CollectorReachable    bool                                   `json:"collector_reachable"`
 	ImplementationStatus  string                                 `json:"implementation_status"`
 	ReadinessStatus       string                                 `json:"readiness_status"`
 	ExternalE2EStatus     string                                 `json:"external_e2e_status"`
@@ -213,6 +214,7 @@ func writeAcceptancePackageWithBoundaries(ctx context.Context, home string, vers
 		Commit:               version.Commit,
 		BuildDate:            version.BuildDate,
 		Platform:             runtime.GOOS + "/" + runtime.GOARCH,
+		CollectorReachable:   collector.Reachable,
 		ImplementationStatus: acceptanceImplementationComplete,
 		ReadinessStatus:      acceptanceReadiness(agents),
 		ExternalE2EStatus:    externalE2EStatus,
@@ -266,10 +268,14 @@ func applyRealAgentEvidence(agents []acceptanceAgentResult, evidence []acceptanc
 		item, found := byAgent[agents[index].AdapterID]
 		if !found {
 			agents[index].Status = acceptancePendingExternalE2E
+			agents[index].SourceEvidence = false
 			continue
 		}
 		agents[index].Status = item.Status
 		agents[index].SourceEvidence = item.SourceEvidence
+		if !item.SourceEvidence {
+			agents[index].SourceEvidence = false
+		}
 	}
 	return agents
 }
