@@ -615,6 +615,12 @@ func TestHookCopilotCLIIngestsLifecycleOnlyWithoutHookPayloadContent(t *testing.
 	if _, err := runQLog(t, home, "project", "register", "--path", worktree, "--name", "Project", "--slug", "project"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+	// Warm the ledger and its integrity metadata before the hook's bounded
+	// best-effort window starts. This keeps the contract deterministic under
+	// the slower SQLite setup observed by Windows race runs.
+	if _, err := runQLog(t, home, "verify"); err != nil {
+		t.Fatalf("warm ledger: %v", err)
+	}
 	output, err := runQLogWithInput(t, home, strings.NewReader(`{"sessionId":"session-1","cwd":"`+filepath.ToSlash(worktree)+`","initialPrompt":"must-not-store","toolArgs":{"secret":"must-not-store"},"toolResult":{"textResultForLlm":"must-not-store"},"authorization":"must-not-store"}`), "hook", "copilot-cli", "--event", "postToolUse")
 	if err != nil {
 		t.Fatalf("hook copilot-cli: %v output=%q", err, output)

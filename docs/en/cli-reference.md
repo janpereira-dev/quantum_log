@@ -118,10 +118,12 @@ qlog report summary [same flags]
 qlog allocation split <model-call-id> <project=basis-points>...
 qlog allocation show <model-call-id> [--json]
 qlog allocation repair <model-call-id> --project <slug>
+qlog allocation history <model-call-id> [--json]
+qlog allocation revert <revision-id> --idempotency-key <key> --reason <text>
 ```
 
 **Purpose:** Manage model-call cost allocations.
-**Safety:** `split` replaces allocations; repair only when an explicit, correct owner is known.
+**Safety:** `split` appends an immutable correction and refreshes a rebuildable projection; repair only when an explicit, correct owner is known. History is never deleted.
 **Example:** `qlog allocation split call-1 alpha=5000 beta=5000`
 **Result:** writes report `allocation: updated` or `allocation: repaired`. Invalid allocation syntax or unknown projects fail.
 

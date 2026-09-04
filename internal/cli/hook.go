@@ -183,7 +183,9 @@ func ingestOrForwardHook(command *cobra.Command, home *string, event qlogevent.E
 // collector can be unavailable during upgrades, restarts, or a transient
 // SQLite lock; the next native event will retry ingestion.
 func bestEffortHook(command *cobra.Command, home *string, event qlogevent.Event) error {
-	ctx, cancel := context.WithTimeout(command.Context(), 500*time.Millisecond)
+	// Windows CI and cold SQLite connections can exceed the old 500ms budget;
+	// retain best-effort semantics while allowing one deterministic write.
+	ctx, cancel := context.WithTimeout(command.Context(), 2*time.Second)
 	defer cancel()
 	command.SetContext(ctx)
 	if err := ingestOrForwardHook(command, home, event); err != nil {

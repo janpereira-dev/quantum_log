@@ -34,6 +34,8 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
+[ -n "$INSTALL_DIR" ] || fail "--install-dir requires a non-empty value"
+
 profile=${QLOG_PROFILE:-$HOME/.profile}
 printf '%s\n' "binary: $INSTALL_DIR/qlog"
 if [ "$MODIFY_PATH" -eq 1 ]; then printf '%s\n' "profile: $profile"; fi
@@ -42,11 +44,15 @@ if [ "$DRY_RUN" -eq 1 ]; then
   exit 0
 fi
 
-if [ -f "$INSTALL_DIR/qlog" ]; then
-  rm -f "$INSTALL_DIR/qlog"
-  printf '%s\n' "removed $INSTALL_DIR/qlog"
+target="$INSTALL_DIR/qlog"
+if [ -f "$target" ]; then
+  if ! "$target" uninstall --json; then
+    fail "qlog-owned cleanup failed; retained $target so cleanup can be retried"
+  fi
+  rm -f -- "$target"
+  printf '%s\n' "removed $target"
 else
-  printf '%s\n' "qlog is not present at $INSTALL_DIR/qlog"
+  printf '%s\n' "qlog is not present at $target"
 fi
 
 if [ "$MODIFY_PATH" -eq 1 ] && [ -f "$profile" ] && grep -Fq '# >>> qlog >>>' "$profile"; then

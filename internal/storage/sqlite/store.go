@@ -17,7 +17,9 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -71,17 +73,67 @@ type RawEventInput struct {
 	ResolutionMethod           string
 	ResolutionConfidence       string
 	EvidenceJSON               string
+	acceptanceBoundaryMarker   bool
 }
 
 type RawEventAppendResult struct {
 	ID                string
+	Sequence          int64
 	Accepted          bool
 	SuppressionReason string
 }
 
+// AcceptanceBoundaryMarker is the authoritative ledger record created by qlog
+// when a real-agent boundary is opened. It is deliberately not model evidence.
+type AcceptanceBoundaryMarker struct {
+	BoundaryID           string `json:"boundary_id"`
+	Challenge            string `json:"challenge"`
+	LedgerPositionSHA256 string `json:"ledger_position_sha256"`
+	LedgerEventCount     int64  `json:"ledger_event_count"`
+	LedgerEventSequence  int64  `json:"ledger_event_sequence"`
+}
+
+const (
+	acceptanceBoundarySource    = "qlog.acceptance"
+	acceptanceBoundaryEventType = "acceptance.boundary.v1"
+)
+
 type AllocationInput struct {
 	ProjectID   string
 	BasisPoints int64
+	Method      string
+	Confidence  string
+}
+
+// AllocationRevisionInput describes one immutable allocation decision.
+type AllocationRevisionInput struct {
+	SubjectType        string
+	SubjectID          string
+	Allocations        []AllocationInput
+	IdempotencyKey     string
+	Author             string
+	Source             string
+	Reason             string
+	Method             string
+	RequireUnallocated bool
+}
+
+// AllocationRevision is the authoritative history record for an allocation
+// change. Its entries are immutable; usage_allocations is only a projection.
+type AllocationRevision struct {
+	ID               string       `json:"id"`
+	SubjectType      string       `json:"subject_type"`
+	SubjectID        string       `json:"subject_id"`
+	RevisionNumber   int64        `json:"revision_number"`
+	ParentRevisionID string       `json:"parent_revision_id,omitempty"`
+	IdempotencyKey   string       `json:"idempotency_key"`
+	Author           string       `json:"author"`
+	Source           string       `json:"source"`
+	Reason           string       `json:"reason"`
+	PreviousHash     string       `json:"previous_hash,omitempty"`
+	RevisionHash     string       `json:"revision_hash,omitempty"`
+	Allocations      []Allocation `json:"allocations"`
+	CreatedAt        time.Time    `json:"created_at"`
 }
 
 type ModelCallInput struct {
@@ -868,6 +920,9 @@ func (s *Store) AppendRawEvent(ctx context.Context, input RawEventInput) (RawEve
 	if strings.TrimSpace(input.Source) == "" || strings.TrimSpace(input.EventType) == "" {
 		return RawEventAppendResult{}, errors.New("raw event source and type are required")
 	}
+	if input.Source == acceptanceBoundarySource && input.EventType == acceptanceBoundaryEventType && !input.acceptanceBoundaryMarker {
+		return RawEventAppendResult{}, errors.New("acceptance boundary markers are qlog-owned")
+	}
 	if input.OccurredAt.IsZero() {
 		input.OmitOccurredAtFromIdentity = true
 		input.OccurredAt = time.Now().UTC()
@@ -922,16 +977,151 @@ func (s *Store) AppendRawEvent(ctx context.Context, input RawEventInput) (RawEve
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return RawEventAppendResult{}, fmt.Errorf("read ledger head: %w", err)
 	}
+	var sequence int64
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(event_sequence), 0) + 1 FROM raw_events`).Scan(&sequence); err != nil {
+		return RawEventAppendResult{}, fmt.Errorf("read ledger sequence: %w", err)
+	}
 	canonical := canonicalEvent(input, payload)
 	event := audit.NewRecord(chainKey(input.Source, input.SessionID), canonical, previousHash)
-	_, err = tx.ExecContext(ctx, `INSERT INTO raw_events (id, source, source_version, event_type, occurred_at, received_at, trace_id, span_id, parent_span_id, project_id, project_location_id, work_context_id, session_id, project_resolution_method, project_resolution_confidence, project_resolution_evidence_json, payload_json_sanitized, previous_event_hash, event_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, input.Source, strings.TrimSpace(input.SourceVersion), input.EventType, timestamp(input.OccurredAt), now, input.TraceID, input.SpanID, input.ParentSpanID, nullable(input.ProjectID), nullable(input.ProjectLocationID), nullable(input.WorkContextID), nullable(input.SessionID), input.ResolutionMethod, input.ResolutionConfidence, input.EvidenceJSON, string(payload), previousHash, event.Hash, now)
+	if input.acceptanceBoundaryMarker {
+		var marker AcceptanceBoundaryMarker
+		if err := json.Unmarshal(payload, &marker); err != nil {
+			return RawEventAppendResult{}, fmt.Errorf("decode acceptance boundary marker: %w", err)
+		}
+		if marker.LedgerEventSequence != 0 && marker.LedgerEventSequence != sequence-1 {
+			return RawEventAppendResult{}, errors.New("acceptance boundary sequence is stale")
+		}
+		marker.LedgerEventSequence = sequence - 1
+		payload, err = json.Marshal(marker)
+		if err != nil {
+			return RawEventAppendResult{}, fmt.Errorf("encode acceptance boundary marker: %w", err)
+		}
+		canonical = canonicalEvent(input, payload)
+		event = audit.NewRecord(chainKey(input.Source, input.SessionID), canonical, previousHash)
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO raw_events (id, source, source_version, event_type, occurred_at, received_at, trace_id, span_id, parent_span_id, project_id, project_location_id, work_context_id, session_id, project_resolution_method, project_resolution_confidence, project_resolution_evidence_json, payload_json_sanitized, previous_event_hash, event_hash, created_at, event_sequence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, input.Source, strings.TrimSpace(input.SourceVersion), input.EventType, timestamp(input.OccurredAt), now, input.TraceID, input.SpanID, input.ParentSpanID, nullable(input.ProjectID), nullable(input.ProjectLocationID), nullable(input.WorkContextID), nullable(input.SessionID), input.ResolutionMethod, input.ResolutionConfidence, input.EvidenceJSON, string(payload), previousHash, event.Hash, now, sequence)
 	if err != nil {
 		return RawEventAppendResult{}, fmt.Errorf("insert raw event: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return RawEventAppendResult{}, fmt.Errorf("commit raw event: %w", err)
 	}
-	return RawEventAppendResult{ID: id, Accepted: true}, nil
+	return RawEventAppendResult{ID: id, Sequence: sequence, Accepted: true}, nil
+}
+
+// AppendAcceptanceBoundaryMarker persists a qlog-owned checkpoint in the
+// append-only ledger. The marker is a control record and must never be treated
+// as agent activity or model evidence.
+func (s *Store) AppendAcceptanceBoundaryMarker(ctx context.Context, marker AcceptanceBoundaryMarker, occurredAt time.Time) (RawEventAppendResult, error) {
+	if marker.BoundaryID == "" || !validSHA256(marker.Challenge) || !validSHA256(marker.LedgerPositionSHA256) || marker.LedgerEventCount < 0 || marker.LedgerEventSequence < 0 {
+		return RawEventAppendResult{}, errors.New("invalid acceptance boundary marker")
+	}
+	payload, err := json.Marshal(marker)
+	if err != nil {
+		return RawEventAppendResult{}, fmt.Errorf("encode acceptance boundary marker: %w", err)
+	}
+	return s.AppendRawEvent(ctx, RawEventInput{Source: acceptanceBoundarySource, EventType: acceptanceBoundaryEventType, Payload: payload, OccurredAt: occurredAt, OmitOccurredAtFromIdentity: false, acceptanceBoundaryMarker: true})
+}
+
+// CurrentRawEventSequence returns the append-order position used for a new
+// acceptance boundary lower bound.
+func (s *Store) CurrentRawEventSequence(ctx context.Context) (int64, error) {
+	var sequence int64
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(event_sequence), 0) FROM raw_events`).Scan(&sequence); err != nil {
+		return 0, err
+	}
+	return sequence, nil
+}
+
+// VerifyRawEventSentinel checks an exact sanitized ledger record without
+// returning its payload. The fingerprint is SHA-256 over the stored payload.
+func (s *Store) VerifyRawEventSentinel(ctx context.Context, source, sourceVersion, eventType, payloadFingerprint string) (bool, error) {
+	if strings.TrimSpace(source) == "" || strings.TrimSpace(eventType) == "" || !validSHA256(payloadFingerprint) {
+		return false, errors.New("invalid raw event sentinel")
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT payload_json_sanitized FROM raw_events WHERE source=? AND source_version=? AND event_type=? ORDER BY event_sequence`, source, sourceVersion, eventType)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			return false, err
+		}
+		sum := sha256.Sum256([]byte(payload))
+		if strings.EqualFold(hex.EncodeToString(sum[:]), payloadFingerprint) {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+// RawEventIDsAfterAcceptanceBoundary returns only ledger events appended after
+// the qlog-owned boundary sequence. The sequence, not occurred_at, is the
+// lower bound so future-dated events cannot bypass the boundary.
+func (s *Store) RawEventIDsAfterAcceptanceBoundary(ctx context.Context, marker AcceptanceBoundaryMarker) ([]string, error) {
+	var stored AcceptanceBoundaryMarker
+	var payload string
+	if err := s.db.QueryRowContext(ctx, `SELECT payload_json_sanitized FROM raw_events WHERE source=? AND event_type=? AND json_extract(payload_json_sanitized, '$.boundary_id')=? ORDER BY event_sequence DESC LIMIT 1`, acceptanceBoundarySource, acceptanceBoundaryEventType, marker.BoundaryID).Scan(&payload); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if err := json.Unmarshal([]byte(payload), &stored); err != nil {
+		return nil, err
+	}
+	boundarySequence := stored.LedgerEventSequence
+	if marker.LedgerEventSequence == 0 {
+		stored.LedgerEventSequence = 0
+	}
+	if stored != marker {
+		return nil, errors.New("acceptance boundary marker does not match ledger")
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM raw_events WHERE event_sequence > ? AND NOT (source=? AND event_type=?) ORDER BY event_sequence`, boundarySequence, acceptanceBoundarySource, acceptanceBoundaryEventType)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	ids := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func validSHA256(value string) bool {
+	if len(value) != sha256.Size*2 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+// HasAcceptanceBoundaryMarker verifies that the exact qlog-created marker is
+// present in the authoritative append-only ledger.
+func (s *Store) HasAcceptanceBoundaryMarker(ctx context.Context, marker AcceptanceBoundaryMarker) (bool, error) {
+	var payload string
+	err := s.db.QueryRowContext(ctx, `SELECT payload_json_sanitized FROM raw_events WHERE source = ? AND event_type = ? AND json_extract(payload_json_sanitized, '$.boundary_id') = ? ORDER BY created_at DESC, id DESC LIMIT 1`, acceptanceBoundarySource, acceptanceBoundaryEventType, marker.BoundaryID).Scan(&payload)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read acceptance boundary marker: %w", err)
+	}
+	var stored AcceptanceBoundaryMarker
+	if err := json.Unmarshal([]byte(payload), &stored); err != nil {
+		return false, fmt.Errorf("decode acceptance boundary marker: %w", err)
+	}
+	if marker.LedgerEventSequence == 0 {
+		stored.LedgerEventSequence = 0
+	}
+	return stored == marker, nil
 }
 
 func (s *Store) HasModelCallForRawEvent(ctx context.Context, rawEventID string) (bool, error) {
@@ -1162,7 +1352,202 @@ func (s *Store) VerifyLedger(ctx context.Context, sessionID string) error {
 		}
 		previous[key] = eventHash
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close ledger rows: %w", err)
+	}
+	return s.verifyAllocationRevisionChain(ctx, sessionID)
+}
+
+func (s *Store) verifyAllocationRevisionChain(ctx context.Context, sessionID string) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT revision_id, subject_type, subject_id, revision_number, parent_revision_id, idempotency_key, MAX(project_id), MAX(allocation_basis_points), MAX(allocation_method), MAX(confidence), author, source, reason, created_at, previous_revision_hash, revision_hash FROM allocation_revisions r WHERE (? = '' OR EXISTS (SELECT 1 FROM model_calls c WHERE c.id = r.subject_id AND c.session_id = ?)) GROUP BY revision_id, subject_type, subject_id, revision_number, parent_revision_id, idempotency_key, author, source, reason, created_at, previous_revision_hash, revision_hash ORDER BY subject_type, subject_id, revision_number, revision_id`, sessionID, sessionID)
+	if err != nil {
+		return fmt.Errorf("query allocation revisions: %w", err)
+	}
+	type state struct {
+		previousID, previousHash string
+		number                   int64
+	}
+	states := make(map[string]state)
+	seen := make(map[string]string)
+	for rows.Next() {
+		var id, typ, subject, parent, key, project, method, confidence, author, source, reason, created, previousHash, hash string
+		var number, bp int64
+		if err := rows.Scan(&id, &typ, &subject, &number, &parent, &key, &project, &bp, &method, &confidence, &author, &source, &reason, &created, &previousHash, &hash); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if hash == "" {
+			_ = rows.Close()
+			return errors.New("allocation revision hash is missing")
+		}
+		chain := typ + "\x00" + subject
+		prior := states[chain]
+		if prior.number == 0 {
+			if number != 1 || parent != "" || previousHash != "" {
+				_ = rows.Close()
+				return errors.New("allocation revision chain starts with an invalid parent")
+			}
+		} else if number != prior.number+1 || parent != prior.previousID || previousHash != prior.previousHash {
+			_ = rows.Close()
+			return errors.New("allocation revision chain is broken")
+		}
+		if existing, ok := seen[id]; ok && existing != hash {
+			_ = rows.Close()
+			return errors.New("allocation revision has inconsistent hash")
+		}
+		seen[id] = hash
+		r := AllocationRevision{ID: id, SubjectType: typ, SubjectID: subject, RevisionNumber: number, ParentRevisionID: parent, IdempotencyKey: key, Author: author, Source: source, Reason: reason, CreatedAt: parseTimestamp(created)}
+		got := allocationRevisionHash(r, []AllocationInput{{ProjectID: project, BasisPoints: bp}}, previousHash)
+		// A multi-entry revision is hashed over all entries below after grouping;
+		// defer content verification to the grouped pass.
+		_ = got
+		states[chain] = state{previousID: id, previousHash: hash, number: number}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if err := s.verifyAllocationRevisionContents(ctx, sessionID); err != nil {
+		return err
+	}
+	return s.verifyAllocationRevisionHeads(ctx, sessionID)
+}
+
+func (s *Store) verifyAllocationRevisionHeads(ctx context.Context, sessionID string) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT h.subject_type,h.subject_id,h.revision_id,h.revision_hash FROM allocation_revision_heads h WHERE (? = '' OR EXISTS (SELECT 1 FROM model_calls c WHERE c.id = h.subject_id AND c.session_id = ?))`, sessionID, sessionID)
+	if err != nil {
+		return err
+	}
+	type head struct{ typ, subject, id, hash string }
+	heads := make([]head, 0)
+	for rows.Next() {
+		var h head
+		if err := rows.Scan(&h.typ, &h.subject, &h.id, &h.hash); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		heads = append(heads, h)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, h := range heads {
+		var latestID, latestHash string
+		if err := s.db.QueryRowContext(ctx, `SELECT revision_id, revision_hash FROM allocation_revisions WHERE subject_type=? AND subject_id=? ORDER BY revision_number DESC, entry_id DESC LIMIT 1`, h.typ, h.subject).Scan(&latestID, &latestHash); err != nil {
+			return errors.New("allocation revision head references deleted history")
+		}
+		if latestID != h.id || latestHash != h.hash {
+			return errors.New("allocation revision head does not match terminal revision")
+		}
+	}
+	return nil
+}
+
+func (s *Store) verifyAllocationRevisionContents(ctx context.Context, sessionID string) error {
+	history, err := s.db.QueryContext(ctx, `SELECT revision_id, subject_type, subject_id, revision_number, parent_revision_id, idempotency_key, author, source, reason, created_at, previous_revision_hash, revision_hash FROM allocation_revisions r WHERE (? = '' OR EXISTS (SELECT 1 FROM model_calls c WHERE c.id = r.subject_id AND c.session_id = ?)) GROUP BY revision_id, subject_type, subject_id, revision_number, parent_revision_id, idempotency_key, author, source, reason, created_at, previous_revision_hash, revision_hash ORDER BY subject_type, subject_id, revision_number`, sessionID, sessionID)
+	if err != nil {
+		return err
+	}
+	items := make([]AllocationRevision, 0)
+	for history.Next() {
+		var r AllocationRevision
+		var created string
+		if err := history.Scan(&r.ID, &r.SubjectType, &r.SubjectID, &r.RevisionNumber, &r.ParentRevisionID, &r.IdempotencyKey, &r.Author, &r.Source, &r.Reason, &created, &r.PreviousHash, &r.RevisionHash); err != nil {
+			_ = history.Close()
+			return err
+		}
+		r.CreatedAt = parseTimestamp(created)
+		items = append(items, r)
+	}
+	if err := history.Close(); err != nil {
+		return err
+	}
+	if err := history.Err(); err != nil {
+		return err
+	}
+	for _, r := range items {
+		allocations, err := revisionAllocations(ctx, s.db, r.ID)
+		if err != nil {
+			return err
+		}
+		inputs := make([]AllocationInput, 0, len(allocations))
+		for _, a := range allocations {
+			inputs = append(inputs, AllocationInput{ProjectID: a.ProjectID, BasisPoints: a.BasisPoints, Method: a.Method, Confidence: a.Confidence})
+		}
+		if want := allocationRevisionHash(r, inputs, r.PreviousHash); want != r.RevisionHash {
+			return errors.New("allocation revision hash does not match content")
+		}
+		r.Allocations = allocations
+		// Keep the complete revision for projection verification.
+		for i := range items {
+			if items[i].ID == r.ID {
+				items[i] = r
+				break
+			}
+		}
+	}
+	return s.verifyAllocationProjection(ctx, items)
+}
+
+func (s *Store) verifyAllocationProjection(ctx context.Context, revisions []AllocationRevision) error {
+	for _, revision := range revisions {
+		var latest int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM allocation_revisions WHERE subject_type=? AND subject_id=? AND revision_number > ?`, revision.SubjectType, revision.SubjectID, revision.RevisionNumber).Scan(&latest); err != nil {
+			return err
+		}
+		if latest > 0 {
+			continue
+		}
+		var count int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_allocations WHERE subject_type=? AND subject_id=?`, revision.SubjectType, revision.SubjectID).Scan(&count); err != nil {
+			return err
+		}
+		if count != len(revision.Allocations) {
+			return errors.New("allocation projection does not match latest revision")
+		}
+		rows, err := s.db.QueryContext(ctx, `SELECT COALESCE(project_id,''), allocation_basis_points, allocation_method, confidence, allocation_ordinal FROM usage_allocations WHERE subject_type=? AND subject_id=?`, revision.SubjectType, revision.SubjectID)
+		if err != nil {
+			return err
+		}
+		actual := make([]string, 0, count)
+		for rows.Next() {
+			var p, m, c string
+			var bp, ordinal int64
+			if err := rows.Scan(&p, &bp, &m, &c, &ordinal); err != nil {
+				if closeErr := rows.Close(); closeErr != nil {
+					return err
+				}
+				return err
+			}
+			actual = append(actual, fmt.Sprintf("%d|%s|%d|%s|%s", ordinal, p, bp, m, c))
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		expected := make([]string, 0, len(revision.Allocations))
+		for ordinal, a := range revision.Allocations {
+			expected = append(expected, fmt.Sprintf("%d|%s|%d|%s|%s", ordinal, a.ProjectID, a.BasisPoints, a.Method, a.Confidence))
+		}
+		sort.Strings(actual)
+		sort.Strings(expected)
+		if len(actual) != len(expected) {
+			return errors.New("allocation projection does not match latest revision")
+		}
+		for i := range expected {
+			if actual[i] != expected[i] {
+				return errors.New("allocation projection entry does not match latest revision")
+			}
+		}
+	}
+	return nil
 }
 
 type LedgerAnchor struct {
@@ -1568,7 +1953,8 @@ func (s *Store) RecordModelCall(ctx context.Context, input ModelCallInput) (stri
 		input.CaptureQuality = "unknown"
 	}
 	id := newID()
-	now := timestamp(time.Now())
+	createdAt := time.Now().UTC()
+	now := timestamp(createdAt)
 	total := input.InputTokens + input.OutputTokens + input.ReasoningTokens + input.CachedInputTokens + input.CacheWriteTokens
 	for _, metric := range input.Metrics {
 		if metric.Name == "total_tokens" && metric.Value != nil {
@@ -1602,9 +1988,20 @@ func (s *Store) RecordModelCall(ctx context.Context, input ModelCallInput) (stri
 		}
 	}
 	if input.ProjectID != "" {
-		_, err = tx.ExecContext(ctx, `INSERT INTO usage_allocations (id, subject_type, subject_id, project_id, allocation_basis_points, allocation_method, confidence, created_at) VALUES (?, 'model_call', ?, ?, 10000, 'direct', 'high', ?)`, newID(), id, input.ProjectID, now)
+		allocationID := newID()
+		_, err = tx.ExecContext(ctx, `INSERT INTO usage_allocations (id, subject_type, subject_id, project_id, allocation_basis_points, allocation_method, confidence, created_at, allocation_ordinal) VALUES (?, 'model_call', ?, ?, 10000, 'direct', 'high', ?, 0)`, allocationID, id, input.ProjectID, now)
 		if err != nil {
 			return "", fmt.Errorf("insert direct allocation: %w", err)
+		}
+		// The initial direct allocation and its immutable history entry are one
+		// transaction. This keeps every model call auditable from creation.
+		direct := AllocationRevision{ID: newID(), SubjectType: "model_call", SubjectID: id, RevisionNumber: 1, IdempotencyKey: "direct:" + id, Author: "system", Source: "record_model_call", Reason: "initial direct allocation", CreatedAt: createdAt}
+		direct.RevisionHash = allocationRevisionHash(direct, []AllocationInput{{ProjectID: input.ProjectID, BasisPoints: 10000, Method: "direct", Confidence: "high"}}, "")
+		if _, err := tx.ExecContext(ctx, `INSERT INTO allocation_revisions (revision_id, entry_id, subject_type, subject_id, revision_number, parent_revision_id, idempotency_key, project_id, allocation_basis_points, allocation_method, confidence, author, source, reason, created_at, previous_revision_hash, revision_hash) VALUES (?, ?, 'model_call', ?, 1, '', ?, ?, 10000, 'direct', 'high', 'system', 'record_model_call', 'initial direct allocation', ?, '', ?)`, direct.ID, newID(), id, direct.IdempotencyKey, input.ProjectID, now, direct.RevisionHash); err != nil {
+			return "", fmt.Errorf("insert direct allocation revision: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO allocation_revision_heads(subject_type, subject_id, revision_id, revision_hash) VALUES(?,?,?,?)`, "model_call", id, direct.ID, direct.RevisionHash); err != nil {
+			return "", fmt.Errorf("insert direct allocation head: %w", err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -1784,76 +2181,334 @@ func (s *Store) EnsureSession(ctx context.Context, id, agentName string, started
 }
 
 func (s *Store) ReplaceAllocations(ctx context.Context, subjectType, subjectID string, allocations []AllocationInput) error {
-	return s.replaceAllocations(ctx, subjectType, subjectID, allocations, "split")
+	return s.ReplaceAllocationsWithKey(ctx, subjectType, subjectID, allocations, newID())
+}
+
+// ReplaceAllocationsWithKey makes split retries idempotent at the public
+// boundary while preserving the compatibility wrapper above.
+func (s *Store) ReplaceAllocationsWithKey(ctx context.Context, subjectType, subjectID string, allocations []AllocationInput, idempotencyKey string) error {
+	_, err := s.ReplaceAllocationsWithKeyRevision(ctx, subjectType, subjectID, allocations, idempotencyKey)
+	return err
+}
+
+func (s *Store) ReplaceAllocationsWithKeyRevision(ctx context.Context, subjectType, subjectID string, allocations []AllocationInput, idempotencyKey string) (AllocationRevision, error) {
+	return s.AppendAllocationRevision(ctx, AllocationRevisionInput{SubjectType: subjectType, SubjectID: subjectID, Allocations: allocations, IdempotencyKey: idempotencyKey, Source: "split", Reason: "replace allocation", Method: "split"})
 }
 
 func (s *Store) RepairModelCallAllocation(ctx context.Context, modelCallID, projectID string) error {
 	if strings.TrimSpace(projectID) == "" {
 		return errors.New("repair project id is required")
 	}
-	return s.replaceAllocations(ctx, "model_call", modelCallID, []AllocationInput{{ProjectID: projectID, BasisPoints: 10000}}, "manual")
+	_, err := s.AppendAllocationRevision(ctx, AllocationRevisionInput{SubjectType: "model_call", SubjectID: modelCallID, Allocations: []AllocationInput{{ProjectID: projectID, BasisPoints: 10000}}, IdempotencyKey: newID(), Source: "manual", Reason: "repair allocation", Method: "manual"})
+	return err
 }
 
 func (s *Store) AssignUnattributedModelCall(ctx context.Context, modelCallID, projectID string) error {
 	if strings.TrimSpace(modelCallID) == "" || strings.TrimSpace(projectID) == "" {
 		return errors.New("model call id and project id are required")
 	}
+	// The subject-scoped key makes concurrent retries converge on one
+	// assignment instead of creating two independent revisions.
+	_, err := s.AppendAllocationRevision(ctx, AllocationRevisionInput{SubjectType: "model_call", SubjectID: modelCallID, Allocations: []AllocationInput{{ProjectID: projectID, BasisPoints: 10000}}, IdempotencyKey: "assign:" + modelCallID, Source: "manual", Reason: "assign unattributed allocation", Method: "manual", RequireUnallocated: true})
+	return err
+}
+
+// AppendAllocationRevision records an allocation decision and atomically
+// refreshes the current projection. Historical revision rows are never edited.
+func (s *Store) AppendAllocationRevision(ctx context.Context, input AllocationRevisionInput) (AllocationRevision, error) {
+	if input.SubjectType != "model_call" || strings.TrimSpace(input.SubjectID) == "" {
+		return AllocationRevision{}, errors.New("only model_call allocations with a subject id are supported")
+	}
+	if strings.TrimSpace(input.IdempotencyKey) == "" {
+		return AllocationRevision{}, errors.New("allocation idempotency key is required")
+	}
+	if err := ValidateAllocations(input.Allocations); err != nil {
+		return AllocationRevision{}, err
+	}
+	if input.Method == "" {
+		input.Method = "manual"
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return AllocationRevision{}, err
+	}
+	defer rollback(tx)
+	var existing AllocationRevision
+	if err := readAllocationRevision(ctx, tx, input.SubjectType, input.SubjectID, input.IdempotencyKey, &existing); err == nil {
+		if input.RequireUnallocated && !sameAllocationInputs(existing.Allocations, input.Allocations) {
+			return AllocationRevision{}, errors.New("allocation idempotency key already belongs to a different assignment")
+		}
+		return existing, tx.Commit()
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return AllocationRevision{}, err
+	}
+	var exists int
+	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM model_calls WHERE id = ?`, input.SubjectID).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return AllocationRevision{}, fmt.Errorf("model call %q not found", input.SubjectID)
+		}
+		return AllocationRevision{}, fmt.Errorf("read model call allocation: %w", err)
+	}
+	if input.RequireUnallocated {
+		var hasHistory int
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM allocation_revisions WHERE subject_type = 'model_call' AND subject_id = ?)`, input.SubjectID).Scan(&hasHistory); err != nil {
+			return AllocationRevision{}, fmt.Errorf("read model call allocation history: %w", err)
+		}
+		if hasHistory != 0 {
+			return AllocationRevision{}, fmt.Errorf("model call %q already has allocations; use a split to replace them", input.SubjectID)
+		}
+	}
+	var parentID, previousHash string
+	var nextNumber int64
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(revision_number), 0), COALESCE((SELECT revision_id FROM allocation_revisions WHERE subject_type = ? AND subject_id = ? ORDER BY revision_number DESC, entry_id DESC LIMIT 1), ''), COALESCE((SELECT revision_hash FROM allocation_revisions WHERE subject_type = ? AND subject_id = ? ORDER BY revision_number DESC, entry_id DESC LIMIT 1), '') FROM allocation_revisions WHERE subject_type = ? AND subject_id = ?`, input.SubjectType, input.SubjectID, input.SubjectType, input.SubjectID, input.SubjectType, input.SubjectID).Scan(&nextNumber, &parentID, &previousHash); err != nil {
+		return AllocationRevision{}, err
+	}
+	nextNumber++
+	revision := AllocationRevision{ID: newID(), SubjectType: input.SubjectType, SubjectID: input.SubjectID, RevisionNumber: nextNumber, ParentRevisionID: parentID, IdempotencyKey: input.IdempotencyKey, Author: input.Author, Source: input.Source, Reason: input.Reason, CreatedAt: time.Now().UTC(), Allocations: make([]Allocation, 0, len(input.Allocations))}
+	revision.PreviousHash = previousHash
+	hashInputs := append([]AllocationInput(nil), input.Allocations...)
+	for i := range hashInputs {
+		hashInputs[i].Method, hashInputs[i].Confidence = input.Method, "high"
+	}
+	revision.RevisionHash = allocationRevisionHash(revision, hashInputs, previousHash)
+	for _, a := range input.Allocations {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO allocation_revisions (revision_id, entry_id, subject_type, subject_id, revision_number, parent_revision_id, idempotency_key, project_id, allocation_basis_points, allocation_method, confidence, author, source, reason, created_at, previous_revision_hash, revision_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, revision.ID, newID(), revision.SubjectType, revision.SubjectID, revision.RevisionNumber, revision.ParentRevisionID, revision.IdempotencyKey, a.ProjectID, a.BasisPoints, input.Method, "high", revision.Author, revision.Source, revision.Reason, timestamp(revision.CreatedAt), revision.PreviousHash, revision.RevisionHash); err != nil {
+			return AllocationRevision{}, fmt.Errorf("append allocation revision: %w", err)
+		}
+		revision.Allocations = append(revision.Allocations, Allocation{ProjectID: a.ProjectID, BasisPoints: a.BasisPoints, Method: input.Method, Confidence: "high"})
+	}
+	if err := replaceAllocationProjection(ctx, tx, revision); err != nil {
+		return AllocationRevision{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO allocation_revision_heads(subject_type, subject_id, revision_id, revision_hash) VALUES(?,?,?,?) ON CONFLICT(subject_type, subject_id) DO UPDATE SET revision_id=excluded.revision_id, revision_hash=excluded.revision_hash`, revision.SubjectType, revision.SubjectID, revision.ID, revision.RevisionHash); err != nil {
+		return AllocationRevision{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return AllocationRevision{}, err
+	}
+	// Resolve slugs from the authoritative project table before returning the
+	// revision so API, revert, and MCP callers receive the complete projection.
+	revision.Allocations, err = revisionAllocations(ctx, s.db, revision.ID)
+	if err != nil {
+		return AllocationRevision{}, err
+	}
+	return revision, nil
+}
+
+func sameAllocationInputs(existing []Allocation, requested []AllocationInput) bool {
+	if len(existing) != len(requested) {
+		return false
+	}
+	left, right := make([]string, 0, len(existing)), make([]string, 0, len(requested))
+	for _, a := range existing {
+		left = append(left, fmt.Sprintf("%s|%d", a.ProjectID, a.BasisPoints))
+	}
+	for _, a := range requested {
+		right = append(right, fmt.Sprintf("%s|%d", a.ProjectID, a.BasisPoints))
+	}
+	sort.Strings(left)
+	sort.Strings(right)
+	return slices.Equal(left, right)
+}
+
+// AllocationHistory returns immutable revisions in deterministic order.
+func (s *Store) AllocationHistory(ctx context.Context, subjectType, subjectID string) ([]AllocationRevision, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT revision_id, revision_number, parent_revision_id, idempotency_key, author, source, reason, created_at, previous_revision_hash, revision_hash FROM allocation_revisions WHERE subject_type = ? AND subject_id = ? GROUP BY revision_id, revision_number, parent_revision_id, idempotency_key, author, source, reason, created_at, previous_revision_hash, revision_hash ORDER BY revision_number, revision_id`, subjectType, subjectID)
+	if err != nil {
+		return nil, err
+	}
+	metadata := make([]AllocationRevision, 0)
+	for rows.Next() {
+		var r AllocationRevision
+		var created string
+		if err := rows.Scan(&r.ID, &r.RevisionNumber, &r.ParentRevisionID, &r.IdempotencyKey, &r.Author, &r.Source, &r.Reason, &created, &r.PreviousHash, &r.RevisionHash); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		r.SubjectType, r.SubjectID = subjectType, subjectID
+		r.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
+		if err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		metadata = append(metadata, r)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	result := make([]AllocationRevision, 0, len(metadata))
+	for _, r := range metadata {
+		r.Allocations, err = revisionAllocations(ctx, s.db, r.ID)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, r)
+	}
+	return result, nil
+}
+
+// RevertAllocationRevision appends a revision restoring the selected revision's parent.
+func (s *Store) RevertAllocationRevision(ctx context.Context, revisionID, idempotencyKey, reason string) (AllocationRevision, error) {
+	if strings.TrimSpace(revisionID) == "" || strings.TrimSpace(reason) == "" {
+		return AllocationRevision{}, errors.New("revision id and reason are required")
+	}
+	var subjectType, subjectID, parentID string
+	if err := s.db.QueryRowContext(ctx, `SELECT subject_type, subject_id, parent_revision_id FROM allocation_revisions WHERE revision_id = ? LIMIT 1`, revisionID).Scan(&subjectType, &subjectID, &parentID); err != nil {
+		return AllocationRevision{}, err
+	}
+	if parentID == "" {
+		return AllocationRevision{}, errors.New("cannot revert the first allocation revision")
+	}
+	allocations, err := revisionAllocations(ctx, s.db, parentID)
+	if err != nil {
+		return AllocationRevision{}, err
+	}
+	inputs := make([]AllocationInput, 0, len(allocations))
+	for _, a := range allocations {
+		inputs = append(inputs, AllocationInput{ProjectID: a.ProjectID, BasisPoints: a.BasisPoints, Method: a.Method, Confidence: a.Confidence})
+	}
+	return s.AppendAllocationRevision(ctx, AllocationRevisionInput{SubjectType: subjectType, SubjectID: subjectID, Allocations: inputs, IdempotencyKey: idempotencyKey, Source: "revert", Reason: reason, Method: "revert"})
+}
+
+// RebuildAllocationProjection reconstructs current state solely from history.
+func (s *Store) RebuildAllocationProjection(ctx context.Context) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer rollback(tx)
-	var exists int
-	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM model_calls WHERE id = ?`, modelCallID).Scan(&exists); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("model call %q not found", modelCallID)
+	rows, err := tx.QueryContext(ctx, `SELECT revision_id, subject_type, subject_id FROM allocation_revisions r WHERE revision_number = (SELECT MAX(r2.revision_number) FROM allocation_revisions r2 WHERE r2.subject_type = r.subject_type AND r2.subject_id = r.subject_id) GROUP BY subject_type, subject_id`)
+	if err != nil {
+		return err
+	}
+	type subject struct{ id, typ, sid string }
+	latest := make([]subject, 0)
+	for rows.Next() {
+		var v subject
+		if err := rows.Scan(&v.id, &v.typ, &v.sid); err != nil {
+			return err
 		}
-		return fmt.Errorf("read model call allocation: %w", err)
+		latest = append(latest, v)
 	}
-	var allocationCount int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_allocations WHERE subject_type = 'model_call' AND subject_id = ?`, modelCallID).Scan(&allocationCount); err != nil {
-		return fmt.Errorf("read model call allocations: %w", err)
+	if err := rows.Err(); err != nil {
+		return err
 	}
-	if allocationCount > 0 {
-		return fmt.Errorf("model call %q already has allocations; use a split to replace them", modelCallID)
+	if err := rows.Close(); err != nil {
+		return err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO usage_allocations (id, subject_type, subject_id, project_id, allocation_basis_points, allocation_method, confidence, created_at) VALUES (?, 'model_call', ?, ?, 10000, 'manual', 'high', ?)`, newID(), modelCallID, projectID, timestamp(time.Now())); err != nil {
-		return fmt.Errorf("insert allocation: %w", err)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM usage_allocations`); err != nil {
+		return err
+	}
+	for _, v := range latest {
+		r := AllocationRevision{ID: v.id, SubjectType: v.typ, SubjectID: v.sid}
+		if err := loadRevisionTx(ctx, tx, &r); err != nil {
+			return err
+		}
+		if err := insertProjection(ctx, tx, r); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
 
-func (s *Store) replaceAllocations(ctx context.Context, subjectType, subjectID string, allocations []AllocationInput, method string) error {
-	if subjectType != "model_call" {
-		return errors.New("only model_call allocations are supported")
+type allocationQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func allocationRevisionHash(revision AllocationRevision, allocations []AllocationInput, previous string) string {
+	parts := make([]string, 0, len(allocations))
+	for _, a := range allocations {
+		parts = append(parts, lengthSafeFields(a.ProjectID, strconv.FormatInt(a.BasisPoints, 10), a.Method, a.Confidence))
 	}
-	if strings.TrimSpace(subjectID) == "" {
-		return errors.New("allocation subject id is required")
+	sort.Strings(parts)
+	return audit.Hash(revision.SubjectType+"\x00"+revision.SubjectID, lengthSafeFields(revision.ID, strconv.FormatInt(revision.RevisionNumber, 10), revision.ParentRevisionID, revision.IdempotencyKey, revision.Author, revision.Source, revision.Reason, timestamp(revision.CreatedAt), strings.Join(parts, "")), previous)
+}
+
+// lengthSafeFields prevents delimiter ambiguity when user-controlled metadata
+// contains separators or newlines.
+func lengthSafeFields(fields ...string) string {
+	var b strings.Builder
+	for _, field := range fields {
+		b.WriteString(strconv.Itoa(len(field)))
+		b.WriteByte(':')
+		b.WriteString(field)
 	}
-	if err := ValidateAllocations(allocations); err != nil {
+	return b.String()
+}
+
+func revisionAllocations(ctx context.Context, q allocationQueryer, revisionID string) (result []Allocation, err error) {
+	rows, err := q.QueryContext(ctx, `SELECT r.project_id, COALESCE(p.slug, 'unattributed'), r.allocation_basis_points, r.allocation_method, r.confidence FROM allocation_revisions r LEFT JOIN projects p ON p.id = r.project_id WHERE r.revision_id = ? ORDER BY COALESCE(p.slug, ''), COALESCE(r.project_id, ''), r.allocation_basis_points, r.allocation_method, r.confidence, r.entry_id`, revisionID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if closeErr := rows.Close(); err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}()
+	result = make([]Allocation, 0)
+	for rows.Next() {
+		var a Allocation
+		var projectID sql.NullString
+		if err := rows.Scan(&projectID, &a.ProjectSlug, &a.BasisPoints, &a.Method, &a.Confidence); err != nil {
+			return nil, err
+		}
+		a.ProjectID = projectID.String
+		result = append(result, a)
+	}
+	return result, rows.Err()
+}
+
+func readAllocationRevision(ctx context.Context, q allocationQueryer, subjectType, subjectID, key string, result *AllocationRevision) error {
+	var created string
+	if err := q.QueryRowContext(ctx, `SELECT revision_id, revision_number, parent_revision_id, author, source, reason, created_at, previous_revision_hash, revision_hash FROM allocation_revisions WHERE subject_type = ? AND subject_id = ? AND idempotency_key = ? LIMIT 1`, subjectType, subjectID, key).Scan(&result.ID, &result.RevisionNumber, &result.ParentRevisionID, &result.Author, &result.Source, &result.Reason, &created, &result.PreviousHash, &result.RevisionHash); err != nil {
 		return err
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	result.SubjectType, result.SubjectID, result.IdempotencyKey = subjectType, subjectID, key
+	parsed, err := time.Parse(time.RFC3339Nano, created)
 	if err != nil {
 		return err
 	}
-	defer rollback(tx)
-	var exists int
-	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM model_calls WHERE id = ?`, subjectID).Scan(&exists); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("model call %q not found", subjectID)
+	result.CreatedAt = parsed
+	result.Allocations, err = revisionAllocations(ctx, q, result.ID)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func replaceAllocationProjection(ctx context.Context, tx *sql.Tx, revision AllocationRevision) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM usage_allocations WHERE subject_type = ? AND subject_id = ?`, revision.SubjectType, revision.SubjectID); err != nil {
+		return fmt.Errorf("replace allocation projection: %w", err)
+	}
+	return insertProjection(ctx, tx, revision)
+}
+
+func loadRevisionTx(ctx context.Context, tx *sql.Tx, revision *AllocationRevision) error {
+	var err error
+	var created string
+	if err = tx.QueryRowContext(ctx, `SELECT revision_number, parent_revision_id, idempotency_key, author, source, reason, created_at FROM allocation_revisions WHERE revision_id = ? LIMIT 1`, revision.ID).Scan(&revision.RevisionNumber, &revision.ParentRevisionID, &revision.IdempotencyKey, &revision.Author, &revision.Source, &revision.Reason, &created); err != nil {
+		return err
+	}
+	revision.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
+	if err != nil {
+		return fmt.Errorf("parse allocation revision created_at: %w", err)
+	}
+	revision.Allocations, err = revisionAllocations(ctx, tx, revision.ID)
+	return err
+}
+
+func insertProjection(ctx context.Context, tx *sql.Tx, revision AllocationRevision) error {
+	for ordinal, a := range revision.Allocations {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO usage_allocations (id, subject_type, subject_id, project_id, allocation_basis_points, allocation_method, confidence, created_at, allocation_ordinal) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, newID(), revision.SubjectType, revision.SubjectID, nullable(a.ProjectID), a.BasisPoints, a.Method, a.Confidence, timestamp(revision.CreatedAt), ordinal); err != nil {
+			return fmt.Errorf("insert allocation projection: %w", err)
 		}
-		return fmt.Errorf("read model call allocation: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM usage_allocations WHERE subject_type = ? AND subject_id = ?`, subjectType, subjectID); err != nil {
-		return fmt.Errorf("replace allocations: %w", err)
-	}
-	for _, allocation := range allocations {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO usage_allocations (id, subject_type, subject_id, project_id, allocation_basis_points, allocation_method, confidence, created_at) VALUES (?, ?, ?, ?, ?, ?, 'high', ?)`, newID(), subjectType, subjectID, allocation.ProjectID, allocation.BasisPoints, method, timestamp(time.Now())); err != nil {
-			return fmt.Errorf("insert allocation: %w", err)
-		}
-	}
-	return tx.Commit()
+	return nil
 }
 
 func (s *Store) ModelCallAllocations(ctx context.Context, modelCallID string) ([]Allocation, error) {
@@ -2066,7 +2721,7 @@ func (s *Store) Usage(ctx context.Context, query UsageQuery) (UsageReport, error
 	// Calls without an allocation are still ledger evidence. Report them once as
 	// unattributed (or under their direct project when legacy data has one),
 	// rather than silently omitting their tokens from rows.
-	rows, err := s.db.QueryContext(ctx, `SELECT c.id, COALESCE(a.id, ''), COALESCE(allocated.slug, direct.slug, 'unattributed'), c.agent_name, c.provider, c.model_id, c.capture_quality, c.input_tokens, c.output_tokens, c.reasoning_tokens, c.cached_input_tokens, c.cache_write_tokens, c.total_tokens, c.estimated_cost_usd_micros, COALESCE(a.allocation_basis_points, 10000) FROM model_calls c LEFT JOIN usage_allocations a ON a.subject_type = 'model_call' AND a.subject_id = c.id LEFT JOIN projects allocated ON allocated.id = a.project_id LEFT JOIN projects direct ON direct.id = c.primary_project_id`+where+` ORDER BY c.id, a.id`, args...)
+	rows, err := s.db.QueryContext(ctx, `SELECT c.id, COALESCE(a.id, ''), COALESCE(allocated.slug, direct.slug, 'unattributed'), c.agent_name, c.provider, c.model_id, c.capture_quality, c.input_tokens, c.output_tokens, c.reasoning_tokens, c.cached_input_tokens, c.cache_write_tokens, c.total_tokens, c.estimated_cost_usd_micros, COALESCE(a.allocation_basis_points, 10000) FROM model_calls c LEFT JOIN usage_allocations a ON a.subject_type = 'model_call' AND a.subject_id = c.id LEFT JOIN projects allocated ON allocated.id = a.project_id LEFT JOIN projects direct ON direct.id = c.primary_project_id`+where+` ORDER BY c.id, COALESCE(a.allocation_ordinal, 0), a.id`, args...)
 	if err != nil {
 		return UsageReport{}, err
 	}
@@ -2387,7 +3042,7 @@ func (s *Store) usageMeasurements(ctx context.Context, query UsageQuery) ([]Meas
 	allocationQuery := query
 	allocationQuery.ProjectSlug = ""
 	where, args := usageWindow(allocationQuery)
-	measurementQuery := `SELECT c.id, COALESCE(p.slug, 'unattributed'), c.capture_quality, c.input_tokens, c.output_tokens, c.reasoning_tokens, c.cached_input_tokens, c.cache_write_tokens, c.total_tokens, c.estimated_cost_usd_micros, COALESCE(a.allocation_basis_points, 10000) FROM model_calls c LEFT JOIN usage_allocations a ON a.subject_type = 'model_call' AND a.subject_id = c.id LEFT JOIN projects p ON p.id = a.project_id` + where + ` ORDER BY c.id, a.id`
+	measurementQuery := `SELECT c.id, COALESCE(p.slug, 'unattributed'), c.capture_quality, c.input_tokens, c.output_tokens, c.reasoning_tokens, c.cached_input_tokens, c.cache_write_tokens, c.total_tokens, c.estimated_cost_usd_micros, COALESCE(a.allocation_basis_points, 10000) FROM model_calls c LEFT JOIN usage_allocations a ON a.subject_type = 'model_call' AND a.subject_id = c.id LEFT JOIN projects p ON p.id = a.project_id` + where + ` ORDER BY c.id, COALESCE(a.allocation_ordinal, 0), a.id`
 	rows, err := s.db.QueryContext(ctx, measurementQuery, args...)
 	if err != nil {
 		return nil, fmt.Errorf("read usage measurements: %w", err)
@@ -2614,6 +3269,70 @@ func (s *Store) HasRecentAdapterEvidence(ctx context.Context, query AdapterEvide
 	return found, err
 }
 
+// HasCorrelatedAdapterEvidence requires model evidence and its lifecycle
+// evidence to share the same qlog session; raw_event linkage is enforced by
+// the model_calls.raw_event_id join rather than independent existence checks.
+func (s *Store) HasCorrelatedAdapterEvidence(ctx context.Context, model, lifecycle AdapterEvidenceQuery) (bool, error) {
+	if model.Source == "" || lifecycle.Source == "" {
+		return false, errors.New("model and lifecycle sources are required")
+	}
+	modelPredicates := []string{"r.source = ?", "c.capture_quality = ?", "c.total_tokens > 0", "COALESCE(r.session_id,'') <> ''"}
+	args := []any{model.Source, model.RequiredQuality}
+	if len(model.AllowedAgentNames) == 0 {
+		modelPredicates = append(modelPredicates, "lower(c.agent_name) = lower(?)")
+		args = append(args, model.AdapterID)
+	} else {
+		placeholders := make([]string, 0, len(model.AllowedAgentNames))
+		for _, name := range model.AllowedAgentNames {
+			placeholders = append(placeholders, "lower(?)")
+			args = append(args, name)
+		}
+		modelPredicates = append(modelPredicates, "lower(c.agent_name) IN ("+strings.Join(placeholders, ",")+")")
+	}
+	if model.RequiredProvider != "" {
+		modelPredicates = append(modelPredicates, "lower(c.provider) = lower(?)")
+		args = append(args, model.RequiredProvider)
+	}
+	if model.RequireCodexResponseCompleted {
+		modelPredicates = append(modelPredicates, "json_extract(r.payload_json_sanitized, '$.codex_response_completed') = 1")
+	}
+	if !model.From.IsZero() {
+		modelPredicates = append(modelPredicates, "r.occurred_at >= ?")
+		args = append(args, timestamp(model.From))
+	}
+	if !model.To.IsZero() {
+		modelPredicates = append(modelPredicates, "r.occurred_at < ?")
+		args = append(args, timestamp(model.To))
+	}
+	if model.ProjectSlug != "" {
+		modelPredicates = append(modelPredicates, "EXISTS (SELECT 1 FROM projects mp WHERE mp.id = c.primary_project_id AND mp.slug = ?)")
+		args = append(args, normalizeSlug(model.ProjectSlug))
+	}
+	lifecyclePredicates := []string{"l.source = ?", "COALESCE(l.session_id,'') = COALESCE(r.session_id,'')"}
+	lifecycleArgs := []any{lifecycle.Source}
+	if lifecycle.RequiredQuality != "" {
+		lifecyclePredicates = append(lifecyclePredicates, "lower(COALESCE(json_extract(l.payload_json_sanitized, '$.capture_quality'), '')) = lower(?)")
+		lifecycleArgs = append(lifecycleArgs, lifecycle.RequiredQuality)
+	}
+	if !lifecycle.From.IsZero() {
+		lifecyclePredicates = append(lifecyclePredicates, "l.occurred_at >= ?")
+		lifecycleArgs = append(lifecycleArgs, timestamp(lifecycle.From))
+	}
+	if !lifecycle.To.IsZero() {
+		lifecyclePredicates = append(lifecyclePredicates, "l.occurred_at < ?")
+		lifecycleArgs = append(lifecycleArgs, timestamp(lifecycle.To))
+	}
+	if lifecycle.ProjectSlug != "" {
+		lifecyclePredicates = append(lifecyclePredicates, "EXISTS (SELECT 1 FROM projects lp WHERE lp.id = l.project_id AND lp.slug = ?)")
+		lifecycleArgs = append(lifecycleArgs, normalizeSlug(lifecycle.ProjectSlug))
+	}
+	args = append(args, lifecycleArgs...)
+	var found bool
+	query := `SELECT EXISTS(SELECT 1 FROM raw_events r JOIN model_calls c ON c.raw_event_id=r.id WHERE ` + strings.Join(modelPredicates, " AND ") + ` AND EXISTS (SELECT 1 FROM raw_events l WHERE ` + strings.Join(lifecyclePredicates, " AND ") + `))`
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(&found)
+	return found, err
+}
+
 func validateGroupBy(groupBy []string) error {
 	if len(groupBy) == 0 {
 		return errors.New("at least one group-by dimension is required")
@@ -2737,6 +3456,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	var appliedHashMigration, appliedHeadMigration bool
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
 			continue
@@ -2768,8 +3488,97 @@ func (s *Store) migrate(ctx context.Context) error {
 		if err := tx.Commit(); err != nil {
 			return err
 		}
+		if entry.Name() == "015_allocation_revision_hashes.sql" {
+			appliedHashMigration = true
+		}
+		if entry.Name() == "016_allocation_revision_heads.sql" {
+			appliedHeadMigration = true
+		}
+	}
+	if appliedHashMigration {
+		if err := s.backfillAllocationRevisionHashes(ctx); err != nil {
+			return err
+		}
+	}
+	if appliedHeadMigration {
+		if err := s.backfillAllocationRevisionHeads(ctx); err != nil {
+			return err
+		}
 	}
 	return s.backfillReconstructableIngestionIdentities(ctx)
+}
+
+func (s *Store) backfillAllocationRevisionHeads(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO allocation_revision_heads(subject_type, subject_id, revision_id, revision_hash)
+		SELECT r.subject_type, r.subject_id, r.revision_id, r.revision_hash FROM allocation_revisions r
+		WHERE r.revision_number=(SELECT MAX(r2.revision_number) FROM allocation_revisions r2 WHERE r2.subject_type=r.subject_type AND r2.subject_id=r.subject_id)`)
+	return err
+}
+
+// backfillAllocationRevisionHashes gives migration-created revisions the same
+// integrity guarantees as newly appended revisions. It is idempotent and only
+// fills rows whose hash is absent; an existing non-empty hash is never changed.
+func (s *Store) backfillAllocationRevisionHashes(ctx context.Context) error {
+	type row struct {
+		id, subjectType, subjectID, parent, key, author, source, reason, created, previous, hash string
+		number                                                                                   int64
+		project                                                                                  string
+		bp                                                                                       int64
+		method, confidence                                                                       string
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT revision_id, subject_type, subject_id, revision_number, parent_revision_id, idempotency_key, COALESCE(project_id, ''), allocation_basis_points, allocation_method, confidence, author, source, reason, created_at, previous_revision_hash, revision_hash FROM allocation_revisions ORDER BY subject_type, subject_id, revision_number, entry_id`)
+	if err != nil {
+		return err
+	}
+	groups := make(map[string]*AllocationRevision)
+	order := make([]string, 0)
+	for rows.Next() {
+		var v row
+		if err := rows.Scan(&v.id, &v.subjectType, &v.subjectID, &v.number, &v.parent, &v.key, &v.project, &v.bp, &v.method, &v.confidence, &v.author, &v.source, &v.reason, &v.created, &v.previous, &v.hash); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		r := groups[v.id]
+		if r == nil {
+			parsed, e := time.Parse(time.RFC3339Nano, v.created)
+			if e != nil {
+				_ = rows.Close()
+				return e
+			}
+			r = &AllocationRevision{ID: v.id, SubjectType: v.subjectType, SubjectID: v.subjectID, RevisionNumber: v.number, ParentRevisionID: v.parent, IdempotencyKey: v.key, Author: v.author, Source: v.source, Reason: v.reason, CreatedAt: parsed, PreviousHash: v.previous, RevisionHash: v.hash}
+			groups[v.id] = r
+			order = append(order, v.id)
+		}
+		r.Allocations = append(r.Allocations, Allocation{ProjectID: v.project, BasisPoints: v.bp, Method: v.method, Confidence: v.confidence})
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+	for _, id := range order {
+		r := groups[id]
+		if r.RevisionHash != "" {
+			continue
+		}
+		r.RevisionHash = allocationRevisionHash(*r, func() []AllocationInput {
+			out := make([]AllocationInput, 0, len(r.Allocations))
+			for _, a := range r.Allocations {
+				out = append(out, AllocationInput{ProjectID: a.ProjectID, BasisPoints: a.BasisPoints, Method: a.Method, Confidence: a.Confidence})
+			}
+			return out
+		}(), r.PreviousHash)
+		if _, err := tx.ExecContext(ctx, `UPDATE allocation_revisions SET previous_revision_hash=?, revision_hash=? WHERE revision_id=? AND revision_hash=''`, r.PreviousHash, r.RevisionHash, r.ID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func projectByLocation(ctx context.Context, tx *sql.Tx, path string) (domain.Project, domain.ProjectLocation, bool, error) {
@@ -2994,7 +3803,11 @@ func newID() string {
 	return hex.EncodeToString(bytes)
 }
 
-func timestamp(value time.Time) string { return value.UTC().Format(time.RFC3339Nano) }
+// timestamp uses fixed-width nanoseconds so SQLite TEXT ordering is numeric
+// chronological ordering even when adjacent values differ only in precision.
+func timestamp(value time.Time) string {
+	return value.UTC().Format("2006-01-02T15:04:05.000000000Z07:00")
+}
 
 func parseTimestamp(value string) time.Time {
 	parsed, _ := time.Parse(time.RFC3339Nano, value)

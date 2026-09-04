@@ -1,0 +1,129 @@
+name: Artifact lifecycle
+
+on:
+  workflow_dispatch:
+    inputs:
+      from_version:
+        description: Exact immutable source release tag (leave all inputs empty for contract-only validation)
+        required: false
+        type: string
+      to_version:
+        description: Exact immutable target release tag (leave all inputs empty for contract-only validation)
+        required: false
+        type: string
+      release_base:
+        description: HTTPS release download base (leave all inputs empty for contract-only validation)
+        required: false
+        type: string
+      sentinel_payload_sha256:
+        description: SHA-256 of the sanitized lifecycle sentinel payload (required for live mode)
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      from_version:
+        description: Exact immutable source release tag
+        required: false
+        default: ''
+        type: string
+      to_version:
+        description: Exact immutable target release tag
+        required: false
+        default: ''
+        type: string
+      release_base:
+        description: HTTPS release download base
+        required: false
+        default: ''
+        type: string
+      sentinel_payload_sha256:
+        description: SHA-256 of the sanitized lifecycle sentinel payload (required for live mode)
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate-inputs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      live: ${{ steps.mode.outputs.live }}
+    steps:
+      - name: Select contract-only or live artifact mode
+        id: mode
+        shell: bash
+        env:
+          FROM_VERSION: ${{ inputs.from_version }}
+          TO_VERSION: ${{ inputs.to_version }}
+          RELEASE_BASE: ${{ inputs.release_base }}
+          SENTINEL_SHA256: ${{ inputs.sentinel_payload_sha256 }}
+        run: |
+          set -eu
+          supplied=0
+          [ -z "$FROM_VERSION" ] || supplied=$((supplied + 1))
+          [ -z "$TO_VERSION" ] || supplied=$((supplied + 1))
+          [ -z "$RELEASE_BASE" ] || supplied=$((supplied + 1))
+          if [ "$supplied" -eq 0 ]; then
+            [ -z "$SENTINEL_SHA256" ] || { echo 'sentinel_payload_sha256 is only valid for live mode' >&2; exit 2; }
+            echo 'live=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$supplied" -ne 3 ]; then
+            echo 'from_version, to_version, and release_base must be supplied together' >&2
+            exit 2
+          fi
+          [[ "$SENTINEL_SHA256" =~ ^[0-9a-fA-F]{64}$ ]] || { echo 'sentinel_payload_sha256 must be exactly 64 hexadecimal characters' >&2; exit 2; }
+          [[ "$FROM_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo 'from_version must be an exact v-prefixed release tag' >&2; exit 2; }
+          [[ "$TO_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo 'to_version must be an exact v-prefixed release tag' >&2; exit 2; }
+          [ "$FROM_VERSION" != "$TO_VERSION" ] || { echo 'from_version and to_version must differ' >&2; exit 2; }
+          case "${FROM_VERSION,,}:${TO_VERSION,,}" in *latest*) echo 'mutable version selectors are forbidden' >&2; exit 2 ;; esac
+          case "$RELEASE_BASE" in https://*) ;; *) echo 'release_base must use HTTPS' >&2; exit 2 ;; esac
+          case "${RELEASE_BASE,,}" in *latest*|*'?'*|*'#'*) echo 'release_base must not contain a mutable selector, query, or fragment' >&2; exit 2 ;; esac
+          echo 'live=true' >> "$GITHUB_OUTPUT"
+
+  lifecycle:
+    needs: validate-inputs
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      QLOG_FROM_VERSION: ${{ inputs.from_version || 'v0.0.0-contract-from' }}
+      QLOG_TO_VERSION: ${{ inputs.to_version || 'v0.0.0-contract-to' }}
+      QLOG_RELEASE_BASE: ${{ inputs.release_base || 'https://invalid.example/releases' }}
+      QLOG_SENTINEL_PAYLOAD_SHA256: ${{ inputs.sentinel_payload_sha256 }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate POSIX lifecycle contract
+        if: runner.os != 'Windows' && needs.validate-inputs.outputs.live != 'true'
+        shell: bash
+        run: sh scripts/acceptance/release-lifecycle.sh --contract-only
+      - name: Validate PowerShell lifecycle contract
+        if: runner.os == 'Windows' && needs.validate-inputs.outputs.live != 'true'
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/acceptance/release-lifecycle.ps1 -ContractOnly
+      - name: Run POSIX artifact lifecycle
+        if: runner.os != 'Windows' && needs.validate-inputs.outputs.live == 'true'
+        shell: bash
+        env:
+          QLOG_EVIDENCE_DIR: ${{ runner.temp }}/qlog-release-lifecycle-evidence
+        run: sh scripts/acceptance/release-lifecycle.sh
+      - name: Run PowerShell artifact lifecycle
+        if: runner.os == 'Windows' && needs.validate-inputs.outputs.live == 'true'
+        shell: pwsh
+        env:
+          QLOG_EVIDENCE_DIR: ${{ runner.temp }}/qlog-release-lifecycle-evidence
+        run: pwsh -NoProfile -File scripts/acceptance/release-lifecycle.ps1
+      - name: Upload bounded lifecycle evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: artifact-lifecycle-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/qlog-release-lifecycle-evidence
+          if-no-files-found: ignore
+          retention-days: 14

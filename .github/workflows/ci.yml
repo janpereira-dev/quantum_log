@@ -11,6 +11,9 @@ permissions:
   contents: read
 
 jobs:
+  artifact-lifecycle-contract:
+    uses: ./.github/workflows/artifact-lifecycle.yml
+
   release-config:
     runs-on: ubuntu-latest
     steps:

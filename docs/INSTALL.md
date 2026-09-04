@@ -1,17 +1,20 @@
 # Install QUANTUM_LOG
 
-Install `qlog`, then initialize a local ledger. The source CLI currently declares
-`v0.4.0-rc10`. The npm distribution package still declares `v0.3.2-rc.3`; it has
-not yet been aligned with the current CLI candidate. Existing P0 evidence covers
-prior candidates only, not a public release acceptance.
+`v0.4.0-rc10` is a published prerelease. It points to commit
+`35ae43bd0031b3aca2621c52ede74731ae136357` and has GitHub Release archives,
+`checksums.txt`, a Sigstore bundle for that checksum file, and per-archive SBOMs.
+This proves artifact availability, not stable-release readiness or external E2E.
 
-## Verified published release installer
+No stable `v0.4.0` release has been published. `v0.4.0-rc10` is a prerelease,
+and the older stable release line is not the supported evaluation path.
 
-Use the release installer, not `go install` or the legacy npm package. It
-downloads the matching GitHub Release archive and verifies its SHA-256 entry in
-`checksums.txt` before replacing the binary.
+## Published RC installer
 
-After `v0.4.0-rc10` is published, install that exact release on macOS or Linux:
+Use the versioned release installer. It downloads the matching GitHub Release
+archive and verifies its SHA-256 entry in `checksums.txt` before replacing the
+binary.
+
+On macOS or Linux:
 
 ```sh
 curl --fail --location --remote-name https://raw.githubusercontent.com/janpereira-dev/quantum_log/v0.4.0-rc10/installers/install.sh
@@ -25,8 +28,8 @@ Invoke-WebRequest https://raw.githubusercontent.com/janpereira-dev/quantum_log/v
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 --version v0.4.0-rc10
 ```
 
-Use `--channel latest` only to evaluate the newest published candidate; it can
-select prereleases. The default `stable` channel deliberately excludes alpha,
+Use `--channel latest` only to evaluate the newest published candidate; it may
+select a prerelease. The default `stable` channel deliberately excludes alpha,
 beta, and RC releases.
 
 ```sh
@@ -37,59 +40,97 @@ sh install.sh --channel latest
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 --channel latest
 ```
 
-The operator must first create and push the release tag (for example,
-`git tag -a v0.4.0-rc10 -m "release: v0.4.0-rc10"` followed by `git push origin
-v0.4.0-rc10`). The pushed `v*` tag triggers the release workflow, which then
-publishes the artifacts and GitHub Release consumed by these installers. Until
-that completes, no public RC artifact exists.
+The pushed `v*` tag triggers the release workflow. That workflow publishes the
+archives consumed by `installers/install.sh` and `installers/install.ps1`.
+RC10 is already published; do not recreate, move, or overwrite its tag.
 
-## Legacy local packaging validation (not an RC install)
+## Verify release authenticity
 
-Requires Node.js 18 or later.
+The installers verify an archive's SHA-256 digest, which detects corruption but
+does not by itself prove who produced `checksums.txt`. Before evaluating a
+downloaded release, install [Cosign](https://docs.sigstore.dev/cosign/system_config/installation/)
+and verify the checksum bundle against the exact GitHub Actions issuer and this
+repository's release workflow identity.
 
-```powershell
-cmd /c "set QLOG_INSTALL_LOCAL_ARTIFACT_DIR=C:\path\to\dist&& npm install --prefix C:\qlog-install .\packaging\npm"
+On macOS or Linux, the verifier downloads only the checksum manifest, its
+Sigstore bundle, and the archive plus SBOM for the current platform:
+
+```sh
+sh scripts/acceptance/verify-release-authenticity.sh \
+  --version v0.4.0-rc10 \
+  --release-base https://github.com/janpereira-dev/quantum_log/releases/download
 ```
 
-Run from repository root only when validating the legacy package. This path still expects generated
-`checksums.txt` and the exact host `v0.3.2-rc.3` archive. The installer selects the
-matching platform/architecture artifact, verifies SHA-256, and extracts only
-`qlog` or `qlog.exe`. It uses no telemetry. It is not a supported way to install
-`v0.4.0-rc10`; do not substitute `go install` for a published release artifact.
-
-Confirm installed binary:
+On Windows PowerShell 5.1 or PowerShell 7:
 
 ```powershell
-C:\qlog-install\node_modules\.bin\qlog.cmd --version
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/acceptance/verify-release-authenticity.ps1 `
+  -Version v0.4.0-rc10 `
+  -ReleaseBase https://github.com/janpereira-dev/quantum_log/releases/download
 ```
 
-P0 observed `qlog 0.3.2-rc.1`; one P0-11 extracted artifact also embedded commit `dba6ca4040b93b889ead41ec90d4b2ffd19226c1`. Do not substitute an older tag or archive.
+For an already downloaded release, replace `--release-base` with
+`--artifact-dir <directory>` (or `-ArtifactDir <directory>` in PowerShell).
+The verifier fails unless Cosign validates issuer
+`https://token.actions.githubusercontent.com`, the exact identity
+`https://github.com/janpereira-dev/quantum_log/.github/workflows/release.yml@refs/tags/<version>`,
+and the archive and its SBOM each have exactly one matching SHA-256 entry.
 
-**No public RC artifact exists yet.** Do not attempt `go install ...@v0.4.0-rc10`.
-Create and push the tag first; the release workflow publishes its artifacts
-afterward. Install an RC by its explicit verified release tag, while the default
-`stable` channel continues to reject prerelease tags.
+This is publisher/workflow authenticity plus artifact integrity. It is not a
+separate SLSA build-provenance attestation, stable-release approval, or
+clean-device real-agent E2E evidence.
+
+The authenticity verifier checks the exact complete release set: archives and
+SBOMs for macOS, Linux, and Windows on both amd64 and arm64. A missing,
+additional, duplicated, or corrupted manifest entry is a failure even when the
+current machine's own archive is valid.
+
+Release tags are serialized by the workflow. Before creating a draft, the
+privileged job confirms that the remote tag still resolves to the triggering
+commit and that no draft or published release already exists for that tag. It
+checks the remote tag again immediately before publication. Any pre-existing,
+moved, unavailable, or ambiguous state is **NO-GO** and requires a maintainer to
+reconcile the tag and GitHub Release manually before starting a new release;
+the workflow never overwrites or deletes that state automatically.
+
+## Legacy historical packaging evidence
+
+The unpublished npm thin distributor remains pinned to `v0.3.2-rc.3`. Earlier
+P0 evidence also exercised a locally generated `v0.3.2-rc.1` artifact at commit
+`dba6ca4040b93b889ead41ec90d4b2ffd19226c1`. Those dated checks are preserved as
+historical evidence only. The npm route is not supported for installing or
+verifying RC10, and it must not be used as current release evidence.
+
+Do not use `go install` to evaluate RC10: it bypasses the published archive and
+checksum lifecycle.
 
 ## Optional local setup
 
-Choose a dedicated local home if you want isolation:
+Choose a dedicated local home if you want isolation, then use the installed
+`qlog` executable:
 
 ```powershell
-$qlog = 'C:\qlog-install\node_modules\.bin\qlog.cmd'
 $env:QLOG_HOME = "$env:LOCALAPPDATA\QUANTUM_LOG"
-& $qlog init
-& $qlog project register --path . --name MY_PROJECT
-& $qlog setup --yes
-& $qlog doctor --json
+qlog init
+qlog project register --path . --name MY_PROJECT
+qlog setup --yes
+qlog doctor --json
 ```
 
-`setup --yes` is consented. It initializes ledger, attempts qlog-owned loopback collector on `127.0.0.1:4318`, then configures only detected stable adapters. Inspect plan without writes:
+`setup --yes` is consented. It initializes the ledger, attempts a qlog-owned
+loopback collector on `127.0.0.1:4318`, and configures only detected stable
+adapters. Inspect the plan without writes:
 
 ```powershell
-& $qlog setup --dry-run --json
+qlog setup --dry-run --json
 ```
 
-On Windows, if Task Scheduler denies managed collector creation with `Acceso denegado`, setup still configures detected integrations but does not create a detached process or a Startup-app fallback. Start `qlog collector serve --home <home>` in the active session before using an OTLP-only source. See [collector recovery](AUTOCAPTURE.md#collector-recovery) and [ADR-005](architecture/ADR-005-collector-lifecycle.md).
+On Windows, if Task Scheduler denies managed collector creation, setup still
+configures detected integrations but does not create a detached process or a
+Startup-app fallback. Start `qlog collector serve --home <home>` in the active
+session before using an OTLP-only source. See
+[collector recovery](AUTOCAPTURE.md#collector-recovery) and
+[ADR-005](architecture/ADR-005-collector-lifecycle.md).
 
 ## Cleanup
 
@@ -97,15 +138,12 @@ Remove every qlog-owned adapter configuration and collector before deleting the
 binary:
 
 ```powershell
-& $qlog uninstall --json
+qlog uninstall --json
 ```
 
-`uninstall` removes only qlog-owned setup, including a legacy Windows Startup
-entry created by older candidates. RC.10 retains local ledger data in every
-mode: `& $qlog uninstall --purge-data` is temporarily unavailable and fails
-closed with `data_purged: false`.
+RC10 retains local ledger data in every mode. Automatic `--purge-data` is
+temporarily unavailable and fails closed with `data_purged: false`.
 
-To remove data without relying on an automatic deletion workflow, first run
-`& $qlog uninstall --json`, back up the ledger, stop every `qlog collector
-serve` process, and manually remove only the verified ledger directory. Do not
-delete a home path until you have inspected it and confirmed it belongs to qlog.
+To remove data manually, first run `qlog uninstall --json`, back up the ledger,
+stop every `qlog collector serve` process, and inspect the resolved ledger
+directory before deleting it. Never delete an unverified home path.

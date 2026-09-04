@@ -4,6 +4,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -80,12 +81,28 @@ type assignUsageInput struct {
 }
 
 type splitUsageInput struct {
-	ModelCallID string           `json:"model_call_id" jsonschema:"model call identifier"`
-	Allocations []allocationPart `json:"allocations" jsonschema:"allocation shares totaling 10000 basis points"`
+	ModelCallID    string           `json:"model_call_id" jsonschema:"model call identifier"`
+	Allocations    []allocationPart `json:"allocations" jsonschema:"allocation shares totaling 10000 basis points"`
+	IdempotencyKey string           `json:"idempotency_key" jsonschema:"stable replay key for this split"`
+}
+
+type allocationHistoryInput struct {
+	ModelCallID string `json:"model_call_id" jsonschema:"model call identifier"`
+}
+type allocationRevertInput struct {
+	RevisionID     string `json:"revision_id" jsonschema:"revision identifier"`
+	IdempotencyKey string `json:"idempotency_key" jsonschema:"stable replay key"`
+	Reason         string `json:"reason" jsonschema:"reason for the correction"`
 }
 
 type allocationsOutput struct {
-	Allocations []sqlite.Allocation `json:"allocations"`
+	Allocations  []sqlite.Allocation `json:"allocations"`
+	RevisionID   string              `json:"revision_id,omitempty"`
+	RevisionHash string              `json:"revision_hash,omitempty"`
+}
+
+type allocationHistoryOutput struct {
+	Revisions []sqlite.AllocationRevision `json:"revisions"`
 }
 
 // New constructs a stdio-safe MCP server. Tool handlers open their own local
@@ -104,6 +121,8 @@ func New(home, version string) *mcp.Server {
 	mcp.AddTool(mcpServer, &mcp.Tool{Name: "get_unattributed_summary", Description: "List model calls without allocations and their repair queue."}, s.getUnattributedSummary)
 	mcp.AddTool(mcpServer, &mcp.Tool{Name: "assign_usage", Description: "Assign one unattributed model call to a project. Does not change observed tokens."}, s.assignUsage)
 	mcp.AddTool(mcpServer, &mcp.Tool{Name: "split_usage", Description: "Split one model call cost across projects with basis points totaling 10000."}, s.splitUsage)
+	mcp.AddTool(mcpServer, &mcp.Tool{Name: "allocation_history", Description: "Return immutable allocation revisions for a model call."}, s.allocationHistory)
+	mcp.AddTool(mcpServer, &mcp.Tool{Name: "revert_allocation", Description: "Undo the selected allocation revision by appending a revision that restores its parent allocation."}, s.revertAllocation)
 	return mcpServer
 }
 
@@ -288,11 +307,44 @@ func (s *server) splitUsage(ctx context.Context, _ *mcp.CallToolRequest, input s
 		}
 		allocations = append(allocations, sqlite.AllocationInput{ProjectID: project.ID, BasisPoints: part.BasisPoints})
 	}
-	if err := service.Store.ReplaceAllocations(ctx, "model_call", input.ModelCallID, allocations); err != nil {
+	if strings.TrimSpace(input.IdempotencyKey) == "" {
+		return nil, allocationsOutput{}, errors.New("idempotency_key is required for split_usage")
+	}
+	revision, err := service.Store.ReplaceAllocationsWithKeyRevision(ctx, "model_call", input.ModelCallID, allocations, input.IdempotencyKey)
+	if err != nil {
 		return nil, allocationsOutput{}, err
 	}
-	result, err := service.Store.ModelCallAllocations(ctx, input.ModelCallID)
-	return nil, allocationsOutput{Allocations: result}, err
+	history, err := service.Store.AllocationHistory(ctx, "model_call", input.ModelCallID)
+	if err != nil {
+		return nil, allocationsOutput{}, err
+	}
+	for _, item := range history {
+		if item.ID == revision.ID {
+			revision.Allocations = item.Allocations
+			break
+		}
+	}
+	return nil, allocationsOutput{Allocations: revision.Allocations, RevisionID: revision.ID, RevisionHash: revision.RevisionHash}, nil
+}
+
+func (s *server) allocationHistory(ctx context.Context, _ *mcp.CallToolRequest, input allocationHistoryInput) (*mcp.CallToolResult, allocationHistoryOutput, error) {
+	service, err := s.open(ctx)
+	if err != nil {
+		return nil, allocationHistoryOutput{}, err
+	}
+	defer func() { _ = service.Close() }()
+	items, err := service.Store.AllocationHistory(ctx, "model_call", input.ModelCallID)
+	return nil, allocationHistoryOutput{Revisions: items}, err
+}
+
+func (s *server) revertAllocation(ctx context.Context, _ *mcp.CallToolRequest, input allocationRevertInput) (*mcp.CallToolResult, sqlite.AllocationRevision, error) {
+	service, err := s.open(ctx)
+	if err != nil {
+		return nil, sqlite.AllocationRevision{}, err
+	}
+	defer func() { _ = service.Close() }()
+	item, err := service.Store.RevertAllocationRevision(ctx, input.RevisionID, input.IdempotencyKey, input.Reason)
+	return nil, item, err
 }
 
 func contextOutput(resolved app.ResolvedProject, contextID string) projectContext {

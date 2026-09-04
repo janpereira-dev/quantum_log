@@ -1,25 +1,51 @@
 # Copilot CLI Source Contract
 
-Source: GitHub Copilot CLI command reference, OpenTelemetry monitoring section: https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference
+Primary source: [GitHub Copilot CLI command reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference),
+OpenTelemetry monitoring section.
 
-## Supported configuration
+## Current status
 
-`qlog adapter install copilot` creates a qlog-owned `qlog-otel.env` beside its qlog-owned hook configuration. On Windows, it discovers the active Windows PowerShell `CurrentUserCurrentHost` profile with `powershell.exe -NoProfile -NonInteractive -Command $PROFILE.CurrentUserCurrentHost`, then adds a delimited qlog-owned OTel block to that exact profile. This supports redirected Documents locations, including OneDrive. The launcher resolves exactly one application from the current `PATH` before invoking it, so multiple `copilot` shims (for example npm/NVM and WinGet) cannot be passed to PowerShell's invocation operator as one concatenated command. It does not hard-code an installation manager path. It also writes matching qlog-owned current-user environment values as a complementary setting. Existing terminals retain their inherited environment; close them and launch a new PowerShell after setup. Uninstall removes only the qlog-owned profile block and environment values, preserving unrelated profile content and user-modified values. qlog backs up a preexisting profile before changing it.
+Copilot CLI is unsupported for stable capture. The implemented transport remains
+OTLP HTTP and is experimental/unverified: an isolated real Copilot CLI 1.0.78
+probe reached a healthy qlog collector boundary but persisted zero raw events and
+zero model calls. A successful Copilot command is not source evidence.
 
-Copilot CLI documents hooks and OTel environment variables, but not arbitrary persistent OTLP settings. On non-Windows shells, source `qlog-otel.env` before starting `copilot`.
+No replacement is authorized by ADR-006. The documented file exporter is
+diagnostic only because its real output included the `gen_ai.tool.definitions`
+attribute name with content capture false, while the value was deliberately not
+retained. That leaves the privacy veto unresolved.
+
+## Implemented configuration
+
+Current Windows install writes qlog-owned PowerShell profile blocks. The managed
+`copilot` function sets these values only in the child process environment and
+restores the previous process values after Copilot exits:
 
 - `COPILOT_OTEL_ENABLED=true`
 - `COPILOT_OTEL_EXPORTER_TYPE=otlp-http`
 - `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318`
 - `OTEL_EXPORTER_OTLP_PROTOCOL=http/json`
-- `OTEL_METRICS_EXPORTER=none`
-- `OTEL_LOGS_EXPORTER=none`
 - `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false`
 
-Only traces are enabled because this local receiver currently accepts traces and logs, not OTLP metrics. Hooks remain installed for lifecycle and CWD evidence. qlog does not configure headers, file export, prompt capture, response capture, tool arguments, tool results, credentials, or authorization fields.
+That path requires a reachable collector. Install/uninstall owns and removes only
+the delimited PowerShell profile blocks and its profile ownership state while
+preserving unrelated profile content. Registry/HKCU environment behavior is
+legacy cleanup only: current install does not create persistent current-user
+environment values, while uninstall may remove values proven to be owned by an
+older qlog installation. These statements describe existing setup behavior, not
+verified telemetry delivery.
 
-## Ingest contract
+## Evidence gate
 
-qlog accepts only local OTLP spans with trace and span IDs, a Copilot service identity, a model identity, and explicitly emitted non-negative token attributes. Every accepted token value retains its emitted raw key and `reported` provenance. An absent attribute remains absent; emitted `0` remains reported zero.
+Promotion requires a pinned producer version to deliver real model and
+non-negative token evidence with session/project correlation through an accepted
+transport. The privacy scan must prove that prompt, response, message, tool
+definition/argument/result, credential, environment-value, and path values do not
+reach the ledger or an unbounded transient store. Missing values remain missing;
+zero is reported only when explicitly emitted.
 
-No source E2E evidence is claimed here. Validate with `qlog adapter verify copilot` after a real local Copilot CLI session.
+Any future capture path must fail closed on a privacy or growth-cap violation by
+discarding/quarantining capture and marking usage unavailable. It must not alter
+the Copilot command result; the upstream agent result remains authoritative.
+
+See [`docs-int/verification/copilot-transport-spike.md`](../../../docs-int/verification/copilot-transport-spike.md).
