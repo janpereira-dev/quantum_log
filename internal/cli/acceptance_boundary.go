@@ -664,6 +664,11 @@ func validateAcceptanceManifestStatuses(manifest acceptanceManifest) error {
 			return fmt.Errorf("acceptance readiness is not derived from observed adapter state for %s", agent.AdapterID)
 		}
 	}
+	for _, item := range manifest.RealAgentEvidence {
+		if !expected[item.AgentID] {
+			return fmt.Errorf("acceptance evidence is orphaned for agent %q", item.AgentID)
+		}
+	}
 	evidence := make([]acceptancecontract.RealAgentEvidence, len(manifest.RealAgentEvidence))
 	copy(evidence, manifest.RealAgentEvidence)
 	agents := applyRealAgentEvidence(append([]acceptanceAgentResult(nil), manifest.Agents...), evidence)
