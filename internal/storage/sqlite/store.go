@@ -98,6 +98,8 @@ const (
 type AllocationInput struct {
 	ProjectID   string
 	BasisPoints int64
+	Method      string
+	Confidence  string
 }
 
 // AllocationRevisionInput describes one immutable allocation decision.
@@ -1341,7 +1343,7 @@ func (s *Store) verifyAllocationRevisionContents(ctx context.Context) error {
 		}
 		inputs := make([]AllocationInput, 0, len(allocations))
 		for _, a := range allocations {
-			inputs = append(inputs, AllocationInput{ProjectID: a.ProjectID, BasisPoints: a.BasisPoints})
+			inputs = append(inputs, AllocationInput{ProjectID: a.ProjectID, BasisPoints: a.BasisPoints, Method: a.Method, Confidence: a.Confidence})
 		}
 		if want := allocationRevisionHash(r, inputs, r.PreviousHash); want != r.RevisionHash {
 			return errors.New("allocation revision hash does not match content")
@@ -2054,7 +2056,11 @@ func (s *Store) AppendAllocationRevision(ctx context.Context, input AllocationRe
 	nextNumber++
 	revision := AllocationRevision{ID: newID(), SubjectType: input.SubjectType, SubjectID: input.SubjectID, RevisionNumber: nextNumber, ParentRevisionID: parentID, IdempotencyKey: input.IdempotencyKey, Author: input.Author, Source: input.Source, Reason: input.Reason, CreatedAt: time.Now().UTC(), Allocations: make([]Allocation, 0, len(input.Allocations))}
 	revision.PreviousHash = previousHash
-	revision.RevisionHash = allocationRevisionHash(revision, input.Allocations, previousHash)
+	hashInputs := append([]AllocationInput(nil), input.Allocations...)
+	for i := range hashInputs {
+		hashInputs[i].Method, hashInputs[i].Confidence = input.Method, "high"
+	}
+	revision.RevisionHash = allocationRevisionHash(revision, hashInputs, previousHash)
 	for _, a := range input.Allocations {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO allocation_revisions (revision_id, entry_id, subject_type, subject_id, revision_number, parent_revision_id, idempotency_key, project_id, allocation_basis_points, allocation_method, confidence, author, source, reason, created_at, previous_revision_hash, revision_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, revision.ID, newID(), revision.SubjectType, revision.SubjectID, revision.RevisionNumber, revision.ParentRevisionID, revision.IdempotencyKey, a.ProjectID, a.BasisPoints, input.Method, "high", revision.Author, revision.Source, revision.Reason, timestamp(revision.CreatedAt), revision.PreviousHash, revision.RevisionHash); err != nil {
 			return AllocationRevision{}, fmt.Errorf("append allocation revision: %w", err)
@@ -2127,7 +2133,7 @@ func (s *Store) RevertAllocationRevision(ctx context.Context, revisionID, idempo
 	}
 	inputs := make([]AllocationInput, 0, len(allocations))
 	for _, a := range allocations {
-		inputs = append(inputs, AllocationInput{ProjectID: a.ProjectID, BasisPoints: a.BasisPoints})
+		inputs = append(inputs, AllocationInput{ProjectID: a.ProjectID, BasisPoints: a.BasisPoints, Method: a.Method, Confidence: a.Confidence})
 	}
 	return s.AppendAllocationRevision(ctx, AllocationRevisionInput{SubjectType: subjectType, SubjectID: subjectID, Allocations: inputs, IdempotencyKey: idempotencyKey, Source: "revert", Reason: reason, Method: "revert"})
 }
@@ -2181,8 +2187,9 @@ type allocationQueryer interface {
 func allocationRevisionHash(revision AllocationRevision, allocations []AllocationInput, previous string) string {
 	parts := make([]string, 0, len(allocations))
 	for _, a := range allocations {
-		parts = append(parts, fmt.Sprintf("%s=%d", a.ProjectID, a.BasisPoints))
+		parts = append(parts, fmt.Sprintf("%s=%d=%s=%s", a.ProjectID, a.BasisPoints, a.Method, a.Confidence))
 	}
+	sort.Strings(parts)
 	return audit.Hash(revision.SubjectType+"\x00"+revision.SubjectID, strings.Join([]string{revision.ID, strconv.FormatInt(revision.RevisionNumber, 10), revision.ParentRevisionID, revision.IdempotencyKey, revision.Author, revision.Source, revision.Reason, timestamp(revision.CreatedAt), strings.Join(parts, ",")}, "\n"), previous)
 }
 
@@ -3229,7 +3236,7 @@ func (s *Store) backfillAllocationRevisionHashes(ctx context.Context) error {
 		r.RevisionHash = allocationRevisionHash(*r, func() []AllocationInput {
 			out := make([]AllocationInput, 0, len(r.Allocations))
 			for _, a := range r.Allocations {
-				out = append(out, AllocationInput{ProjectID: a.ProjectID, BasisPoints: a.BasisPoints})
+				out = append(out, AllocationInput{ProjectID: a.ProjectID, BasisPoints: a.BasisPoints, Method: a.Method, Confidence: a.Confidence})
 			}
 			return out
 		}(), r.PreviousHash)
