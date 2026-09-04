@@ -1257,6 +1257,9 @@ func (s *Store) VerifyLedger(ctx context.Context, sessionID string) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close ledger rows: %w", err)
+	}
 	return s.verifyAllocationRevisionChain(ctx)
 }
 
@@ -1322,21 +1325,32 @@ func (s *Store) verifyAllocationRevisionHeads(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	type head struct{ typ, subject, id, hash string }
+	heads := make([]head, 0)
 	for rows.Next() {
-		var typ, subject, id, hash string
-		if err := rows.Scan(&typ, &subject, &id, &hash); err != nil {
+		var h head
+		if err := rows.Scan(&h.typ, &h.subject, &h.id, &h.hash); err != nil {
+			_ = rows.Close()
 			return err
 		}
+		heads = append(heads, h)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, h := range heads {
 		var latestID, latestHash string
-		if err := s.db.QueryRowContext(ctx, `SELECT revision_id, revision_hash FROM allocation_revisions WHERE subject_type=? AND subject_id=? ORDER BY revision_number DESC, entry_id DESC LIMIT 1`, typ, subject).Scan(&latestID, &latestHash); err != nil {
+		if err := s.db.QueryRowContext(ctx, `SELECT revision_id, revision_hash FROM allocation_revisions WHERE subject_type=? AND subject_id=? ORDER BY revision_number DESC, entry_id DESC LIMIT 1`, h.typ, h.subject).Scan(&latestID, &latestHash); err != nil {
 			return errors.New("allocation revision head references deleted history")
 		}
-		if latestID != id || latestHash != hash {
+		if latestID != h.id || latestHash != h.hash {
 			return errors.New("allocation revision head does not match terminal revision")
 		}
 	}
-	return rows.Err()
+	return nil
 }
 
 func (s *Store) verifyAllocationRevisionContents(ctx context.Context) error {
@@ -1871,7 +1885,7 @@ func (s *Store) RecordModelCall(ctx context.Context, input ModelCallInput) (stri
 		// The initial direct allocation and its immutable history entry are one
 		// transaction. This keeps every model call auditable from creation.
 		direct := AllocationRevision{ID: newID(), SubjectType: "model_call", SubjectID: id, RevisionNumber: 1, IdempotencyKey: "direct:" + id, Author: "system", Source: "record_model_call", Reason: "initial direct allocation", CreatedAt: createdAt}
-		direct.RevisionHash = allocationRevisionHash(direct, []AllocationInput{{ProjectID: input.ProjectID, BasisPoints: 10000}}, "")
+		direct.RevisionHash = allocationRevisionHash(direct, []AllocationInput{{ProjectID: input.ProjectID, BasisPoints: 10000, Method: "direct", Confidence: "high"}}, "")
 		if _, err := tx.ExecContext(ctx, `INSERT INTO allocation_revisions (revision_id, entry_id, subject_type, subject_id, revision_number, parent_revision_id, idempotency_key, project_id, allocation_basis_points, allocation_method, confidence, author, source, reason, created_at, previous_revision_hash, revision_hash) VALUES (?, ?, 'model_call', ?, 1, '', ?, ?, 10000, 'direct', 'high', 'system', 'record_model_call', 'initial direct allocation', ?, '', ?)`, direct.ID, newID(), id, direct.IdempotencyKey, input.ProjectID, now, direct.RevisionHash); err != nil {
 			return "", fmt.Errorf("insert direct allocation revision: %w", err)
 		}
