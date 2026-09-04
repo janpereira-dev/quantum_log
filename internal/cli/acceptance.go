@@ -273,14 +273,18 @@ func writeAcceptancePackageWithBoundaries(ctx context.Context, home string, vers
 		return err
 	}
 	committed := false
+	published := false
 	defer func() {
-		if !committed {
+		// Once publication succeeds, retain reservations if marking consumption
+		// fails so the boundary cannot be silently reused for another package.
+		if !committed && !published {
 			releaseAcceptanceReservations(reservations)
 		}
 	}()
 	if err := writeAcceptanceZIP(output, files); err != nil {
 		return err
 	}
+	published = true
 	if err := commitAcceptanceReservations(reservations, time.Now().UTC()); err != nil {
 		return err
 	}
