@@ -2286,6 +2286,12 @@ func (s *Store) AppendAllocationRevision(ctx context.Context, input AllocationRe
 	if err := tx.Commit(); err != nil {
 		return AllocationRevision{}, err
 	}
+	// Resolve slugs from the authoritative project table before returning the
+	// revision so API, revert, and MCP callers receive the complete projection.
+	revision.Allocations, err = revisionAllocations(ctx, s.db, revision.ID)
+	if err != nil {
+		return AllocationRevision{}, err
+	}
 	return revision, nil
 }
 

@@ -664,6 +664,22 @@ func validateAcceptanceArtifactSchemas(entries map[string][]byte) error {
 		if err := json.Unmarshal(data, &raw); err != nil {
 			return fmt.Errorf("invalid %s: %w", name, err)
 		}
+		if name == "report.json" {
+			var report sqlite.CapabilityReport
+			decoder := json.NewDecoder(bytes.NewReader(data))
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&report); err != nil {
+				return fmt.Errorf("invalid report.json schema: %w", err)
+			}
+		}
+		if name == "sessions.json" {
+			var sessions []sqlite.SessionSnapshot
+			decoder := json.NewDecoder(bytes.NewReader(data))
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&sessions); err != nil {
+				return fmt.Errorf("invalid sessions.json schema: %w", err)
+			}
+		}
 		if obj, ok := raw.(map[string]any); ok {
 			for key, value := range obj {
 				if !keys[key] {
