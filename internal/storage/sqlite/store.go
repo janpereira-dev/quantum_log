@@ -78,6 +78,7 @@ type RawEventInput struct {
 
 type RawEventAppendResult struct {
 	ID                string
+	Sequence          int64
 	Accepted          bool
 	SuppressionReason string
 }
@@ -89,6 +90,7 @@ type AcceptanceBoundaryMarker struct {
 	Challenge            string `json:"challenge"`
 	LedgerPositionSHA256 string `json:"ledger_position_sha256"`
 	LedgerEventCount     int64  `json:"ledger_event_count"`
+	LedgerEventSequence  int64  `json:"ledger_event_sequence"`
 }
 
 const (
@@ -975,23 +977,40 @@ func (s *Store) AppendRawEvent(ctx context.Context, input RawEventInput) (RawEve
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return RawEventAppendResult{}, fmt.Errorf("read ledger head: %w", err)
 	}
+	var sequence int64
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(event_sequence), 0) + 1 FROM raw_events`).Scan(&sequence); err != nil {
+		return RawEventAppendResult{}, fmt.Errorf("read ledger sequence: %w", err)
+	}
 	canonical := canonicalEvent(input, payload)
 	event := audit.NewRecord(chainKey(input.Source, input.SessionID), canonical, previousHash)
-	_, err = tx.ExecContext(ctx, `INSERT INTO raw_events (id, source, source_version, event_type, occurred_at, received_at, trace_id, span_id, parent_span_id, project_id, project_location_id, work_context_id, session_id, project_resolution_method, project_resolution_confidence, project_resolution_evidence_json, payload_json_sanitized, previous_event_hash, event_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, input.Source, strings.TrimSpace(input.SourceVersion), input.EventType, timestamp(input.OccurredAt), now, input.TraceID, input.SpanID, input.ParentSpanID, nullable(input.ProjectID), nullable(input.ProjectLocationID), nullable(input.WorkContextID), nullable(input.SessionID), input.ResolutionMethod, input.ResolutionConfidence, input.EvidenceJSON, string(payload), previousHash, event.Hash, now)
+	if input.acceptanceBoundaryMarker {
+		var marker AcceptanceBoundaryMarker
+		if err := json.Unmarshal(payload, &marker); err != nil {
+			return RawEventAppendResult{}, fmt.Errorf("decode acceptance boundary marker: %w", err)
+		}
+		marker.LedgerEventSequence = sequence - 1
+		payload, err = json.Marshal(marker)
+		if err != nil {
+			return RawEventAppendResult{}, fmt.Errorf("encode acceptance boundary marker: %w", err)
+		}
+		canonical = canonicalEvent(input, payload)
+		event = audit.NewRecord(chainKey(input.Source, input.SessionID), canonical, previousHash)
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO raw_events (id, source, source_version, event_type, occurred_at, received_at, trace_id, span_id, parent_span_id, project_id, project_location_id, work_context_id, session_id, project_resolution_method, project_resolution_confidence, project_resolution_evidence_json, payload_json_sanitized, previous_event_hash, event_hash, created_at, event_sequence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, input.Source, strings.TrimSpace(input.SourceVersion), input.EventType, timestamp(input.OccurredAt), now, input.TraceID, input.SpanID, input.ParentSpanID, nullable(input.ProjectID), nullable(input.ProjectLocationID), nullable(input.WorkContextID), nullable(input.SessionID), input.ResolutionMethod, input.ResolutionConfidence, input.EvidenceJSON, string(payload), previousHash, event.Hash, now, sequence)
 	if err != nil {
 		return RawEventAppendResult{}, fmt.Errorf("insert raw event: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return RawEventAppendResult{}, fmt.Errorf("commit raw event: %w", err)
 	}
-	return RawEventAppendResult{ID: id, Accepted: true}, nil
+	return RawEventAppendResult{ID: id, Sequence: sequence, Accepted: true}, nil
 }
 
 // AppendAcceptanceBoundaryMarker persists a qlog-owned checkpoint in the
 // append-only ledger. The marker is a control record and must never be treated
 // as agent activity or model evidence.
 func (s *Store) AppendAcceptanceBoundaryMarker(ctx context.Context, marker AcceptanceBoundaryMarker, occurredAt time.Time) (RawEventAppendResult, error) {
-	if marker.BoundaryID == "" || !validSHA256(marker.Challenge) || !validSHA256(marker.LedgerPositionSHA256) || marker.LedgerEventCount < 0 {
+	if marker.BoundaryID == "" || !validSHA256(marker.Challenge) || !validSHA256(marker.LedgerPositionSHA256) || marker.LedgerEventCount < 0 || marker.LedgerEventSequence < 0 {
 		return RawEventAppendResult{}, errors.New("invalid acceptance boundary marker")
 	}
 	payload, err := json.Marshal(marker)
@@ -999,6 +1018,44 @@ func (s *Store) AppendAcceptanceBoundaryMarker(ctx context.Context, marker Accep
 		return RawEventAppendResult{}, fmt.Errorf("encode acceptance boundary marker: %w", err)
 	}
 	return s.AppendRawEvent(ctx, RawEventInput{Source: acceptanceBoundarySource, EventType: acceptanceBoundaryEventType, Payload: payload, OccurredAt: occurredAt, OmitOccurredAtFromIdentity: false, acceptanceBoundaryMarker: true})
+}
+
+// RawEventIDsAfterAcceptanceBoundary returns only ledger events appended after
+// the qlog-owned boundary sequence. The sequence, not occurred_at, is the
+// lower bound so future-dated events cannot bypass the boundary.
+func (s *Store) RawEventIDsAfterAcceptanceBoundary(ctx context.Context, marker AcceptanceBoundaryMarker) ([]string, error) {
+	var stored AcceptanceBoundaryMarker
+	var payload string
+	if err := s.db.QueryRowContext(ctx, `SELECT payload_json_sanitized FROM raw_events WHERE source=? AND event_type=? AND json_extract(payload_json_sanitized, '$.boundary_id')=? ORDER BY event_sequence DESC LIMIT 1`, acceptanceBoundarySource, acceptanceBoundaryEventType, marker.BoundaryID).Scan(&payload); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if err := json.Unmarshal([]byte(payload), &stored); err != nil {
+		return nil, err
+	}
+	boundarySequence := stored.LedgerEventSequence
+	if marker.LedgerEventSequence == 0 {
+		stored.LedgerEventSequence = 0
+	}
+	if stored != marker {
+		return nil, errors.New("acceptance boundary marker does not match ledger")
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM raw_events WHERE event_sequence > ? AND NOT (source=? AND event_type=?) ORDER BY event_sequence`, boundarySequence, acceptanceBoundarySource, acceptanceBoundaryEventType)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 func validSHA256(value string) bool {
@@ -1023,6 +1080,9 @@ func (s *Store) HasAcceptanceBoundaryMarker(ctx context.Context, marker Acceptan
 	var stored AcceptanceBoundaryMarker
 	if err := json.Unmarshal([]byte(payload), &stored); err != nil {
 		return false, fmt.Errorf("decode acceptance boundary marker: %w", err)
+	}
+	if marker.LedgerEventSequence == 0 {
+		stored.LedgerEventSequence = 0
 	}
 	return stored == marker, nil
 }
