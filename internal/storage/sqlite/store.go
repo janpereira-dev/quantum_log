@@ -3151,6 +3151,18 @@ func (s *Store) HasRecentAdapterEvidence(ctx context.Context, query AdapterEvide
 	return found, err
 }
 
+// HasCorrelatedAdapterEvidence requires model evidence and its lifecycle
+// evidence to share the same qlog session; raw_event linkage is enforced by
+// the model_calls.raw_event_id join rather than independent existence checks.
+func (s *Store) HasCorrelatedAdapterEvidence(ctx context.Context, model, lifecycle AdapterEvidenceQuery) (bool, error) {
+	if model.Source == "" || lifecycle.Source == "" {
+		return false, errors.New("model and lifecycle sources are required")
+	}
+	var found bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM raw_events r JOIN model_calls c ON c.raw_event_id=r.id WHERE r.source=? AND c.capture_quality=? AND c.total_tokens>0 AND COALESCE(r.session_id,'')<>'' AND EXISTS (SELECT 1 FROM raw_events l WHERE l.source=? AND COALESCE(l.session_id,'')=COALESCE(r.session_id,'') AND l.occurred_at>=? AND l.occurred_at<?))`, model.Source, model.RequiredQuality, lifecycle.Source, timestamp(model.From), timestamp(model.To)).Scan(&found)
+	return found, err
+}
+
 func validateGroupBy(groupBy []string) error {
 	if len(groupBy) == 0 {
 		return errors.New("at least one group-by dimension is required")
