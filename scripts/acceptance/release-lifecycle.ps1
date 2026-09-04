@@ -155,7 +155,7 @@ try {
     $reinstallHash | Set-Content -LiteralPath (Join-Path $evidenceDir 'ledger-after-reinstall.sha256') -Encoding ASCII
     if ($migrationHash -ne $reinstallHash) { throw 'ledger hash changed during reinstall' }
     Write-Output "PASS lifecycle: $fromVersion -> $toVersion"
-    Write-Output 'evidence: <TEMP>'
+    if ($env:QLOG_EVIDENCE_DIR) { Write-Output "evidence: $evidenceDir" } else { Write-Output 'evidence: <TEMP> (set QLOG_EVIDENCE_DIR to retain the exact directory path)' }
 } finally {
     foreach ($name in $originalEnvironment.Keys) { [Environment]::SetEnvironmentVariable($name, $originalEnvironment[$name]) }
     if (Test-Path -LiteralPath $runRoot) { Remove-Item -LiteralPath $runRoot -Recurse -Force }
