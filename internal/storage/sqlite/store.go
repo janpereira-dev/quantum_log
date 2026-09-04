@@ -1311,7 +1311,32 @@ func (s *Store) verifyAllocationRevisionChain(ctx context.Context) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	return s.verifyAllocationRevisionContents(ctx)
+	if err := s.verifyAllocationRevisionContents(ctx); err != nil {
+		return err
+	}
+	return s.verifyAllocationRevisionHeads(ctx)
+}
+
+func (s *Store) verifyAllocationRevisionHeads(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT h.subject_type,h.subject_id,h.revision_id,h.revision_hash FROM allocation_revision_heads h`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var typ, subject, id, hash string
+		if err := rows.Scan(&typ, &subject, &id, &hash); err != nil {
+			return err
+		}
+		var latestID, latestHash string
+		if err := s.db.QueryRowContext(ctx, `SELECT revision_id, revision_hash FROM allocation_revisions WHERE subject_type=? AND subject_id=? ORDER BY revision_number DESC, entry_id DESC LIMIT 1`, typ, subject).Scan(&latestID, &latestHash); err != nil {
+			return errors.New("allocation revision head references deleted history")
+		}
+		if latestID != id || latestHash != hash {
+			return errors.New("allocation revision head does not match terminal revision")
+		}
+	}
+	return rows.Err()
 }
 
 func (s *Store) verifyAllocationRevisionContents(ctx context.Context) error {
@@ -1375,6 +1400,26 @@ func (s *Store) verifyAllocationProjection(ctx context.Context, revisions []Allo
 		}
 		if count != len(revision.Allocations) {
 			return errors.New("allocation projection does not match latest revision")
+		}
+		rows, err := s.db.QueryContext(ctx, `SELECT COALESCE(project_id,''), allocation_basis_points, allocation_method, confidence FROM usage_allocations WHERE subject_type=? AND subject_id=?`, revision.SubjectType, revision.SubjectID)
+		if err != nil {
+			return err
+		}
+		actual := make(map[string]bool)
+		for rows.Next() {
+			var p, m, c string
+			var bp int64
+			if err := rows.Scan(&p, &bp, &m, &c); err != nil {
+				rows.Close()
+				return err
+			}
+			actual[fmt.Sprintf("%s|%d|%s|%s", p, bp, m, c)] = true
+		}
+		rows.Close()
+		for _, a := range revision.Allocations {
+			if !actual[fmt.Sprintf("%s|%d|%s|%s", a.ProjectID, a.BasisPoints, a.Method, a.Confidence)] {
+				return errors.New("allocation projection entry does not match latest revision")
+			}
 		}
 	}
 	return nil
@@ -2100,6 +2145,9 @@ func (s *Store) AppendAllocationRevision(ctx context.Context, input AllocationRe
 		revision.Allocations = append(revision.Allocations, Allocation{ProjectID: a.ProjectID, BasisPoints: a.BasisPoints, Method: input.Method, Confidence: "high"})
 	}
 	if err := replaceAllocationProjection(ctx, tx, revision); err != nil {
+		return AllocationRevision{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO allocation_revision_heads(subject_type, subject_id, revision_id, revision_hash) VALUES(?,?,?,?) ON CONFLICT(subject_type, subject_id) DO UPDATE SET revision_id=excluded.revision_id, revision_hash=excluded.revision_hash`, revision.SubjectType, revision.SubjectID, revision.ID, revision.RevisionHash); err != nil {
 		return AllocationRevision{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -3210,7 +3258,17 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.backfillAllocationRevisionHashes(ctx); err != nil {
 		return err
 	}
+	if err := s.backfillAllocationRevisionHeads(ctx); err != nil {
+		return err
+	}
 	return s.backfillReconstructableIngestionIdentities(ctx)
+}
+
+func (s *Store) backfillAllocationRevisionHeads(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO allocation_revision_heads(subject_type, subject_id, revision_id, revision_hash)
+		SELECT r.subject_type, r.subject_id, r.revision_id, r.revision_hash FROM allocation_revisions r
+		WHERE r.revision_number=(SELECT MAX(r2.revision_number) FROM allocation_revisions r2 WHERE r2.subject_type=r.subject_type AND r2.subject_id=r.subject_id)`)
+	return err
 }
 
 // backfillAllocationRevisionHashes gives migration-created revisions the same

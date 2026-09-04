@@ -33,7 +33,7 @@ SELECT
     a.subject_type, a.subject_id, 1,
     'legacy:' || a.subject_type || ':' || a.subject_id,
     a.project_id, a.allocation_basis_points, a.allocation_method,
-    a.confidence, 'migration', 'legacy_projection', 'pre-014 allocation', a.created_at
+    a.confidence, 'migration', 'legacy_projection', 'pre-014 allocation', (SELECT MIN(a2.created_at) FROM usage_allocations a2 WHERE a2.subject_type=a.subject_type AND a2.subject_id=a.subject_id)
 FROM usage_allocations a
 WHERE NOT EXISTS (
     SELECT 1 FROM allocation_revisions r
