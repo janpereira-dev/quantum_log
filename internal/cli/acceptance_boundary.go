@@ -93,14 +93,10 @@ func createAcceptanceBoundary(ctx context.Context, home string, version Version,
 	return boundary, nil
 }
 
-func evaluateAcceptanceBoundaries(ctx context.Context, service *app.Service, version Version, ledgerStatus string, ids []string) ([]acceptancecontract.RealAgentEvidence, error) {
+func evaluateAcceptanceBoundaries(ctx context.Context, service *app.Service, tag, commit, binaryHash, platform, ledgerStatus string, ids []string) ([]acceptancecontract.RealAgentEvidence, error) {
 	results := make([]acceptancecontract.RealAgentEvidence, 0, len(ids))
 	seenAgents := make(map[string]bool, len(ids))
 	cutoff := time.Now().UTC()
-	tag, commit, binaryHash, platform, err := acceptanceRuntimeIdentity(version)
-	if err != nil {
-		return nil, err
-	}
 	for _, id := range ids {
 		if !isLowerHex(id, 64) {
 			return nil, errors.New("acceptance boundary id must be 64 lowercase hexadecimal characters")
@@ -635,6 +631,26 @@ const (
 	acceptanceMinPackageEntriesWithEvidence = 9
 	acceptanceMaxPackageEntries             = 10
 )
+
+func validateAcceptancePackageFileSizes(files map[string][]byte) error {
+	if len(files) > acceptanceMaxPackageEntries {
+		return fmt.Errorf("acceptance package has too many entries: %d", len(files))
+	}
+	var total uint64
+	for name, data := range files {
+		if !validAcceptanceEntryName(name) {
+			return fmt.Errorf("invalid acceptance package entry name %q", name)
+		}
+		if uint64(len(data)) > acceptanceMaxEntryBytes {
+			return fmt.Errorf("acceptance package entry exceeds size limit: %s", name)
+		}
+		total += uint64(len(data))
+		if total > acceptanceMaxTotalBytes {
+			return errors.New("acceptance package exceeds total size limit")
+		}
+	}
+	return nil
+}
 
 func validAcceptanceEntryName(name string) bool {
 	if name == "" || strings.Contains(name, "\\") || strings.ContainsAny(name, "\x00\r\n\t") || filepath.IsAbs(name) || path.IsAbs(name) || strings.Contains(name, "..") {

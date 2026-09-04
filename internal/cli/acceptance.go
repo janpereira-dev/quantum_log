@@ -107,6 +107,10 @@ func writeAcceptancePackage(ctx context.Context, home string, version Version, o
 }
 
 func writeAcceptancePackageWithBoundaries(ctx context.Context, home string, version Version, output string, boundaryIDs []string) error {
+	tag, commit, binaryHash, platform, err := acceptanceRuntimeIdentity(version)
+	if err != nil {
+		return err
+	}
 	service, err := app.OpenSnapshotReadOnly(ctx, home)
 	if err != nil {
 		return err
@@ -141,7 +145,7 @@ func writeAcceptancePackageWithBoundaries(ctx context.Context, home string, vers
 			diagnostics.CollectorLogFingerprint = "sha256"
 		}
 	}
-	realAgentEvidence, err := evaluateAcceptanceBoundaries(ctx, service, version, diagnostics.LedgerStatus, boundaryIDs)
+	realAgentEvidence, err := evaluateAcceptanceBoundaries(ctx, service, tag, commit, binaryHash, platform, diagnostics.LedgerStatus, boundaryIDs)
 	if err != nil {
 		return err
 	}
@@ -229,16 +233,16 @@ func writeAcceptancePackageWithBoundaries(ctx context.Context, home string, vers
 		RealAgentEvidence:     realAgentEvidence,
 		CandidateAuthenticity: "PENDING_EXTERNAL_REVIEW",
 	}
-	_, _, manifest.CandidateBinarySHA256, _, err = acceptanceRuntimeIdentity(version)
-	if err != nil {
-		return err
-	}
+	manifest.Commit, manifest.CandidateBinarySHA256, manifest.Platform = commit, binaryHash, platform
 	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode manifest: %w", err)
 	}
 	files["manifest.json"] = append(manifestJSON, '\n')
 	files["SHA256SUMS"] = acceptanceChecksumFile(files)
+	if err := validateAcceptancePackageFileSizes(files); err != nil {
+		return err
+	}
 	reservations, err := reserveAcceptanceBoundaries(service.Paths.Home, boundaryIDs)
 	if err != nil {
 		return err
