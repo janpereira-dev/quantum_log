@@ -2618,7 +2618,7 @@ func (s *Store) Usage(ctx context.Context, query UsageQuery) (UsageReport, error
 	// Calls without an allocation are still ledger evidence. Report them once as
 	// unattributed (or under their direct project when legacy data has one),
 	// rather than silently omitting their tokens from rows.
-	rows, err := s.db.QueryContext(ctx, `SELECT c.id, COALESCE(a.id, ''), COALESCE(allocated.slug, direct.slug, 'unattributed'), c.agent_name, c.provider, c.model_id, c.capture_quality, c.input_tokens, c.output_tokens, c.reasoning_tokens, c.cached_input_tokens, c.cache_write_tokens, c.total_tokens, c.estimated_cost_usd_micros, COALESCE(a.allocation_basis_points, 10000) FROM model_calls c LEFT JOIN usage_allocations a ON a.subject_type = 'model_call' AND a.subject_id = c.id LEFT JOIN projects allocated ON allocated.id = a.project_id LEFT JOIN projects direct ON direct.id = c.primary_project_id`+where+` ORDER BY c.id, a.id`, args...)
+	rows, err := s.db.QueryContext(ctx, `SELECT c.id, COALESCE(a.id, ''), COALESCE(allocated.slug, direct.slug, 'unattributed'), c.agent_name, c.provider, c.model_id, c.capture_quality, c.input_tokens, c.output_tokens, c.reasoning_tokens, c.cached_input_tokens, c.cache_write_tokens, c.total_tokens, c.estimated_cost_usd_micros, COALESCE(a.allocation_basis_points, 10000) FROM model_calls c LEFT JOIN usage_allocations a ON a.subject_type = 'model_call' AND a.subject_id = c.id LEFT JOIN projects allocated ON allocated.id = a.project_id LEFT JOIN projects direct ON direct.id = c.primary_project_id`+where+` ORDER BY c.id, COALESCE(a.allocation_ordinal, 0), a.id`, args...)
 	if err != nil {
 		return UsageReport{}, err
 	}
@@ -2939,7 +2939,7 @@ func (s *Store) usageMeasurements(ctx context.Context, query UsageQuery) ([]Meas
 	allocationQuery := query
 	allocationQuery.ProjectSlug = ""
 	where, args := usageWindow(allocationQuery)
-	measurementQuery := `SELECT c.id, COALESCE(p.slug, 'unattributed'), c.capture_quality, c.input_tokens, c.output_tokens, c.reasoning_tokens, c.cached_input_tokens, c.cache_write_tokens, c.total_tokens, c.estimated_cost_usd_micros, COALESCE(a.allocation_basis_points, 10000) FROM model_calls c LEFT JOIN usage_allocations a ON a.subject_type = 'model_call' AND a.subject_id = c.id LEFT JOIN projects p ON p.id = a.project_id` + where + ` ORDER BY c.id, a.id`
+	measurementQuery := `SELECT c.id, COALESCE(p.slug, 'unattributed'), c.capture_quality, c.input_tokens, c.output_tokens, c.reasoning_tokens, c.cached_input_tokens, c.cache_write_tokens, c.total_tokens, c.estimated_cost_usd_micros, COALESCE(a.allocation_basis_points, 10000) FROM model_calls c LEFT JOIN usage_allocations a ON a.subject_type = 'model_call' AND a.subject_id = c.id LEFT JOIN projects p ON p.id = a.project_id` + where + ` ORDER BY c.id, COALESCE(a.allocation_ordinal, 0), a.id`
 	rows, err := s.db.QueryContext(ctx, measurementQuery, args...)
 	if err != nil {
 		return nil, fmt.Errorf("read usage measurements: %w", err)
@@ -3173,8 +3173,60 @@ func (s *Store) HasCorrelatedAdapterEvidence(ctx context.Context, model, lifecyc
 	if model.Source == "" || lifecycle.Source == "" {
 		return false, errors.New("model and lifecycle sources are required")
 	}
+	modelPredicates := []string{"r.source = ?", "c.capture_quality = ?", "c.total_tokens > 0", "COALESCE(r.session_id,'') <> ''"}
+	args := []any{model.Source, model.RequiredQuality}
+	if len(model.AllowedAgentNames) == 0 {
+		modelPredicates = append(modelPredicates, "lower(c.agent_name) = lower(?)")
+		args = append(args, model.AdapterID)
+	} else {
+		placeholders := make([]string, 0, len(model.AllowedAgentNames))
+		for _, name := range model.AllowedAgentNames {
+			placeholders = append(placeholders, "lower(?)")
+			args = append(args, name)
+		}
+		modelPredicates = append(modelPredicates, "lower(c.agent_name) IN ("+strings.Join(placeholders, ",")+")")
+	}
+	if model.RequiredProvider != "" {
+		modelPredicates = append(modelPredicates, "lower(c.provider) = lower(?)")
+		args = append(args, model.RequiredProvider)
+	}
+	if model.RequireCodexResponseCompleted {
+		modelPredicates = append(modelPredicates, "json_extract(r.payload_json_sanitized, '$.codex_response_completed') = 1")
+	}
+	if !model.From.IsZero() {
+		modelPredicates = append(modelPredicates, "r.occurred_at >= ?")
+		args = append(args, timestamp(model.From))
+	}
+	if !model.To.IsZero() {
+		modelPredicates = append(modelPredicates, "r.occurred_at < ?")
+		args = append(args, timestamp(model.To))
+	}
+	if model.ProjectSlug != "" {
+		modelPredicates = append(modelPredicates, "EXISTS (SELECT 1 FROM projects mp WHERE mp.id = c.primary_project_id AND mp.slug = ?)")
+		args = append(args, normalizeSlug(model.ProjectSlug))
+	}
+	lifecyclePredicates := []string{"l.source = ?", "COALESCE(l.session_id,'') = COALESCE(r.session_id,'')"}
+	lifecycleArgs := []any{lifecycle.Source}
+	if lifecycle.RequiredQuality != "" {
+		lifecyclePredicates = append(lifecyclePredicates, "lower(COALESCE(json_extract(l.payload_json_sanitized, '$.capture_quality'), '')) = lower(?)")
+		lifecycleArgs = append(lifecycleArgs, lifecycle.RequiredQuality)
+	}
+	if !lifecycle.From.IsZero() {
+		lifecyclePredicates = append(lifecyclePredicates, "l.occurred_at >= ?")
+		lifecycleArgs = append(lifecycleArgs, timestamp(lifecycle.From))
+	}
+	if !lifecycle.To.IsZero() {
+		lifecyclePredicates = append(lifecyclePredicates, "l.occurred_at < ?")
+		lifecycleArgs = append(lifecycleArgs, timestamp(lifecycle.To))
+	}
+	if lifecycle.ProjectSlug != "" {
+		lifecyclePredicates = append(lifecyclePredicates, "EXISTS (SELECT 1 FROM projects lp WHERE lp.id = l.project_id AND lp.slug = ?)")
+		lifecycleArgs = append(lifecycleArgs, normalizeSlug(lifecycle.ProjectSlug))
+	}
+	args = append(args, lifecycleArgs...)
 	var found bool
-	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM raw_events r JOIN model_calls c ON c.raw_event_id=r.id WHERE r.source=? AND c.capture_quality=? AND c.total_tokens>0 AND COALESCE(r.session_id,'')<>'' AND EXISTS (SELECT 1 FROM raw_events l WHERE l.source=? AND COALESCE(l.session_id,'')=COALESCE(r.session_id,'') AND l.occurred_at>=? AND l.occurred_at<?))`, model.Source, model.RequiredQuality, lifecycle.Source, timestamp(model.From), timestamp(model.To)).Scan(&found)
+	query := `SELECT EXISTS(SELECT 1 FROM raw_events r JOIN model_calls c ON c.raw_event_id=r.id WHERE ` + strings.Join(modelPredicates, " AND ") + ` AND EXISTS (SELECT 1 FROM raw_events l WHERE ` + strings.Join(lifecyclePredicates, " AND ") + `))`
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(&found)
 	return found, err
 }
 
@@ -3371,7 +3423,7 @@ func (s *Store) backfillAllocationRevisionHashes(ctx context.Context) error {
 		bp                                                                                       int64
 		method, confidence                                                                       string
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT revision_id, subject_type, subject_id, revision_number, parent_revision_id, idempotency_key, project_id, allocation_basis_points, allocation_method, confidence, author, source, reason, created_at, previous_revision_hash, revision_hash FROM allocation_revisions ORDER BY subject_type, subject_id, revision_number, entry_id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT revision_id, subject_type, subject_id, revision_number, parent_revision_id, idempotency_key, COALESCE(project_id, ''), allocation_basis_points, allocation_method, confidence, author, source, reason, created_at, previous_revision_hash, revision_hash FROM allocation_revisions ORDER BY subject_type, subject_id, revision_number, entry_id`)
 	if err != nil {
 		return err
 	}
