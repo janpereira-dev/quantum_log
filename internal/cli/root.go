@@ -806,6 +806,47 @@ func newAllocationCommand(home *string) *cobra.Command {
 	repair.Flags().StringVar(&repairProject, "project", "", "project slug")
 	_ = repair.MarkFlagRequired("project")
 	allocation.AddCommand(repair)
+	var historyJSON bool
+	history := &cobra.Command{Use: "history <model-call-id>", Short: "Show immutable allocation revisions", Args: cobra.ExactArgs(1), RunE: func(command *cobra.Command, args []string) error {
+		service, err := app.Open(command.Context(), *home)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = service.Close() }()
+		items, err := service.Store.AllocationHistory(command.Context(), "model_call", args[0])
+		if err != nil {
+			return err
+		}
+		if historyJSON {
+			return writeJSON(command.Root().OutOrStdout(), items)
+		}
+		for _, item := range items {
+			if _, err := fmt.Fprintf(command.Root().OutOrStdout(), "%s | revision %d | %s | %s\n", item.ID, item.RevisionNumber, item.Reason, item.CreatedAt.Format(time.RFC3339)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}}
+	history.Flags().BoolVar(&historyJSON, "json", false, "output JSON")
+	allocation.AddCommand(history)
+	var revertKey, revertReason string
+	revert := &cobra.Command{Use: "revert <revision-id>", Short: "Append a revision restoring an earlier allocation", Args: cobra.ExactArgs(1), RunE: func(command *cobra.Command, args []string) error {
+		service, err := app.Open(command.Context(), *home)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = service.Close() }()
+		item, err := service.Store.RevertAllocationRevision(command.Context(), args[0], revertKey, revertReason)
+		if err != nil {
+			return err
+		}
+		return writeJSON(command.Root().OutOrStdout(), item)
+	}}
+	revert.Flags().StringVar(&revertKey, "idempotency-key", "", "stable replay key")
+	revert.Flags().StringVar(&revertReason, "reason", "", "reason for the correction")
+	_ = revert.MarkFlagRequired("idempotency-key")
+	_ = revert.MarkFlagRequired("reason")
+	allocation.AddCommand(revert)
 	return allocation
 }
 
