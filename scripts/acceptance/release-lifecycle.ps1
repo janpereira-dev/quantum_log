@@ -2,6 +2,7 @@
 param([switch]$ContractOnly)
 
 $ErrorActionPreference = 'Stop'
+function Check-Sentinel($stage) { if ($env:QLOG_SENTINEL_PAYLOAD_SHA256) { $out = & $qlog --home $env:QLOG_HOME acceptance sentinel --source release-lifecycle --source-version 1 --event-type lifecycle.sentinel --payload-sha256 $env:QLOG_SENTINEL_PAYLOAD_SHA256 2>&1 | Out-String; $code=$LASTEXITCODE; Write-Sanitized $out (Join-Path $evidenceDir "sentinel-$stage.txt"); if ($code -ne 0) { throw "sentinel $stage failed" } } }
 $passLine = 'PASS contract: explicit versions and isolated home'
 $tempBase = if ($env:TEMP) { $env:TEMP } elseif ($env:TMP) { $env:TMP } else { [System.IO.Path]::GetTempPath() }
 $runRoot = Join-Path $tempBase ("qlog-release-lifecycle-{0}" -f [guid]::NewGuid())

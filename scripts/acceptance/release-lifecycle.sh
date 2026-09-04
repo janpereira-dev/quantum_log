@@ -107,6 +107,7 @@ capture_sanitized() {
   printf '%s\n' "$captured" | sanitize_output > "$destination"
   [ "$status" -eq 0 ] || { printf '%s\n' "$label failed (see evidence)" >&2; exit "$status"; }
 }
+check_sentinel() { [ -n "${QLOG_SENTINEL_PAYLOAD_SHA256:-}" ] || return 0; capture_sanitized "sentinel-$1" "$EVIDENCE_DIR/sentinel-$1.txt" "$INSTALL_DIR/qlog" --home "$QLOG_HOME" acceptance sentinel --source release-lifecycle --source-version 1 --event-type lifecycle.sentinel --payload-sha256 "$QLOG_SENTINEL_PAYLOAD_SHA256"; }
 
 record_status install-from sh "$INSTALLER" --version "$QLOG_FROM_VERSION" --install-dir "$INSTALL_DIR" --no-modify-path --no-bootstrap
 "$INSTALL_DIR/qlog" --version > "$EVIDENCE_DIR/before-version.txt"
@@ -123,18 +124,22 @@ assert_version "$EVIDENCE_DIR/after-version.txt" "$QLOG_TO_VERSION" target
 record_status migrate "$INSTALL_DIR/qlog" --home "$QLOG_HOME" migrate
 hash_file "$LEDGER" > "$EVIDENCE_DIR/ledger-after-migration.sha256"
 capture_sanitized verify-migration "$EVIDENCE_DIR/verify-migration.txt" "$INSTALL_DIR/qlog" --home "$QLOG_HOME" verify
+check_sentinel migration
 capture_sanitized doctor "$EVIDENCE_DIR/doctor.json" "$INSTALL_DIR/qlog" --home "$QLOG_HOME" doctor --json
 capture_sanitized verify "$EVIDENCE_DIR/verify.txt" "$INSTALL_DIR/qlog" --home "$QLOG_HOME" verify
+check_sentinel upgrade
 hash_file "$LEDGER" > "$EVIDENCE_DIR/ledger-after-upgrade.sha256"
 cmp -s "$EVIDENCE_DIR/ledger-after-migration.sha256" "$EVIDENCE_DIR/ledger-after-upgrade.sha256" || { printf '%s\n' 'ledger hash changed during upgrade diagnostics' >&2; exit 1; }
 
 record_status uninstall sh "$UNINSTALLER" --install-dir "$INSTALL_DIR" --no-modify-path
 [ -f "$LEDGER" ] || { printf '%s\n' 'qlog.db was removed by uninstall' >&2; exit 1; }
 hash_file "$LEDGER" > "$EVIDENCE_DIR/ledger-after-uninstall.sha256"
+check_sentinel uninstall
 cmp -s "$EVIDENCE_DIR/ledger-after-migration.sha256" "$EVIDENCE_DIR/ledger-after-uninstall.sha256" || { printf '%s\n' 'ledger hash changed during uninstall' >&2; exit 1; }
 
 record_status reinstall-to sh "$INSTALLER" --version "$QLOG_TO_VERSION" --install-dir "$INSTALL_DIR" --no-modify-path --no-bootstrap
 capture_sanitized verify-reinstall "$EVIDENCE_DIR/verify-reinstall.txt" "$INSTALL_DIR/qlog" --home "$QLOG_HOME" verify
+check_sentinel reinstall
 hash_file "$LEDGER" > "$EVIDENCE_DIR/ledger-after-reinstall.sha256"
 cmp -s "$EVIDENCE_DIR/ledger-after-migration.sha256" "$EVIDENCE_DIR/ledger-after-reinstall.sha256" || { printf '%s\n' 'ledger hash changed during reinstall' >&2; exit 1; }
 
