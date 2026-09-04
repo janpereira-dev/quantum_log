@@ -99,6 +99,31 @@ func newAcceptanceCommand(home *string, version Version) *cobra.Command {
 	_ = begin.MarkFlagRequired("agent")
 	_ = begin.MarkFlagRequired("agent-version")
 	acceptance.AddCommand(begin, run, newAcceptanceInspectCommand(version))
+	var source, sourceVersion, eventType, payloadFingerprint string
+	sentinel := &cobra.Command{Use: "sentinel", Short: "Verify an exact sanitized ledger sentinel", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+		service, err := app.OpenSnapshotReadOnly(command.Context(), *home)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = service.Close() }()
+		verified, err := service.Store.VerifyRawEventSentinel(command.Context(), source, sourceVersion, eventType, payloadFingerprint)
+		if err != nil {
+			return err
+		}
+		if !verified {
+			return errors.New("acceptance sentinel not verified")
+		}
+		_, err = fmt.Fprintln(command.OutOrStdout(), "acceptance sentinel: VERIFIED")
+		return err
+	}}
+	sentinel.Flags().StringVar(&source, "source", "", "exact ledger source")
+	sentinel.Flags().StringVar(&sourceVersion, "source-version", "", "exact ledger source version")
+	sentinel.Flags().StringVar(&eventType, "event-type", "", "exact ledger event type")
+	sentinel.Flags().StringVar(&payloadFingerprint, "payload-sha256", "", "SHA-256 fingerprint of the sanitized payload")
+	_ = sentinel.MarkFlagRequired("source")
+	_ = sentinel.MarkFlagRequired("event-type")
+	_ = sentinel.MarkFlagRequired("payload-sha256")
+	acceptance.AddCommand(sentinel)
 	return acceptance
 }
 

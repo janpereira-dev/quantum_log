@@ -1033,6 +1033,30 @@ func (s *Store) CurrentRawEventSequence(ctx context.Context) (int64, error) {
 	return sequence, nil
 }
 
+// VerifyRawEventSentinel checks an exact sanitized ledger record without
+// returning its payload. The fingerprint is SHA-256 over the stored payload.
+func (s *Store) VerifyRawEventSentinel(ctx context.Context, source, sourceVersion, eventType, payloadFingerprint string) (bool, error) {
+	if strings.TrimSpace(source) == "" || strings.TrimSpace(eventType) == "" || !validSHA256(payloadFingerprint) {
+		return false, errors.New("invalid raw event sentinel")
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT payload_json_sanitized FROM raw_events WHERE source=? AND source_version=? AND event_type=? ORDER BY event_sequence`, source, sourceVersion, eventType)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			return false, err
+		}
+		sum := sha256.Sum256([]byte(payload))
+		if strings.EqualFold(hex.EncodeToString(sum[:]), payloadFingerprint) {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
 // RawEventIDsAfterAcceptanceBoundary returns only ledger events appended after
 // the qlog-owned boundary sequence. The sequence, not occurred_at, is the
 // lower bound so future-dated events cannot bypass the boundary.
