@@ -122,7 +122,7 @@ func New(home, version string) *mcp.Server {
 	mcp.AddTool(mcpServer, &mcp.Tool{Name: "assign_usage", Description: "Assign one unattributed model call to a project. Does not change observed tokens."}, s.assignUsage)
 	mcp.AddTool(mcpServer, &mcp.Tool{Name: "split_usage", Description: "Split one model call cost across projects with basis points totaling 10000."}, s.splitUsage)
 	mcp.AddTool(mcpServer, &mcp.Tool{Name: "allocation_history", Description: "Return immutable allocation revisions for a model call."}, s.allocationHistory)
-	mcp.AddTool(mcpServer, &mcp.Tool{Name: "revert_allocation", Description: "Append a revision restoring the selected allocation revision."}, s.revertAllocation)
+	mcp.AddTool(mcpServer, &mcp.Tool{Name: "revert_allocation", Description: "Undo the selected allocation revision by appending a revision that restores its parent allocation."}, s.revertAllocation)
 	return mcpServer
 }
 
@@ -314,8 +314,7 @@ func (s *server) splitUsage(ctx context.Context, _ *mcp.CallToolRequest, input s
 	if err != nil {
 		return nil, allocationsOutput{}, err
 	}
-	result, err := service.Store.ModelCallAllocations(ctx, input.ModelCallID)
-	return nil, allocationsOutput{Allocations: result, RevisionID: revision.ID, RevisionHash: revision.RevisionHash}, err
+	return nil, allocationsOutput{Allocations: revision.Allocations, RevisionID: revision.ID, RevisionHash: revision.RevisionHash}, nil
 }
 
 func (s *server) allocationHistory(ctx context.Context, _ *mcp.CallToolRequest, input allocationHistoryInput) (*mcp.CallToolResult, allocationHistoryOutput, error) {
