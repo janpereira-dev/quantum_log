@@ -22,6 +22,11 @@ CREATE INDEX IF NOT EXISTS idx_allocation_revisions_subject
     ON allocation_revisions(subject_type, subject_id, revision_number, entry_id);
 
 -- Preserve the pre-014 projection as the first immutable revision for each subject.
+WITH legacy_subjects AS (
+    SELECT subject_type, subject_id, MIN(created_at) AS first_created_at
+    FROM usage_allocations
+    GROUP BY subject_type, subject_id
+)
 INSERT INTO allocation_revisions (
     revision_id, entry_id, subject_type, subject_id, revision_number,
     idempotency_key, project_id, allocation_basis_points, allocation_method,
@@ -33,8 +38,9 @@ SELECT
     a.subject_type, a.subject_id, 1,
     'legacy:' || a.subject_type || ':' || a.subject_id,
     a.project_id, a.allocation_basis_points, a.allocation_method,
-    a.confidence, 'migration', 'legacy_projection', 'pre-014 allocation', (SELECT MIN(a2.created_at) FROM usage_allocations a2 WHERE a2.subject_type=a.subject_type AND a2.subject_id=a.subject_id)
+    a.confidence, 'migration', 'legacy_projection', 'pre-014 allocation', s.first_created_at
 FROM usage_allocations a
+JOIN legacy_subjects s ON s.subject_type = a.subject_type AND s.subject_id = a.subject_id
 WHERE NOT EXISTS (
     SELECT 1 FROM allocation_revisions r
     WHERE r.subject_type = a.subject_type AND r.subject_id = a.subject_id

@@ -99,9 +99,27 @@ func TestAllocationRevisionIdempotency(t *testing.T) {
 	if one.ID != two.ID {
 		t.Fatalf("replay IDs = %s and %s", one.ID, two.ID)
 	}
+	if one.RevisionHash == "" || one.RevisionHash != two.RevisionHash || one.PreviousHash != two.PreviousHash {
+		t.Fatalf("replay hashes changed: first=%#v replay=%#v", one, two)
+	}
 	h, err := s.AllocationHistory(ctx, "model_call", call)
 	if err != nil || len(h) != 2 {
 		t.Fatalf("history after replay = %#v, %v", h, err)
+	}
+}
+
+func TestRecordModelCallCreatesAllocationRevisionHead(t *testing.T) {
+	ctx := context.Background()
+	s, call, _, _ := allocationFixture(t)
+	var revisionID, revisionHash, headID, headHash string
+	if err := s.db.QueryRowContext(ctx, `SELECT revision_id, revision_hash FROM allocation_revisions WHERE subject_type='model_call' AND subject_id=?`, call).Scan(&revisionID, &revisionHash); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT revision_id, revision_hash FROM allocation_revision_heads WHERE subject_type='model_call' AND subject_id=?`, call).Scan(&headID, &headHash); err != nil {
+		t.Fatal(err)
+	}
+	if revisionID == "" || revisionHash == "" || revisionID != headID || revisionHash != headHash {
+		t.Fatalf("allocation head = %q/%q, revision = %q/%q", headID, headHash, revisionID, revisionHash)
 	}
 }
 
@@ -202,8 +220,9 @@ func TestVerifyLedgerSessionScopesAllocationRevisions(t *testing.T) {
 
 func TestAssignUnattributedConcurrentRetriesConverge(t *testing.T) {
 	ctx := context.Background()
-	s, call, _, project := allocationFixture(t)
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM usage_allocations WHERE subject_id=?`, call); err != nil {
+	s, _, _, project := allocationFixture(t)
+	call, err := s.RecordModelCall(ctx, ModelCallInput{Provider: "test", ModelID: "unattributed"})
+	if err != nil {
 		t.Fatal(err)
 	}
 	results := make(chan error, 2)
@@ -219,8 +238,8 @@ func TestAssignUnattributedConcurrentRetriesConverge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(h) != 2 {
-		t.Fatalf("concurrent assignment revisions = %d, want direct plus one assignment", len(h))
+	if len(h) != 1 {
+		t.Fatalf("concurrent assignment revisions = %d, want one assignment", len(h))
 	}
 }
 

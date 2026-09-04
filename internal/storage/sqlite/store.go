@@ -1416,28 +1416,28 @@ func (s *Store) verifyAllocationProjection(ctx context.Context, revisions []Allo
 		if count != len(revision.Allocations) {
 			return errors.New("allocation projection does not match latest revision")
 		}
-		rows, err := s.db.QueryContext(ctx, `SELECT COALESCE(project_id,''), allocation_basis_points, allocation_method, confidence FROM usage_allocations WHERE subject_type=? AND subject_id=?`, revision.SubjectType, revision.SubjectID)
+		rows, err := s.db.QueryContext(ctx, `SELECT COALESCE(project_id,''), allocation_basis_points, allocation_method, confidence, allocation_ordinal FROM usage_allocations WHERE subject_type=? AND subject_id=?`, revision.SubjectType, revision.SubjectID)
 		if err != nil {
 			return err
 		}
 		actual := make([]string, 0, count)
 		for rows.Next() {
 			var p, m, c string
-			var bp int64
-			if err := rows.Scan(&p, &bp, &m, &c); err != nil {
+			var bp, ordinal int64
+			if err := rows.Scan(&p, &bp, &m, &c, &ordinal); err != nil {
 				if closeErr := rows.Close(); closeErr != nil {
 					return err
 				}
 				return err
 			}
-			actual = append(actual, fmt.Sprintf("%s|%d|%s|%s", p, bp, m, c))
+			actual = append(actual, fmt.Sprintf("%d|%s|%d|%s|%s", ordinal, p, bp, m, c))
 		}
 		if err := rows.Close(); err != nil {
 			return err
 		}
 		expected := make([]string, 0, len(revision.Allocations))
-		for _, a := range revision.Allocations {
-			expected = append(expected, fmt.Sprintf("%s|%d|%s|%s", a.ProjectID, a.BasisPoints, a.Method, a.Confidence))
+		for ordinal, a := range revision.Allocations {
+			expected = append(expected, fmt.Sprintf("%d|%s|%d|%s|%s", ordinal, a.ProjectID, a.BasisPoints, a.Method, a.Confidence))
 		}
 		sort.Strings(actual)
 		sort.Strings(expected)
@@ -1892,7 +1892,7 @@ func (s *Store) RecordModelCall(ctx context.Context, input ModelCallInput) (stri
 	}
 	if input.ProjectID != "" {
 		allocationID := newID()
-		_, err = tx.ExecContext(ctx, `INSERT INTO usage_allocations (id, subject_type, subject_id, project_id, allocation_basis_points, allocation_method, confidence, created_at) VALUES (?, 'model_call', ?, ?, 10000, 'direct', 'high', ?)`, allocationID, id, input.ProjectID, now)
+		_, err = tx.ExecContext(ctx, `INSERT INTO usage_allocations (id, subject_type, subject_id, project_id, allocation_basis_points, allocation_method, confidence, created_at, allocation_ordinal) VALUES (?, 'model_call', ?, ?, 10000, 'direct', 'high', ?, 0)`, allocationID, id, input.ProjectID, now)
 		if err != nil {
 			return "", fmt.Errorf("insert direct allocation: %w", err)
 		}
@@ -1902,6 +1902,9 @@ func (s *Store) RecordModelCall(ctx context.Context, input ModelCallInput) (stri
 		direct.RevisionHash = allocationRevisionHash(direct, []AllocationInput{{ProjectID: input.ProjectID, BasisPoints: 10000, Method: "direct", Confidence: "high"}}, "")
 		if _, err := tx.ExecContext(ctx, `INSERT INTO allocation_revisions (revision_id, entry_id, subject_type, subject_id, revision_number, parent_revision_id, idempotency_key, project_id, allocation_basis_points, allocation_method, confidence, author, source, reason, created_at, previous_revision_hash, revision_hash) VALUES (?, ?, 'model_call', ?, 1, '', ?, ?, 10000, 'direct', 'high', 'system', 'record_model_call', 'initial direct allocation', ?, '', ?)`, direct.ID, newID(), id, direct.IdempotencyKey, input.ProjectID, now, direct.RevisionHash); err != nil {
 			return "", fmt.Errorf("insert direct allocation revision: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO allocation_revision_heads(subject_type, subject_id, revision_id, revision_hash) VALUES(?,?,?,?)`, "model_call", id, direct.ID, direct.RevisionHash); err != nil {
+			return "", fmt.Errorf("insert direct allocation head: %w", err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -2150,11 +2153,11 @@ func (s *Store) AppendAllocationRevision(ctx context.Context, input AllocationRe
 		return AllocationRevision{}, fmt.Errorf("read model call allocation: %w", err)
 	}
 	if input.RequireUnallocated {
-		var count int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_allocations WHERE subject_type = 'model_call' AND subject_id = ?`, input.SubjectID).Scan(&count); err != nil {
-			return AllocationRevision{}, fmt.Errorf("read model call allocations: %w", err)
+		var hasHistory int
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM allocation_revisions WHERE subject_type = 'model_call' AND subject_id = ?)`, input.SubjectID).Scan(&hasHistory); err != nil {
+			return AllocationRevision{}, fmt.Errorf("read model call allocation history: %w", err)
 		}
-		if count > 0 {
+		if hasHistory != 0 {
 			return AllocationRevision{}, fmt.Errorf("model call %q already has allocations; use a split to replace them", input.SubjectID)
 		}
 	}
@@ -2316,10 +2319,22 @@ type allocationQueryer interface {
 func allocationRevisionHash(revision AllocationRevision, allocations []AllocationInput, previous string) string {
 	parts := make([]string, 0, len(allocations))
 	for _, a := range allocations {
-		parts = append(parts, fmt.Sprintf("%s=%d=%s=%s", a.ProjectID, a.BasisPoints, a.Method, a.Confidence))
+		parts = append(parts, lengthSafeFields(a.ProjectID, strconv.FormatInt(a.BasisPoints, 10), a.Method, a.Confidence))
 	}
 	sort.Strings(parts)
-	return audit.Hash(revision.SubjectType+"\x00"+revision.SubjectID, strings.Join([]string{revision.ID, strconv.FormatInt(revision.RevisionNumber, 10), revision.ParentRevisionID, revision.IdempotencyKey, revision.Author, revision.Source, revision.Reason, timestamp(revision.CreatedAt), strings.Join(parts, ",")}, "\n"), previous)
+	return audit.Hash(revision.SubjectType+"\x00"+revision.SubjectID, lengthSafeFields(revision.ID, strconv.FormatInt(revision.RevisionNumber, 10), revision.ParentRevisionID, revision.IdempotencyKey, revision.Author, revision.Source, revision.Reason, timestamp(revision.CreatedAt), strings.Join(parts, "")), previous)
+}
+
+// lengthSafeFields prevents delimiter ambiguity when user-controlled metadata
+// contains separators or newlines.
+func lengthSafeFields(fields ...string) string {
+	var b strings.Builder
+	for _, field := range fields {
+		b.WriteString(strconv.Itoa(len(field)))
+		b.WriteByte(':')
+		b.WriteString(field)
+	}
+	return b.String()
 }
 
 func revisionAllocations(ctx context.Context, q allocationQueryer, revisionID string) (result []Allocation, err error) {
@@ -2347,7 +2362,7 @@ func revisionAllocations(ctx context.Context, q allocationQueryer, revisionID st
 
 func readAllocationRevision(ctx context.Context, q allocationQueryer, subjectType, subjectID, key string, result *AllocationRevision) error {
 	var created string
-	if err := q.QueryRowContext(ctx, `SELECT revision_id, revision_number, parent_revision_id, author, source, reason, created_at FROM allocation_revisions WHERE subject_type = ? AND subject_id = ? AND idempotency_key = ? LIMIT 1`, subjectType, subjectID, key).Scan(&result.ID, &result.RevisionNumber, &result.ParentRevisionID, &result.Author, &result.Source, &result.Reason, &created); err != nil {
+	if err := q.QueryRowContext(ctx, `SELECT revision_id, revision_number, parent_revision_id, author, source, reason, created_at, previous_revision_hash, revision_hash FROM allocation_revisions WHERE subject_type = ? AND subject_id = ? AND idempotency_key = ? LIMIT 1`, subjectType, subjectID, key).Scan(&result.ID, &result.RevisionNumber, &result.ParentRevisionID, &result.Author, &result.Source, &result.Reason, &created, &result.PreviousHash, &result.RevisionHash); err != nil {
 		return err
 	}
 	result.SubjectType, result.SubjectID, result.IdempotencyKey = subjectType, subjectID, key
@@ -2385,8 +2400,8 @@ func loadRevisionTx(ctx context.Context, tx *sql.Tx, revision *AllocationRevisio
 }
 
 func insertProjection(ctx context.Context, tx *sql.Tx, revision AllocationRevision) error {
-	for _, a := range revision.Allocations {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO usage_allocations (id, subject_type, subject_id, project_id, allocation_basis_points, allocation_method, confidence, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, newID(), revision.SubjectType, revision.SubjectID, nullable(a.ProjectID), a.BasisPoints, a.Method, a.Confidence, timestamp(revision.CreatedAt)); err != nil {
+	for ordinal, a := range revision.Allocations {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO usage_allocations (id, subject_type, subject_id, project_id, allocation_basis_points, allocation_method, confidence, created_at, allocation_ordinal) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, newID(), revision.SubjectType, revision.SubjectID, nullable(a.ProjectID), a.BasisPoints, a.Method, a.Confidence, timestamp(revision.CreatedAt), ordinal); err != nil {
 			return fmt.Errorf("insert allocation projection: %w", err)
 		}
 	}
@@ -3286,6 +3301,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	var appliedHashMigration, appliedHeadMigration bool
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
 			continue
@@ -3317,12 +3333,22 @@ func (s *Store) migrate(ctx context.Context) error {
 		if err := tx.Commit(); err != nil {
 			return err
 		}
+		if entry.Name() == "015_allocation_revision_hashes.sql" {
+			appliedHashMigration = true
+		}
+		if entry.Name() == "016_allocation_revision_heads.sql" {
+			appliedHeadMigration = true
+		}
 	}
-	if err := s.backfillAllocationRevisionHashes(ctx); err != nil {
-		return err
+	if appliedHashMigration {
+		if err := s.backfillAllocationRevisionHashes(ctx); err != nil {
+			return err
+		}
 	}
-	if err := s.backfillAllocationRevisionHeads(ctx); err != nil {
-		return err
+	if appliedHeadMigration {
+		if err := s.backfillAllocationRevisionHeads(ctx); err != nil {
+			return err
+		}
 	}
 	return s.backfillReconstructableIngestionIdentities(ctx)
 }
