@@ -81,12 +81,25 @@ sanitize_output() {
   fi
   run_root_forward=$(printf '%s' "$RUN_ROOT" | tr '\\' '/')
   run_root_backslash=$(printf '%s' "$RUN_ROOT" | sed 's|/|\\\\|g')
-  awk -v needle="$RUN_ROOT" -v forward="$run_root_forward" -v backslash="$run_root_backslash" -v short="$short_run_root" '
+  export QLOG_SANITIZE_RUN_ROOT="$RUN_ROOT"
+  export QLOG_SANITIZE_RUN_ROOT_FORWARD="$run_root_forward"
+  export QLOG_SANITIZE_RUN_ROOT_BACKSLASH="$run_root_backslash"
+  export QLOG_SANITIZE_SHORT_RUN_ROOT="$short_run_root"
+  awk '
+    BEGIN {
+      needle = ENVIRON["QLOG_SANITIZE_RUN_ROOT"]
+      forward = ENVIRON["QLOG_SANITIZE_RUN_ROOT_FORWARD"]
+      backslash = ENVIRON["QLOG_SANITIZE_RUN_ROOT_BACKSLASH"]
+      short = ENVIRON["QLOG_SANITIZE_SHORT_RUN_ROOT"]
+    }
     {
       line = $0
       for (i = 1; i <= 4; i++) {
-        value = (i == 1 ? needle : i == 2 ? forward : i == 3 ? backslash : short)
-        if (value == "") continue
+        if (i == 1) value = needle
+        else if (i == 2) value = forward
+        else if (i == 3) value = backslash
+        else value = short
+        if (length(value) == 0) continue
         while ((position = index(line, value)) > 0) {
           line = substr(line, 1, position - 1) "<TEMP>" substr(line, position + length(value))
         }
