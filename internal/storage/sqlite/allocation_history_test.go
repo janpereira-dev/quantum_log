@@ -14,7 +14,11 @@ func allocationFixture(t *testing.T) (*Store, string, string, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = s.Close() })
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
 	a, _, err := s.RegisterProject(ctx, "A", "a", filepath.Join(t.TempDir(), "a"))
 	if err != nil {
 		t.Fatal(err)
@@ -51,10 +55,8 @@ func TestAllocationRevisionHistoryIsAppendOnly(t *testing.T) {
 	if history[0].IdempotencyKey != "direct:"+call || len(history[0].Allocations) != 1 || history[0].Allocations[0].BasisPoints != 10000 || history[0].Allocations[0].ProjectSlug != "a" {
 		t.Fatalf("first revision mutated: %#v", history[0])
 	}
-	for _, a := range history[2].Allocations {
-		if a.ProjectSlug != "a" && a.ProjectSlug != "b" {
-			t.Fatalf("missing history project slug: %#v", a)
-		}
+	if len(history[2].Allocations) != 2 || history[2].Allocations[0].ProjectSlug != "a" || history[2].Allocations[1].ProjectSlug != "b" {
+		t.Fatalf("history project ordering = %#v", history[2].Allocations)
 	}
 	if history[0].Allocations[0].ProjectSlug != "a" || history[2].Allocations[0].ProjectSlug != "a" {
 		t.Fatalf("history project slugs = %#v", history)
@@ -164,7 +166,11 @@ func TestVerifyLedgerSessionScopesAllocationRevisions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
 	a, _, err := s.RegisterProject(ctx, "A", "a", filepath.Join(t.TempDir(), "a"))
 	if err != nil {
 		t.Fatal(err)

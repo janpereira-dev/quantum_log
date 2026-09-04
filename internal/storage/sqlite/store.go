@@ -2323,7 +2323,7 @@ func allocationRevisionHash(revision AllocationRevision, allocations []Allocatio
 }
 
 func revisionAllocations(ctx context.Context, q allocationQueryer, revisionID string) (result []Allocation, err error) {
-	rows, err := q.QueryContext(ctx, `SELECT r.project_id, COALESCE(p.slug, 'unattributed'), r.allocation_basis_points, r.allocation_method, r.confidence FROM allocation_revisions r LEFT JOIN projects p ON p.id = r.project_id WHERE r.revision_id = ? ORDER BY r.entry_id`, revisionID)
+	rows, err := q.QueryContext(ctx, `SELECT r.project_id, COALESCE(p.slug, 'unattributed'), r.allocation_basis_points, r.allocation_method, r.confidence FROM allocation_revisions r LEFT JOIN projects p ON p.id = r.project_id WHERE r.revision_id = ? ORDER BY COALESCE(p.slug, ''), COALESCE(r.project_id, ''), r.allocation_basis_points, r.allocation_method, r.confidence, r.entry_id`, revisionID)
 	if err != nil {
 		return nil, err
 	}
