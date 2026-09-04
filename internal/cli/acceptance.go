@@ -287,6 +287,10 @@ func acceptanceSafeReport(report sqlite.CapabilityReport) sqlite.CapabilityRepor
 	for index := range report.Sources {
 		report.Sources[index].Source = acceptanceSafeVocabulary(report.Sources[index].Source, acceptanceKnownSources)
 		report.Sources[index].Quality = acceptanceSafeVocabulary(report.Sources[index].Quality, acceptanceKnownCaptureQuality)
+		if report.Sources[index].Version != nil && (strings.ContainsAny(*report.Sources[index].Version, `/\\:`) || strings.ContainsAny(*report.Sources[index].Version, "\r\n\x00")) {
+			redacted := acceptanceOpaqueID(*report.Sources[index].Version)
+			report.Sources[index].Version = &redacted
+		}
 	}
 	for index := range report.MetricCoverage {
 		for provenanceIndex := range report.MetricCoverage[index].Provenance {

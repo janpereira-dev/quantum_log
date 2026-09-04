@@ -106,8 +106,8 @@ capture_sanitized() {
   shift 2
   if captured=$("$@" 2>&1); then status=0; else status=$?; fi
   printf '%s\t%s\n' "$label" "$status" >> "$EVIDENCE_DIR/commands.tsv"
-  [ "$status" -eq 0 ] || { printf '%s\n' "$label failed" >&2; exit "$status"; }
   printf '%s\n' "$captured" | sanitize_output > "$destination"
+  [ "$status" -eq 0 ] || { printf '%s\n' "$label failed (see evidence)" >&2; exit "$status"; }
 }
 
 record_status install-from sh "$INSTALLER" --version "$QLOG_FROM_VERSION" --install-dir "$INSTALL_DIR" --no-modify-path --no-bootstrap
