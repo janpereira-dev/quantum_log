@@ -112,3 +112,39 @@ func TestAllocationProjectionRebuild(t *testing.T) {
 		t.Fatalf("rebuilt projection = %#v, %v", got, err)
 	}
 }
+
+func TestVerifyLedgerDetectsTamperedAllocationRevision(t *testing.T) {
+	ctx := context.Background()
+	s, call, a, _ := allocationFixture(t)
+	r, err := s.AppendAllocationRevision(ctx, AllocationRevisionInput{SubjectType: "model_call", SubjectID: call, Allocations: []AllocationInput{{ProjectID: a, BasisPoints: 10000}}, IdempotencyKey: "integrity"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.VerifyLedger(ctx, ""); err != nil {
+		t.Fatalf("baseline verification: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE allocation_revisions SET reason = 'tampered' WHERE revision_id = ?`, r.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.VerifyLedger(ctx, ""); err == nil {
+		t.Fatal("VerifyLedger accepted tampered allocation revision")
+	}
+}
+
+func TestVerifyLedgerDetectsDeletedAllocationRevision(t *testing.T) {
+	ctx := context.Background()
+	s, call, a, b := allocationFixture(t)
+	first, err := s.AppendAllocationRevision(ctx, AllocationRevisionInput{SubjectType: "model_call", SubjectID: call, Allocations: []AllocationInput{{ProjectID: a, BasisPoints: 10000}}, IdempotencyKey: "first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendAllocationRevision(ctx, AllocationRevisionInput{SubjectType: "model_call", SubjectID: call, Allocations: []AllocationInput{{ProjectID: b, BasisPoints: 10000}}, IdempotencyKey: "second"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM allocation_revisions WHERE revision_id = ?`, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.VerifyLedger(ctx, ""); err == nil {
+		t.Fatal("VerifyLedger accepted deleted allocation revision")
+	}
+}

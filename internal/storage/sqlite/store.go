@@ -18,6 +18,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -124,6 +125,8 @@ type AllocationRevision struct {
 	Author           string       `json:"author"`
 	Source           string       `json:"source"`
 	Reason           string       `json:"reason"`
+	PreviousHash     string       `json:"previous_hash,omitempty"`
+	RevisionHash     string       `json:"revision_hash,omitempty"`
 	Allocations      []Allocation `json:"allocations"`
 	CreatedAt        time.Time    `json:"created_at"`
 }
@@ -1249,7 +1252,102 @@ func (s *Store) VerifyLedger(ctx context.Context, sessionID string) error {
 		}
 		previous[key] = eventHash
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	return s.verifyAllocationRevisionChain(ctx)
+}
+
+func (s *Store) verifyAllocationRevisionChain(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT revision_id, subject_type, subject_id, revision_number, parent_revision_id, idempotency_key, MAX(project_id), MAX(allocation_basis_points), MAX(allocation_method), MAX(confidence), author, source, reason, created_at, previous_revision_hash, revision_hash FROM allocation_revisions GROUP BY revision_id, subject_type, subject_id, revision_number, parent_revision_id, idempotency_key, author, source, reason, created_at, previous_revision_hash, revision_hash ORDER BY subject_type, subject_id, revision_number, revision_id`)
+	if err != nil {
+		return fmt.Errorf("query allocation revisions: %w", err)
+	}
+	type state struct {
+		previousID, previousHash string
+		number                   int64
+	}
+	states := make(map[string]state)
+	seen := make(map[string]string)
+	for rows.Next() {
+		var id, typ, subject, parent, key, project, method, confidence, author, source, reason, created, previousHash, hash string
+		var number, bp int64
+		if err := rows.Scan(&id, &typ, &subject, &number, &parent, &key, &project, &bp, &method, &confidence, &author, &source, &reason, &created, &previousHash, &hash); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if hash == "" {
+			_ = rows.Close()
+			return errors.New("allocation revision hash is missing")
+		}
+		chain := typ + "\x00" + subject
+		prior := states[chain]
+		if prior.number == 0 {
+			if number != 1 || parent != "" || previousHash != "" {
+				_ = rows.Close()
+				return errors.New("allocation revision chain starts with an invalid parent")
+			}
+		} else if number != prior.number+1 || parent != prior.previousID || previousHash != prior.previousHash {
+			_ = rows.Close()
+			return errors.New("allocation revision chain is broken")
+		}
+		if existing, ok := seen[id]; ok && existing != hash {
+			_ = rows.Close()
+			return errors.New("allocation revision has inconsistent hash")
+		}
+		seen[id] = hash
+		r := AllocationRevision{ID: id, SubjectType: typ, SubjectID: subject, RevisionNumber: number, ParentRevisionID: parent, IdempotencyKey: key, Author: author, Source: source, Reason: reason, CreatedAt: parseTimestamp(created)}
+		got := allocationRevisionHash(r, []AllocationInput{{ProjectID: project, BasisPoints: bp}}, previousHash)
+		// A multi-entry revision is hashed over all entries below after grouping;
+		// defer content verification to the grouped pass.
+		_ = got
+		states[chain] = state{previousID: id, previousHash: hash, number: number}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	return s.verifyAllocationRevisionContents(ctx)
+}
+
+func (s *Store) verifyAllocationRevisionContents(ctx context.Context) error {
+	history, err := s.db.QueryContext(ctx, `SELECT revision_id, subject_type, subject_id, revision_number, parent_revision_id, idempotency_key, author, source, reason, created_at, previous_revision_hash, revision_hash FROM allocation_revisions GROUP BY revision_id, subject_type, subject_id, revision_number, parent_revision_id, idempotency_key, author, source, reason, created_at, previous_revision_hash, revision_hash ORDER BY subject_type, subject_id, revision_number`)
+	if err != nil {
+		return err
+	}
+	items := make([]AllocationRevision, 0)
+	for history.Next() {
+		var r AllocationRevision
+		var created string
+		if err := history.Scan(&r.ID, &r.SubjectType, &r.SubjectID, &r.RevisionNumber, &r.ParentRevisionID, &r.IdempotencyKey, &r.Author, &r.Source, &r.Reason, &created, &r.PreviousHash, &r.RevisionHash); err != nil {
+			_ = history.Close()
+			return err
+		}
+		r.CreatedAt = parseTimestamp(created)
+		items = append(items, r)
+	}
+	if err := history.Close(); err != nil {
+		return err
+	}
+	if err := history.Err(); err != nil {
+		return err
+	}
+	for _, r := range items {
+		allocations, err := revisionAllocations(ctx, s.db, r.ID)
+		if err != nil {
+			return err
+		}
+		inputs := make([]AllocationInput, 0, len(allocations))
+		for _, a := range allocations {
+			inputs = append(inputs, AllocationInput{ProjectID: a.ProjectID, BasisPoints: a.BasisPoints})
+		}
+		if want := allocationRevisionHash(r, inputs, r.PreviousHash); want != r.RevisionHash {
+			return errors.New("allocation revision hash does not match content")
+		}
+	}
+	return nil
 }
 
 type LedgerAnchor struct {
@@ -1655,7 +1753,8 @@ func (s *Store) RecordModelCall(ctx context.Context, input ModelCallInput) (stri
 		input.CaptureQuality = "unknown"
 	}
 	id := newID()
-	now := timestamp(time.Now())
+	createdAt := time.Now().UTC()
+	now := timestamp(createdAt)
 	total := input.InputTokens + input.OutputTokens + input.ReasoningTokens + input.CachedInputTokens + input.CacheWriteTokens
 	for _, metric := range input.Metrics {
 		if metric.Name == "total_tokens" && metric.Value != nil {
@@ -1696,8 +1795,9 @@ func (s *Store) RecordModelCall(ctx context.Context, input ModelCallInput) (stri
 		}
 		// The initial direct allocation and its immutable history entry are one
 		// transaction. This keeps every model call auditable from creation.
-		revisionID := newID()
-		if _, err := tx.ExecContext(ctx, `INSERT INTO allocation_revisions (revision_id, entry_id, subject_type, subject_id, revision_number, parent_revision_id, idempotency_key, project_id, allocation_basis_points, allocation_method, confidence, author, source, reason, created_at) VALUES (?, ?, 'model_call', ?, 1, '', ?, ?, 10000, 'direct', 'high', 'system', 'record_model_call', 'initial direct allocation', ?)`, revisionID, newID(), id, "direct:"+id, input.ProjectID, now); err != nil {
+		direct := AllocationRevision{ID: newID(), SubjectType: "model_call", SubjectID: id, RevisionNumber: 1, IdempotencyKey: "direct:" + id, Author: "system", Source: "record_model_call", Reason: "initial direct allocation", CreatedAt: createdAt}
+		direct.RevisionHash = allocationRevisionHash(direct, []AllocationInput{{ProjectID: input.ProjectID, BasisPoints: 10000}}, "")
+		if _, err := tx.ExecContext(ctx, `INSERT INTO allocation_revisions (revision_id, entry_id, subject_type, subject_id, revision_number, parent_revision_id, idempotency_key, project_id, allocation_basis_points, allocation_method, confidence, author, source, reason, created_at, previous_revision_hash, revision_hash) VALUES (?, ?, 'model_call', ?, 1, '', ?, ?, 10000, 'direct', 'high', 'system', 'record_model_call', 'initial direct allocation', ?, '', ?)`, direct.ID, newID(), id, direct.IdempotencyKey, input.ProjectID, now, direct.RevisionHash); err != nil {
 			return "", fmt.Errorf("insert direct allocation revision: %w", err)
 		}
 	}
@@ -1946,15 +2046,17 @@ func (s *Store) AppendAllocationRevision(ctx context.Context, input AllocationRe
 			return AllocationRevision{}, fmt.Errorf("model call %q already has allocations; use a split to replace them", input.SubjectID)
 		}
 	}
-	var parentID string
+	var parentID, previousHash string
 	var nextNumber int64
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(revision_number), 0), COALESCE((SELECT revision_id FROM allocation_revisions WHERE subject_type = ? AND subject_id = ? ORDER BY revision_number DESC, entry_id DESC LIMIT 1), '') FROM allocation_revisions WHERE subject_type = ? AND subject_id = ?`, input.SubjectType, input.SubjectID, input.SubjectType, input.SubjectID).Scan(&nextNumber, &parentID); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(revision_number), 0), COALESCE((SELECT revision_id FROM allocation_revisions WHERE subject_type = ? AND subject_id = ? ORDER BY revision_number DESC, entry_id DESC LIMIT 1), ''), COALESCE((SELECT revision_hash FROM allocation_revisions WHERE subject_type = ? AND subject_id = ? ORDER BY revision_number DESC, entry_id DESC LIMIT 1), '') FROM allocation_revisions WHERE subject_type = ? AND subject_id = ?`, input.SubjectType, input.SubjectID, input.SubjectType, input.SubjectID, input.SubjectType, input.SubjectID).Scan(&nextNumber, &parentID, &previousHash); err != nil {
 		return AllocationRevision{}, err
 	}
 	nextNumber++
 	revision := AllocationRevision{ID: newID(), SubjectType: input.SubjectType, SubjectID: input.SubjectID, RevisionNumber: nextNumber, ParentRevisionID: parentID, IdempotencyKey: input.IdempotencyKey, Author: input.Author, Source: input.Source, Reason: input.Reason, CreatedAt: time.Now().UTC(), Allocations: make([]Allocation, 0, len(input.Allocations))}
+	revision.PreviousHash = previousHash
+	revision.RevisionHash = allocationRevisionHash(revision, input.Allocations, previousHash)
 	for _, a := range input.Allocations {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO allocation_revisions (revision_id, entry_id, subject_type, subject_id, revision_number, parent_revision_id, idempotency_key, project_id, allocation_basis_points, allocation_method, confidence, author, source, reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, revision.ID, newID(), revision.SubjectType, revision.SubjectID, revision.RevisionNumber, revision.ParentRevisionID, revision.IdempotencyKey, a.ProjectID, a.BasisPoints, input.Method, "high", revision.Author, revision.Source, revision.Reason, timestamp(revision.CreatedAt)); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO allocation_revisions (revision_id, entry_id, subject_type, subject_id, revision_number, parent_revision_id, idempotency_key, project_id, allocation_basis_points, allocation_method, confidence, author, source, reason, created_at, previous_revision_hash, revision_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, revision.ID, newID(), revision.SubjectType, revision.SubjectID, revision.RevisionNumber, revision.ParentRevisionID, revision.IdempotencyKey, a.ProjectID, a.BasisPoints, input.Method, "high", revision.Author, revision.Source, revision.Reason, timestamp(revision.CreatedAt), revision.PreviousHash, revision.RevisionHash); err != nil {
 			return AllocationRevision{}, fmt.Errorf("append allocation revision: %w", err)
 		}
 		revision.Allocations = append(revision.Allocations, Allocation{ProjectID: a.ProjectID, BasisPoints: a.BasisPoints, Method: input.Method, Confidence: "high"})
@@ -2074,6 +2176,14 @@ func (s *Store) RebuildAllocationProjection(ctx context.Context) error {
 type allocationQueryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func allocationRevisionHash(revision AllocationRevision, allocations []AllocationInput, previous string) string {
+	parts := make([]string, 0, len(allocations))
+	for _, a := range allocations {
+		parts = append(parts, fmt.Sprintf("%s=%d", a.ProjectID, a.BasisPoints))
+	}
+	return audit.Hash(revision.SubjectType+"\x00"+revision.SubjectID, strings.Join([]string{revision.ID, strconv.FormatInt(revision.RevisionNumber, 10), revision.ParentRevisionID, revision.IdempotencyKey, revision.Author, revision.Source, revision.Reason, timestamp(revision.CreatedAt), strings.Join(parts, ",")}, "\n"), previous)
 }
 
 func revisionAllocations(ctx context.Context, q allocationQueryer, revisionID string) (result []Allocation, err error) {
@@ -3053,7 +3163,76 @@ func (s *Store) migrate(ctx context.Context) error {
 			return err
 		}
 	}
+	if err := s.backfillAllocationRevisionHashes(ctx); err != nil {
+		return err
+	}
 	return s.backfillReconstructableIngestionIdentities(ctx)
+}
+
+// backfillAllocationRevisionHashes gives migration-created revisions the same
+// integrity guarantees as newly appended revisions. It is idempotent and only
+// fills rows whose hash is absent; an existing non-empty hash is never changed.
+func (s *Store) backfillAllocationRevisionHashes(ctx context.Context) error {
+	type row struct {
+		id, subjectType, subjectID, parent, key, author, source, reason, created, previous, hash string
+		number                                                                                   int64
+		project                                                                                  string
+		bp                                                                                       int64
+		method, confidence                                                                       string
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT revision_id, subject_type, subject_id, revision_number, parent_revision_id, idempotency_key, project_id, allocation_basis_points, allocation_method, confidence, author, source, reason, created_at, previous_revision_hash, revision_hash FROM allocation_revisions ORDER BY subject_type, subject_id, revision_number, entry_id`)
+	if err != nil {
+		return err
+	}
+	groups := make(map[string]*AllocationRevision)
+	order := make([]string, 0)
+	for rows.Next() {
+		var v row
+		if err := rows.Scan(&v.id, &v.subjectType, &v.subjectID, &v.number, &v.parent, &v.key, &v.project, &v.bp, &v.method, &v.confidence, &v.author, &v.source, &v.reason, &v.created, &v.previous, &v.hash); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		r := groups[v.id]
+		if r == nil {
+			parsed, e := time.Parse(time.RFC3339Nano, v.created)
+			if e != nil {
+				_ = rows.Close()
+				return e
+			}
+			r = &AllocationRevision{ID: v.id, SubjectType: v.subjectType, SubjectID: v.subjectID, RevisionNumber: v.number, ParentRevisionID: v.parent, IdempotencyKey: v.key, Author: v.author, Source: v.source, Reason: v.reason, CreatedAt: parsed, PreviousHash: v.previous, RevisionHash: v.hash}
+			groups[v.id] = r
+			order = append(order, v.id)
+		}
+		r.Allocations = append(r.Allocations, Allocation{ProjectID: v.project, BasisPoints: v.bp, Method: v.method, Confidence: v.confidence})
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+	for _, id := range order {
+		r := groups[id]
+		if r.RevisionHash != "" {
+			continue
+		}
+		r.RevisionHash = allocationRevisionHash(*r, func() []AllocationInput {
+			out := make([]AllocationInput, 0, len(r.Allocations))
+			for _, a := range r.Allocations {
+				out = append(out, AllocationInput{ProjectID: a.ProjectID, BasisPoints: a.BasisPoints})
+			}
+			return out
+		}(), r.PreviousHash)
+		if _, err := tx.ExecContext(ctx, `UPDATE allocation_revisions SET previous_revision_hash=?, revision_hash=? WHERE revision_id=? AND revision_hash=''`, r.PreviousHash, r.RevisionHash, r.ID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func projectByLocation(ctx context.Context, tx *sql.Tx, path string) (domain.Project, domain.ProjectLocation, bool, error) {
