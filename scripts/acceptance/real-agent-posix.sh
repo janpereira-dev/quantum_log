@@ -47,4 +47,4 @@ fi
 if "$qlog_path" acceptance inspect --package "$output"; then :; else
   code=$?; printf '%s\n' "acceptance package inspection failed" >&2; exit "$code"
 fi
-printf '%s\n' "Sanitized acceptance package verified: $output"
+printf '%s\n' "Sanitized acceptance package structurally validated; external authenticity remains pending: $output"

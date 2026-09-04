@@ -48,4 +48,4 @@ $inspectCode = $LASTEXITCODE
 if ($inspectCode -ne 0) {
     exit $inspectCode
 }
-Write-Output "Sanitized acceptance package verified: $Output"
+Write-Output "Sanitized acceptance package structurally validated; external authenticity remains pending: $Output"

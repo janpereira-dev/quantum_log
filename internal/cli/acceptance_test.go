@@ -329,7 +329,7 @@ func TestRealAgentRunnersCannotOverrideChecksOrPrintFalseSuccess(t *testing.T) {
 			}
 		}
 		inspect := strings.Index(text, "acceptance inspect")
-		success := strings.LastIndex(text, "Sanitized acceptance package verified")
+		success := strings.LastIndex(text, "Sanitized acceptance package structurally validated")
 		if !strings.Contains(text, "acceptance begin") || inspect < 0 || success < inspect || !strings.Contains(text, "exit") {
 			t.Fatalf("%s can report success without the required boundary/inspection failure gates", path)
 		}

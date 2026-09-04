@@ -481,6 +481,9 @@ func inspectAcceptancePackage(path string, version Version) error {
 	if manifest.CandidateAuthenticity != "PENDING_EXTERNAL_REVIEW" {
 		return errors.New("acceptance package candidate authenticity is not pending external review")
 	}
+	if len(manifest.RealAgentEvidence) > 0 && len(entries) < acceptanceMinPackageEntriesWithEvidence {
+		return fmt.Errorf("acceptance package with real-agent evidence has invalid entry count: %d", len(entries))
+	}
 	for name, expected := range manifest.Files {
 		if !validAcceptanceEntryName(name) || name == "manifest.json" || name == "SHA256SUMS" {
 			return fmt.Errorf("manifest references an invalid acceptance entry %q", name)
@@ -538,10 +541,11 @@ func inspectAcceptancePackage(path string, version Version) error {
 }
 
 const (
-	acceptanceMaxEntryBytes     = 16 << 20
-	acceptanceMaxTotalBytes     = 64 << 20
-	acceptanceMinPackageEntries = 9
-	acceptanceMaxPackageEntries = 10
+	acceptanceMaxEntryBytes                 = 16 << 20
+	acceptanceMaxTotalBytes                 = 64 << 20
+	acceptanceMinPackageEntries             = 8
+	acceptanceMinPackageEntriesWithEvidence = 9
+	acceptanceMaxPackageEntries             = 10
 )
 
 func validAcceptanceEntryName(name string) bool {
