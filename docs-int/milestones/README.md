@@ -4,13 +4,13 @@ This index tracks delivery status. Acceptance evidence belongs in [`../verificat
 
 | Milestone | Current status | Evidence owner |
 | --- | --- | --- |
-| M0 | Historical work; reconfirmation required | Acceptance evidence was not preserved |
+| M0 | `NOT_VERIFIED` | [M0 evidence matrix](../verification/milestone-0-evidence.md) |
 | M1 | `BLOCKED` | [M1 evidence matrix](../verification/milestone-1-evidence.md) |
-| M2 | `IMPLEMENTED` | Milestone acceptance evidence |
-| M3 | `IMPLEMENTED` | Milestone acceptance evidence |
+| M2 | `IMPLEMENTED` | [M2 evidence matrix](../verification/milestone-2-evidence.md) |
+| M3 | `IMPLEMENTED` | [M3 evidence matrix](../verification/milestone-3-evidence.md) |
 | M4 | `IN_PROGRESS` | [M4 evidence](../verification/m4-evidence.md) |
-| M5 | `IMPLEMENTED` | Milestone acceptance evidence |
-| M6 | `IMPLEMENTED` | Milestone acceptance evidence |
+| M5 | `IMPLEMENTED` | [M5 evidence matrix](../verification/milestone-5-evidence.md) |
+| M6 | `IMPLEMENTED` | [M6 evidence matrix](../verification/milestone-6-evidence.md) |
 
 ## Status Vocabulary
 
@@ -30,3 +30,6 @@ Only full passing acceptance evidence can change a milestone to `VERIFIED`. Ever
 - Maintainers update the relevant verification matrix when they run acceptance checks.
 - Reviewers confirm the matrix contains complete passing evidence before approving a `VERIFIED` claim.
 - Public documentation links to verified facts but remains separate from delivery evidence.
+
+
+The final candidate audit at commit 3f09212eee520b63e424d7c3fb00f0758a5c1d8d is recorded in the M0, M2, M3, M5, and M6 matrices. It intentionally retains NOT_RUN and BLOCKED rows where current-candidate or independent evidence is missing. There is no stable-release GO.

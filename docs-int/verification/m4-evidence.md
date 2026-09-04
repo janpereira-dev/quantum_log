@@ -1,6 +1,6 @@
 # M4 Evidence
 
-M4 is `IN_PROGRESS`. The current published candidate is prerelease `v0.4.0-rc10` at commit `35ae43bd0031b3aca2621c52ede74731ae136357`. Published archives and repository tests establish availability and implementation, not two-machine or five-agent external verification. Synthetic tests, historical runs, and local setup state do not prove current-candidate real-agent capture.
+M4 is `IN_PROGRESS`. The current audit candidate is repository `HEAD` `3f09212eee520b63e424d7c3fb00f0758a5c1d8d` (2026-09-04), not a published stable release. Published RC10 archives and repository tests establish availability and implementation, not two-machine or five-agent external verification. Synthetic tests, historical runs, and local setup state do not prove current-candidate real-agent capture.
 
 Status semantics are strict: `IMPLEMENTED` means code exists; `READY_FOR_EXTERNAL_E2E` means the implementation can be exercised; `PASS` means matching local evidence exists for a recorded command, platform, and candidate; `VERIFIED` requires the committed acceptance matrix and independent review.
 
@@ -22,11 +22,11 @@ OpenCode token capture remains unavailable. Copilot VS Code reported-token handl
 
 | Adapter | State | Evidence |
 |---|---|---|
-| copilot-vscode | `READY_FOR_EXTERNAL_E2E` | Implemented `otel_reported` path; extension acceptance on two clean devices remains `NOT_RUN` for RC10. |
+| copilot-vscode | `READY_FOR_EXTERNAL_E2E` | Implemented `otel_reported` path; extension acceptance on two clean devices remains `NOT_RUN` for the current audit candidate. |
 | opencode | `READY_FOR_EXTERNAL_E2E` | Implemented `lifecycle_only` plugin path; current-candidate real-source acceptance remains `NOT_RUN`. |
 | codex | `READY_FOR_EXTERNAL_E2E` | Implemented `otel_reported` path; current-candidate clean-device acceptance remains `NOT_RUN`. |
 | copilot | `READY_FOR_EXTERNAL_E2E` | Implemented `lifecycle_only` hooks; historical real CLI action produced no observable hook event, and RC10 acceptance remains `NOT_RUN`. |
-| claude-code | `READY_FOR_EXTERNAL_E2E` | Implemented `lifecycle_only` hooks; RC10 real-source acceptance remains `NOT_RUN`. |
+| claude-code | `READY_FOR_EXTERNAL_E2E` | Implemented `lifecycle_only` hooks; current-candidate real-source acceptance remains `NOT_RUN`. |
 
 Adapter verification is fail-closed. `qlog adapter verify <adapter> --project <slug> --json` emits its stage result and exits non-zero while any required setup, availability, collector, capture-quality, source-evidence, or fresh durable-evidence stage fails. Reported-token quality additionally requires a linked normalized model call with source-reported tokens. Clean-device real-agent evidence keeps Codex unverified; source-evidence gates keep Copilot VS Code and OpenCode unverified.
 
