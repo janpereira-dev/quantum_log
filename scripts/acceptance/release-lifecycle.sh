@@ -75,11 +75,21 @@ assert_version() {
 }
 
 sanitize_output() {
-  awk -v needle="$RUN_ROOT" '
+  short_run_root=''
+  if command -v cmd.exe >/dev/null 2>&1; then
+    short_run_root=$(cmd.exe /c "for %I in (\"$RUN_ROOT\") do @echo %~sI" 2>/dev/null | tr -d '\r' | sed -n '/./{p;q;}')
+  fi
+  run_root_forward=$(printf '%s' "$RUN_ROOT" | tr '\\' '/')
+  run_root_backslash=$(printf '%s' "$RUN_ROOT" | sed 's|/|\\\\|g')
+  awk -v needle="$RUN_ROOT" -v forward="$run_root_forward" -v backslash="$run_root_backslash" -v short="$short_run_root" '
     {
       line = $0
-      while ((position = index(line, needle)) > 0) {
-        line = substr(line, 1, position - 1) "<TEMP>" substr(line, position + length(needle))
+      for (i = 1; i <= 4; i++) {
+        value = (i == 1 ? needle : i == 2 ? forward : i == 3 ? backslash : short)
+        if (value == "") continue
+        while ((position = index(line, value)) > 0) {
+          line = substr(line, 1, position - 1) "<TEMP>" substr(line, position + length(value))
+        }
       }
       print line
     }

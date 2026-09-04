@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -37,7 +38,8 @@ func TestCleanGeneratedRemovesOnlyAllowlistedOutputsAndPreservesLedger(t *testin
 			}[name])
 		}
 		assertLedgerUnchanged(t, root, ledgerBefore)
-		if !strings.Contains(output, "preserved:") || !strings.Contains(output, filepath.Join(root, ".qlog")) {
+		preserved := regexp.MustCompile(`(?im)^preserved:\s+.*[\\/]\.qlog\s*$`)
+		if !preserved.MatchString(output) {
 			t.Fatalf("cleanup did not report ledger preservation:\n%s", output)
 		}
 	})

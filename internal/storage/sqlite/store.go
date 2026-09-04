@@ -1897,11 +1897,6 @@ func (s *Store) AssignUnattributedModelCall(ctx context.Context, modelCallID, pr
 	return err
 }
 
-func (s *Store) replaceAllocations(ctx context.Context, subjectType, subjectID string, allocations []AllocationInput, method string) error {
-	_, err := s.AppendAllocationRevision(ctx, AllocationRevisionInput{SubjectType: subjectType, SubjectID: subjectID, Allocations: allocations, IdempotencyKey: newID(), Source: method, Reason: "allocation correction", Method: method})
-	return err
-}
-
 // AppendAllocationRevision records an allocation decision and atomically
 // refreshes the current projection. Historical revision rows are never edited.
 func (s *Store) AppendAllocationRevision(ctx context.Context, input AllocationRevisionInput) (AllocationRevision, error) {
@@ -2030,7 +2025,6 @@ func (s *Store) RebuildAllocationProjection(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
 	type subject struct{ id, typ, sid string }
 	latest := make([]subject, 0)
 	for rows.Next() {
@@ -2041,6 +2035,9 @@ func (s *Store) RebuildAllocationProjection(ctx context.Context) error {
 		latest = append(latest, v)
 	}
 	if err := rows.Err(); err != nil {
+		return err
+	}
+	if err := rows.Close(); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM usage_allocations`); err != nil {
@@ -2063,13 +2060,17 @@ type allocationQueryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
-func revisionAllocations(ctx context.Context, q allocationQueryer, revisionID string) ([]Allocation, error) {
+func revisionAllocations(ctx context.Context, q allocationQueryer, revisionID string) (result []Allocation, err error) {
 	rows, err := q.QueryContext(ctx, `SELECT project_id, allocation_basis_points, allocation_method, confidence FROM allocation_revisions WHERE revision_id = ? ORDER BY entry_id`, revisionID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	result := make([]Allocation, 0)
+	defer func() {
+		if closeErr := rows.Close(); err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}()
+	result = make([]Allocation, 0)
 	for rows.Next() {
 		var a Allocation
 		if err := rows.Scan(&a.ProjectID, &a.BasisPoints, &a.Method, &a.Confidence); err != nil {
