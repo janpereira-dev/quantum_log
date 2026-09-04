@@ -59,6 +59,7 @@ type acceptanceManifest struct {
 	Privacy               []string                               `json:"privacy"`
 	RealAgentEvidence     []acceptancecontract.RealAgentEvidence `json:"real_agent_evidence,omitempty"`
 	CandidateBinarySHA256 string                                 `json:"candidate_binary_sha256"`
+	CandidateAuthenticity string                                 `json:"candidate_authenticity"`
 }
 
 type acceptanceDiagnostics struct {
@@ -220,7 +221,8 @@ func writeAcceptancePackageWithBoundaries(ctx context.Context, home string, vers
 			"Diagnostics contain only status and qlog-owned log fingerprints, never log content or paths.",
 			"PASS records local evidence only and never asserts external verification.",
 		},
-		RealAgentEvidence: realAgentEvidence,
+		RealAgentEvidence:     realAgentEvidence,
+		CandidateAuthenticity: "PENDING_EXTERNAL_REVIEW",
 	}
 	_, _, manifest.CandidateBinarySHA256, _, err = acceptanceRuntimeIdentity(version)
 	if err != nil {

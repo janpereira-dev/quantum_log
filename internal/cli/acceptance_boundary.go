@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -26,7 +27,7 @@ import (
 )
 
 func createAcceptanceBoundary(ctx context.Context, home string, version Version, agentID, agentVersion string) (acceptancecontract.RealAgentBoundary, error) {
-	service, err := app.OpenSnapshotReadOnly(ctx, home)
+	service, err := app.Open(ctx, home)
 	if err != nil {
 		return acceptancecontract.RealAgentBoundary{}, err
 	}
@@ -57,6 +58,10 @@ func createAcceptanceBoundary(ctx context.Context, home string, version Version,
 	boundary.ID = acceptancecontract.BoundaryID(boundary)
 	if err := acceptancecontract.ValidateRealAgentBoundary(boundary, boundary.StartedAt, tag, commit, binaryHash, platform); err != nil {
 		return acceptancecontract.RealAgentBoundary{}, err
+	}
+	marker := sqlite.AcceptanceBoundaryMarker{BoundaryID: boundary.ID, Challenge: boundary.Challenge, LedgerPositionSHA256: boundary.LedgerPositionSHA256, LedgerEventCount: boundary.LedgerEventCount}
+	if _, err := service.Store.AppendAcceptanceBoundaryMarker(ctx, marker, boundary.StartedAt); err != nil {
+		return acceptancecontract.RealAgentBoundary{}, fmt.Errorf("persist acceptance boundary in ledger: %w", err)
 	}
 	directory := filepath.Join(service.Paths.Home, "acceptance", "boundaries")
 	if err := os.MkdirAll(directory, 0o700); err != nil {
@@ -103,6 +108,14 @@ func evaluateAcceptanceBoundaries(ctx context.Context, service *app.Service, ver
 		now := time.Now().UTC()
 		if err := acceptancecontract.ValidateRealAgentBoundary(boundary, now, tag, commit, binaryHash, platform); err != nil {
 			return nil, err
+		}
+		marker := sqlite.AcceptanceBoundaryMarker{BoundaryID: boundary.ID, Challenge: boundary.Challenge, LedgerPositionSHA256: boundary.LedgerPositionSHA256, LedgerEventCount: boundary.LedgerEventCount}
+		markerFound, err := service.Store.HasAcceptanceBoundaryMarker(ctx, marker)
+		if err != nil {
+			return nil, err
+		}
+		if !markerFound {
+			return nil, errors.New("acceptance boundary is not authenticated by the qlog ledger")
 		}
 		if seenAgents[boundary.AgentID] {
 			return nil, fmt.Errorf("duplicate real-agent boundary for %q", boundary.AgentID)
@@ -383,7 +396,7 @@ func newAcceptanceInspectCommand(version Version) *cobra.Command {
 		if err := inspectAcceptancePackage(packagePath, version); err != nil {
 			return err
 		}
-		_, err := fmt.Fprintln(command.OutOrStdout(), "acceptance package: PASS")
+		_, err := fmt.Fprintln(command.OutOrStdout(), "acceptance package: STRUCTURAL_VALID (authenticity: PENDING_EXTERNAL_REVIEW)")
 		return err
 	}}
 	command.Flags().StringVar(&packagePath, "package", "", "acceptance ZIP package path")
@@ -402,19 +415,33 @@ func inspectAcceptancePackage(path string, version Version) error {
 	}
 	defer func() { _ = archive.Close() }()
 	entries := make(map[string][]byte, len(archive.File))
+	var totalUncompressed uint64
+	if len(archive.File) > acceptanceMaxPackageEntries {
+		return fmt.Errorf("acceptance package has too many entries: %d", len(archive.File))
+	}
 	for _, file := range archive.File {
+		if !validAcceptanceEntryName(file.Name) {
+			return fmt.Errorf("invalid acceptance package entry name %q", file.Name)
+		}
 		if _, exists := entries[file.Name]; exists {
 			return fmt.Errorf("duplicate acceptance package entry %q", file.Name)
+		}
+		if file.UncompressedSize64 > acceptanceMaxEntryBytes || totalUncompressed > acceptanceMaxTotalBytes-file.UncompressedSize64 {
+			return fmt.Errorf("acceptance package exceeds size limits at %s", file.Name)
 		}
 		reader, err := file.Open()
 		if err != nil {
 			return err
 		}
-		data, readErr := io.ReadAll(io.LimitReader(reader, 16<<20))
+		data, readErr := io.ReadAll(io.LimitReader(reader, acceptanceMaxEntryBytes+1))
 		closeErr := reader.Close()
 		if readErr != nil || closeErr != nil {
 			return errors.Join(readErr, closeErr)
 		}
+		if uint64(len(data)) > acceptanceMaxEntryBytes {
+			return fmt.Errorf("acceptance package entry exceeds size limit: %s", file.Name)
+		}
+		totalUncompressed += uint64(len(data))
 		entries[file.Name] = data
 	}
 	for name, data := range entries {
@@ -428,6 +455,9 @@ func inspectAcceptancePackage(path string, version Version) error {
 		if _, found := entries[required]; !found {
 			return fmt.Errorf("acceptance package missing %s", required)
 		}
+	}
+	if len(entries) < acceptanceMinPackageEntries || len(entries) > acceptanceMaxPackageEntries {
+		return fmt.Errorf("acceptance package has invalid entry count: %d", len(entries))
 	}
 	if err := verifyAcceptanceChecksums(entries); err != nil {
 		return err
@@ -448,7 +478,13 @@ func inspectAcceptancePackage(path string, version Version) error {
 	if manifest.Version != version.Version || !strings.EqualFold(manifest.Commit, commit) || !strings.EqualFold(manifest.CandidateBinarySHA256, binaryHash) || manifest.Platform != platform {
 		return errors.New("acceptance package does not match the exact qlog runtime")
 	}
+	if manifest.CandidateAuthenticity != "PENDING_EXTERNAL_REVIEW" {
+		return errors.New("acceptance package candidate authenticity is not pending external review")
+	}
 	for name, expected := range manifest.Files {
+		if !validAcceptanceEntryName(name) || name == "manifest.json" || name == "SHA256SUMS" {
+			return fmt.Errorf("manifest references an invalid acceptance entry %q", name)
+		}
 		data, found := entries[name]
 		if !found {
 			return fmt.Errorf("manifest references missing acceptance entry %s", name)
@@ -456,6 +492,14 @@ func inspectAcceptancePackage(path string, version Version) error {
 		sum := sha256.Sum256(data)
 		if !strings.EqualFold(expected, hex.EncodeToString(sum[:])) {
 			return fmt.Errorf("manifest hash mismatch for %s", name)
+		}
+	}
+	for name := range entries {
+		if name == "manifest.json" || name == "SHA256SUMS" {
+			continue
+		}
+		if _, found := manifest.Files[name]; !found {
+			return fmt.Errorf("manifest omits acceptance entry %s", name)
 		}
 	}
 	if len(manifest.RealAgentEvidence) > 0 {
@@ -484,8 +528,41 @@ func inspectAcceptancePackage(path string, version Version) error {
 			}
 		}
 	}
+	if err := validateAcceptanceManifestStatuses(manifest); err != nil {
+		return err
+	}
 	if acceptancePackagePrivacyStatus(entries, manifest.RealAgentEvidence) != acceptancecontract.StatusPass {
 		return errors.New("acceptance package privacy scan failed")
+	}
+	return nil
+}
+
+const (
+	acceptanceMaxEntryBytes     = 16 << 20
+	acceptanceMaxTotalBytes     = 64 << 20
+	acceptanceMinPackageEntries = 9
+	acceptanceMaxPackageEntries = 10
+)
+
+func validAcceptanceEntryName(name string) bool {
+	if name == "" || strings.Contains(name, "\\") || strings.ContainsAny(name, "\x00\r\n\t") || filepath.IsAbs(name) || path.IsAbs(name) || strings.Contains(name, "..") {
+		return false
+	}
+	allowed := map[string]bool{"collector.json": true, "diagnostics.json": true, "report.csv": true, "report.json": true, "report.txt": true, "sessions.json": true, "manifest.json": true, "SHA256SUMS": true, "real-agent-evidence.json": true}
+	return allowed[name]
+}
+
+func validateAcceptanceManifestStatuses(manifest acceptanceManifest) error {
+	evidence := make([]acceptancecontract.RealAgentEvidence, len(manifest.RealAgentEvidence))
+	copy(evidence, manifest.RealAgentEvidence)
+	agents := applyRealAgentEvidence(append([]acceptanceAgentResult(nil), manifest.Agents...), evidence)
+	for i := range agents {
+		if agents[i].Status != manifest.Agents[i].Status || agents[i].Readiness != manifest.Agents[i].Readiness {
+			return fmt.Errorf("acceptance agent status is not reproducible for %s", agents[i].AdapterID)
+		}
+	}
+	if acceptanceReadiness(agents) != manifest.ReadinessStatus || acceptanceExternalStatus(agents) != manifest.ExternalE2EStatus {
+		return errors.New("acceptance aggregate status is not reproducible")
 	}
 	return nil
 }
@@ -497,6 +574,9 @@ func verifyAcceptanceChecksums(entries map[string][]byte) error {
 		fields := strings.Fields(scanner.Text())
 		if len(fields) != 2 || !isLowerHex(fields[0], 64) {
 			return errors.New("invalid acceptance checksum manifest")
+		}
+		if !validAcceptanceEntryName(fields[1]) || fields[1] == "SHA256SUMS" {
+			return fmt.Errorf("invalid acceptance checksum entry name %q", fields[1])
 		}
 		if _, duplicate := want[fields[1]]; duplicate {
 			return errors.New("duplicate acceptance checksum entry")
