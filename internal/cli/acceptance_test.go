@@ -175,6 +175,23 @@ func TestAcceptanceBoundaryExcludesStaleAndFutureLedgerRows(t *testing.T) {
 	}
 }
 
+func TestAcceptancePackageRefusesOverwrite(t *testing.T) {
+	output := filepath.Join(t.TempDir(), "acceptance.zip")
+	if err := os.WriteFile(output, []byte("existing"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAcceptanceZIP(output, map[string][]byte{"sentinel": []byte("new")}); err == nil || !strings.Contains(err.Error(), "refusing overwrite") {
+		t.Fatalf("overwrite result = %v", err)
+	}
+	data, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "existing" {
+		t.Fatalf("existing artifact changed: %q", data)
+	}
+}
+
 func TestAcceptanceRunRejectsMismatchedAndReusedBoundary(t *testing.T) {
 	home := t.TempDir()
 	if _, err := runQLog(t, home, "init"); err != nil {

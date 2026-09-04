@@ -481,6 +481,11 @@ func writeAcceptanceZIP(output string, files map[string][]byte) error {
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return fmt.Errorf("create output directory: %w", err)
 	}
+	if _, err := os.Lstat(output); err == nil {
+		return errors.New("acceptance package output already exists; refusing overwrite")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect acceptance package output: %w", err)
+	}
 	temporary, err := os.CreateTemp(directory, ".qlog-acceptance-*.zip")
 	if err != nil {
 		return fmt.Errorf("create acceptance package: %w", err)
