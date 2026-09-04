@@ -644,9 +644,14 @@ func validateAcceptanceArtifactSchemas(entries map[string][]byte) error {
 			return fmt.Errorf("invalid %s: %w", name, err)
 		}
 		if obj, ok := raw.(map[string]any); ok {
-			for key := range obj {
+			for key, value := range obj {
 				if !keys[key] {
 					return fmt.Errorf("unknown %s field %q", name, key)
+				}
+				if strings.Contains(strings.ToLower(key), "path") {
+					if text, ok := value.(string); ok && (strings.ContainsAny(text, `/\\:`) || strings.ContainsAny(text, "\x00\r\n")) {
+						return fmt.Errorf("path-like %s field %q", name, key)
+					}
 				}
 			}
 		}
