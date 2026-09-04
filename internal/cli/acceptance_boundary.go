@@ -96,6 +96,7 @@ func createAcceptanceBoundary(ctx context.Context, home string, version Version,
 func evaluateAcceptanceBoundaries(ctx context.Context, service *app.Service, version Version, ledgerStatus string, ids []string) ([]acceptancecontract.RealAgentEvidence, error) {
 	results := make([]acceptancecontract.RealAgentEvidence, 0, len(ids))
 	seenAgents := make(map[string]bool, len(ids))
+	cutoff := time.Now().UTC()
 	tag, commit, binaryHash, platform, err := acceptanceRuntimeIdentity(version)
 	if err != nil {
 		return nil, err
@@ -108,7 +109,7 @@ func evaluateAcceptanceBoundaries(ctx context.Context, service *app.Service, ver
 		if err != nil {
 			return nil, err
 		}
-		now := time.Now().UTC()
+		now := cutoff
 		if err := acceptancecontract.ValidateRealAgentBoundary(boundary, now, tag, commit, binaryHash, platform); err != nil {
 			return nil, err
 		}
@@ -593,6 +594,9 @@ func inspectAcceptancePackage(path string, version Version) error {
 			}
 			if evidence.StartedAt.After(evidence.EndedAt) || (!previousStarted.IsZero() && evidence.StartedAt.Before(previousStarted)) || (!previousEnded.IsZero() && evidence.EndedAt.Before(previousEnded)) || evidence.EndedAt.After(manifest.GeneratedAt) || evidence.EndedAt.After(time.Now().UTC()) {
 				return errors.New("packaged real-agent evidence timestamps are invalid or not chronological")
+			}
+			if evidence.SourceEvidence && len(evidence.ObservedMetrics) == 0 {
+				return errors.New("source evidence must be backed by observed metrics")
 			}
 			seenBoundaries[evidence.BoundaryID] = true
 			seenAgents[evidence.AgentID] = true
