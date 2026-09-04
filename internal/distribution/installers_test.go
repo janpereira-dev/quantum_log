@@ -1015,7 +1015,7 @@ func writeLifecycleMocks(t *testing.T, directory string, powerShell bool) (strin
 $Arguments -join '|' | Add-Content -LiteralPath $env:QLOG_FAKE_CALLS -Encoding ASCII
 if ($Arguments.Count -ne 6 -or $Arguments[0] -ne '--version' -or $Arguments[2] -ne '--install-dir' -or $Arguments[4] -ne '--no-modify-path' -or $Arguments[5] -ne '--no-bootstrap') { throw "bad installer argv: $($Arguments -join '|')" }
 $version = $Arguments[1]; $installDir = $Arguments[3]
-if (($env:QLOG_FAKE_ADVERSARIAL_VERSION -eq 'source' -and $version -eq 'v1') -or ($env:QLOG_FAKE_ADVERSARIAL_VERSION -eq 'target' -and $version -eq 'v2')) { $version = $version + '0' }
+if (($env:QLOG_FAKE_ADVERSARIAL_VERSION -eq 'source' -and $version -eq 'v1.0.0') -or ($env:QLOG_FAKE_ADVERSARIAL_VERSION -eq 'target' -and $version -eq 'v2.0.0')) { $version = $version + '0' }
 New-Item -ItemType Directory -Path $installDir -Force | Out-Null
 Copy-Item -LiteralPath $env:QLOG_FAKE_BINARY -Destination (Join-Path $installDir 'qlog.exe') -Force
 Set-Content -LiteralPath (Join-Path $installDir 'version.txt') -Value $version -Encoding ASCII
@@ -1041,7 +1041,7 @@ set -eu
 printf '%s\n' "$*" >> "$QLOG_FAKE_CALLS"
 [ "$#" -eq 6 ] && [ "$1" = --version ] && [ "$3" = --install-dir ] && [ "$5" = --no-modify-path ] && [ "$6" = --no-bootstrap ] || exit 22
 version=$2
-case "${QLOG_FAKE_ADVERSARIAL_VERSION:-}:$version" in source:v1|target:v2) version="${version}0" ;; esac
+case "${QLOG_FAKE_ADVERSARIAL_VERSION:-}:$version" in source:v1.0.0|target:v2.0.0) version="${version}0" ;; esac
 mkdir -p "$4"
 candidate="$4/.qlog.install.$$"
 trap 'rm -f "$candidate"' 0 HUP INT TERM
@@ -1128,7 +1128,7 @@ func runAdversarialLifecycleVersion(t *testing.T, engine lifecycleEngine, mode s
 	fake := buildLifecycleFakeQlog(t, mocks)
 	installer, uninstaller := writeLifecycleMocks(t, mocks, engine.powerShell)
 	calls := filepath.Join(sandbox, "calls.txt")
-	overrides := []string{"HOME=" + sandbox, "TMPDIR=" + tempRoot, "TEMP=" + tempRoot, "TMP=" + tempRoot, "QLOG_FROM_VERSION=v1", "QLOG_TO_VERSION=v2", "QLOG_RELEASE_BASE=https://invalid.example/releases", "QLOG_EVIDENCE_DIR=" + evidence, "QLOG_FAKE_BINARY=" + fake, "QLOG_FAKE_CALLS=" + calls, "QLOG_FAKE_ADVERSARIAL_VERSION=" + mode}
+	overrides := []string{"HOME=" + sandbox, "TMPDIR=" + tempRoot, "TEMP=" + tempRoot, "TMP=" + tempRoot, "QLOG_FROM_VERSION=v1.0.0", "QLOG_TO_VERSION=v2.0.0", "QLOG_RELEASE_BASE=https://invalid.example/releases", "QLOG_EVIDENCE_DIR=" + evidence, "QLOG_FAKE_BINARY=" + fake, "QLOG_FAKE_CALLS=" + calls, "QLOG_FAKE_ADVERSARIAL_VERSION=" + mode}
 	if engine.powerShell {
 		overrides = append(overrides, "QLOG_INSTALLER_PS1="+installer, "QLOG_UNINSTALLER_PS1="+uninstaller)
 	} else {
@@ -1152,7 +1152,7 @@ func TestReleaseLifecycleHarnessContracts(t *testing.T) {
 			}
 			command = lifecycleCommand(t, engine, engine.contract)
 			command.Env = lifecycleEnvironment("HOME="+sandbox, "TMPDIR="+sandbox, "TEMP="+sandbox, "TMP="+sandbox,
-				"QLOG_FROM_VERSION=v1", "QLOG_TO_VERSION=v2", "QLOG_RELEASE_BASE=https://invalid.example/releases")
+				"QLOG_FROM_VERSION=v1.0.0", "QLOG_TO_VERSION=v2.0.0", "QLOG_RELEASE_BASE=https://invalid.example/releases")
 			output, err = command.CombinedOutput()
 			if err != nil || !strings.Contains(string(output), "PASS contract: explicit versions and isolated home") {
 				t.Fatalf("contract-only failed: %v\n%s", err, output)
@@ -1184,7 +1184,7 @@ func TestReleaseLifecycleHarnessContracts(t *testing.T) {
 			installer, uninstaller := writeLifecycleMocks(t, mocks, engine.powerShell)
 			calls := filepath.Join(sandbox, "calls.txt")
 			overrides := []string{"HOME=" + sandbox, "TMPDIR=" + tempRoot, "TEMP=" + tempRoot, "TMP=" + tempRoot,
-				"QLOG_FROM_VERSION=v1", "QLOG_TO_VERSION=v2", "QLOG_RELEASE_BASE=https://invalid.example/releases",
+				"QLOG_FROM_VERSION=v1.0.0", "QLOG_TO_VERSION=v2.0.0", "QLOG_RELEASE_BASE=https://invalid.example/releases",
 				"QLOG_EVIDENCE_DIR=" + evidence, "QLOG_FAKE_BINARY=" + fake, "QLOG_FAKE_CALLS=" + calls}
 			if engine.powerShell {
 				overrides = append(overrides, "QLOG_INSTALLER_PS1="+installer, "QLOG_UNINSTALLER_PS1="+uninstaller)

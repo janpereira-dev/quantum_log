@@ -124,9 +124,6 @@ func evaluateAcceptanceBoundaries(ctx context.Context, service *app.Service, ver
 			return nil, fmt.Errorf("duplicate real-agent boundary for %q", boundary.AgentID)
 		}
 		seenAgents[boundary.AgentID] = true
-		if err := consumeAcceptanceBoundary(service.Paths.Home, boundary.ID, now); err != nil {
-			return nil, err
-		}
 		anchors, err := service.Store.LedgerAnchors(ctx)
 		if err != nil {
 			return nil, err
@@ -162,7 +159,12 @@ func evaluateAcceptanceBoundaries(ctx context.Context, service *app.Service, ver
 		}
 		results = append(results, evaluated)
 	}
-	sort.Slice(results, func(i, j int) bool { return results[i].AgentID < results[j].AgentID })
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].StartedAt.Equal(results[j].StartedAt) {
+			return results[i].AgentID < results[j].AgentID
+		}
+		return results[i].StartedAt.Before(results[j].StartedAt)
+	})
 	return results, nil
 }
 
@@ -195,17 +197,45 @@ func loadAcceptanceBoundary(home, id string) (acceptancecontract.RealAgentBounda
 	return boundary, nil
 }
 
-func consumeAcceptanceBoundary(home, id string, now time.Time) error {
-	path := filepath.Join(home, "acceptance", "boundaries", id+".used")
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if errors.Is(err, os.ErrExist) {
-		return errors.New("acceptance boundary has already been used")
+func consumeAcceptanceBoundaries(home string, ids []string, now time.Time) error {
+	if len(ids) == 0 {
+		return nil
 	}
-	if err != nil {
-		return fmt.Errorf("consume acceptance boundary: %w", err)
+	paths := make([]string, 0, len(ids))
+	for _, id := range ids {
+		p := filepath.Join(home, "acceptance", "boundaries", id+".used")
+		if _, err := os.Lstat(p); err == nil {
+			return errors.New("acceptance boundary has already been used")
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("inspect acceptance boundary usage: %w", err)
+		}
+		paths = append(paths, p)
 	}
-	_, writeErr := fmt.Fprintln(file, now.Format(time.RFC3339Nano))
-	return errors.Join(writeErr, file.Close())
+	created := make([]string, 0, len(paths))
+	rollback := func() {
+		for _, p := range created {
+			_ = os.Remove(p)
+		}
+	}
+	for _, p := range paths {
+		file, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if errors.Is(err, os.ErrExist) {
+			rollback()
+			return errors.New("acceptance boundary has already been used")
+		}
+		if err != nil {
+			rollback()
+			return fmt.Errorf("consume acceptance boundary: %w", err)
+		}
+		_, writeErr := fmt.Fprintln(file, now.Format(time.RFC3339Nano))
+		closeErr := file.Close()
+		if err := errors.Join(writeErr, closeErr); err != nil {
+			rollback()
+			return fmt.Errorf("consume acceptance boundary: %w", err)
+		}
+		created = append(created, p)
+	}
+	return nil
 }
 
 func acceptanceRuntimeIdentity(version Version) (string, string, string, string, error) {
@@ -526,11 +556,18 @@ func inspectAcceptancePackage(path string, version Version) error {
 			return errors.New("manifest and packaged real-agent evidence disagree")
 		}
 		seenBoundaries := map[string]bool{}
+		seenAgents := map[string]bool{}
+		var previousStarted, previousEnded time.Time
 		for _, evidence := range packaged {
-			if evidence.Platform != platform || !strings.EqualFold(evidence.CandidateBinarySHA256, binaryHash) || evidence.ReplayStatus != acceptancecontract.StatusPendingExternalE2E || seenBoundaries[evidence.BoundaryID] {
+			if evidence.Platform != platform || !strings.EqualFold(evidence.CandidateBinarySHA256, binaryHash) || evidence.ReplayStatus != acceptancecontract.StatusPendingExternalE2E || seenBoundaries[evidence.BoundaryID] || seenAgents[evidence.AgentID] {
 				return errors.New("packaged real-agent evidence has an invalid runtime, replay, or boundary binding")
 			}
+			if evidence.StartedAt.After(evidence.EndedAt) || (!previousStarted.IsZero() && evidence.StartedAt.Before(previousStarted)) || (!previousEnded.IsZero() && evidence.EndedAt.Before(previousEnded)) || evidence.EndedAt.After(manifest.GeneratedAt) || evidence.EndedAt.After(time.Now().UTC()) {
+				return errors.New("packaged real-agent evidence timestamps are invalid or not chronological")
+			}
 			seenBoundaries[evidence.BoundaryID] = true
+			seenAgents[evidence.AgentID] = true
+			previousStarted, previousEnded = evidence.StartedAt, evidence.EndedAt
 			evaluated, err := acceptancecontract.EvaluateRealAgentEvidenceForCandidate(evidence, canonicalCandidateTag(version.Version), commit)
 			if err != nil || evaluated.Status != evidence.Status {
 				return errors.New("packaged real-agent evidence status is not reproducible")
@@ -539,6 +576,13 @@ func inspectAcceptancePackage(path string, version Version) error {
 	}
 	if err := validateAcceptanceManifestStatuses(manifest); err != nil {
 		return err
+	}
+	var diagnostics acceptanceDiagnostics
+	if err := json.Unmarshal(entries["diagnostics.json"], &diagnostics); err != nil {
+		return errors.New("invalid acceptance diagnostics")
+	}
+	if diagnostics.LedgerStatus == acceptanceFail && manifest.ExternalE2EStatus != acceptanceFail {
+		return errors.New("ledger FAIL must override acceptance aggregate status")
 	}
 	if acceptancePackagePrivacyStatus(entries, manifest.RealAgentEvidence) != acceptancecontract.StatusPass {
 		return errors.New("acceptance package privacy scan failed")

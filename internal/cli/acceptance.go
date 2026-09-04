@@ -187,6 +187,9 @@ func writeAcceptancePackageWithBoundaries(ctx context.Context, home string, vers
 		"sessions.json":    append(sessionsJSON, '\n'),
 	}
 	privacyStatus := acceptancePackagePrivacyStatus(files, realAgentEvidence)
+	if privacyStatus != acceptancecontract.StatusPass {
+		return errors.New("acceptance package privacy scan failed")
+	}
 	for index := range realAgentEvidence {
 		realAgentEvidence[index].PrivacyStatus = privacyStatus
 		realAgentEvidence[index], _ = acceptancecontract.EvaluateRealAgentEvidence(realAgentEvidence[index])
@@ -234,7 +237,10 @@ func writeAcceptancePackageWithBoundaries(ctx context.Context, home string, vers
 	}
 	files["manifest.json"] = append(manifestJSON, '\n')
 	files["SHA256SUMS"] = acceptanceChecksumFile(files)
-	return writeAcceptanceZIP(output, files)
+	if err := writeAcceptanceZIP(output, files); err != nil {
+		return err
+	}
+	return consumeAcceptanceBoundaries(service.Paths.Home, boundaryIDs, time.Now().UTC())
 }
 
 func applyRealAgentEvidence(agents []acceptanceAgentResult, evidence []acceptancecontract.RealAgentEvidence) []acceptanceAgentResult {

@@ -101,14 +101,15 @@ type AllocationInput struct {
 
 // AllocationRevisionInput describes one immutable allocation decision.
 type AllocationRevisionInput struct {
-	SubjectType    string
-	SubjectID      string
-	Allocations    []AllocationInput
-	IdempotencyKey string
-	Author         string
-	Source         string
-	Reason         string
-	Method         string
+	SubjectType        string
+	SubjectID          string
+	Allocations        []AllocationInput
+	IdempotencyKey     string
+	Author             string
+	Source             string
+	Reason             string
+	Method             string
+	RequireUnallocated bool
 }
 
 // AllocationRevision is the authoritative history record for an allocation
@@ -1899,14 +1900,7 @@ func (s *Store) AssignUnattributedModelCall(ctx context.Context, modelCallID, pr
 	if strings.TrimSpace(modelCallID) == "" || strings.TrimSpace(projectID) == "" {
 		return errors.New("model call id and project id are required")
 	}
-	var count int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_allocations WHERE subject_type = 'model_call' AND subject_id = ?`, modelCallID).Scan(&count); err != nil {
-		return fmt.Errorf("read model call allocations: %w", err)
-	}
-	if count > 0 {
-		return fmt.Errorf("model call %q already has allocations; use a split to replace them", modelCallID)
-	}
-	_, err := s.AppendAllocationRevision(ctx, AllocationRevisionInput{SubjectType: "model_call", SubjectID: modelCallID, Allocations: []AllocationInput{{ProjectID: projectID, BasisPoints: 10000}}, IdempotencyKey: newID(), Source: "manual", Reason: "assign unattributed allocation", Method: "manual"})
+	_, err := s.AppendAllocationRevision(ctx, AllocationRevisionInput{SubjectType: "model_call", SubjectID: modelCallID, Allocations: []AllocationInput{{ProjectID: projectID, BasisPoints: 10000}}, IdempotencyKey: newID(), Source: "manual", Reason: "assign unattributed allocation", Method: "manual", RequireUnallocated: true})
 	return err
 }
 
@@ -1942,6 +1936,15 @@ func (s *Store) AppendAllocationRevision(ctx context.Context, input AllocationRe
 			return AllocationRevision{}, fmt.Errorf("model call %q not found", input.SubjectID)
 		}
 		return AllocationRevision{}, fmt.Errorf("read model call allocation: %w", err)
+	}
+	if input.RequireUnallocated {
+		var count int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_allocations WHERE subject_type = 'model_call' AND subject_id = ?`, input.SubjectID).Scan(&count); err != nil {
+			return AllocationRevision{}, fmt.Errorf("read model call allocations: %w", err)
+		}
+		if count > 0 {
+			return AllocationRevision{}, fmt.Errorf("model call %q already has allocations; use a split to replace them", input.SubjectID)
+		}
 	}
 	var parentID string
 	var nextNumber int64

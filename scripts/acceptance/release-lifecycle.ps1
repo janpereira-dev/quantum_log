@@ -11,6 +11,7 @@ $releaseBase = $env:QLOG_RELEASE_BASE
 if ([string]::IsNullOrWhiteSpace($fromVersion)) { throw 'QLOG_FROM_VERSION is required' }
 if ([string]::IsNullOrWhiteSpace($toVersion)) { throw 'QLOG_TO_VERSION is required' }
 if ($fromVersion -eq $toVersion) { throw 'QLOG_FROM_VERSION and QLOG_TO_VERSION must differ' }
+if ($ContractOnly -and ($fromVersion -notmatch '^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$' -or $toVersion -notmatch '^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$')) { throw 'release versions must be immutable tags (vMAJOR.MINOR.PATCH[-suffix])' }
 if ([string]::IsNullOrWhiteSpace($releaseBase)) { throw 'QLOG_RELEASE_BASE is required' }
 if (-not $releaseBase.StartsWith('https://', [StringComparison]::OrdinalIgnoreCase)) { throw 'QLOG_RELEASE_BASE must use HTTPS' }
 
@@ -108,19 +109,23 @@ try {
     Assert-Version $afterVersionText $toVersion 'target'
     Invoke-Recorded 'migrate' { $arguments = @('--home', $env:QLOG_HOME, 'migrate'); & $qlog @arguments | Out-Null }
     Get-SHA256 $ledger | Set-Content -LiteralPath (Join-Path $evidenceDir 'ledger-after-migration.sha256') -Encoding ASCII
-    $verifyMigration = & $qlog --home $env:QLOG_HOME verify | Out-String
-    if ($LASTEXITCODE -ne 0) { throw 'verify after migration failed' }
+    $verifyMigration = & $qlog --home $env:QLOG_HOME verify 2>&1 | Out-String
+    $verifyMigrationCode = $LASTEXITCODE
+    Add-Content -LiteralPath $commands -Value "verify-migration`t$verifyMigrationCode" -Encoding UTF8
     Write-Sanitized $verifyMigration (Join-Path $evidenceDir 'verify-migration.txt')
+    if ($verifyMigrationCode -ne 0) { throw 'verify after migration failed' }
     $arguments = @('--home', $env:QLOG_HOME, 'doctor', '--json')
-    $doctor = & $qlog @arguments | Out-String
-    if ($LASTEXITCODE -ne 0) { throw 'doctor failed' }
-    Add-Content -LiteralPath $commands -Value "doctor`t0" -Encoding UTF8
+    $doctor = & $qlog @arguments 2>&1 | Out-String
+    $doctorCode = $LASTEXITCODE
+    Add-Content -LiteralPath $commands -Value "doctor`t$doctorCode" -Encoding UTF8
     Write-Sanitized $doctor (Join-Path $evidenceDir 'doctor.json')
+    if ($doctorCode -ne 0) { throw 'doctor failed' }
     $arguments = @('--home', $env:QLOG_HOME, 'verify')
-    $verify = & $qlog @arguments | Out-String
-    if ($LASTEXITCODE -ne 0) { throw 'verify failed' }
-    Add-Content -LiteralPath $commands -Value "verify`t0" -Encoding UTF8
+    $verify = & $qlog @arguments 2>&1 | Out-String
+    $verifyCode = $LASTEXITCODE
+    Add-Content -LiteralPath $commands -Value "verify`t$verifyCode" -Encoding UTF8
     Write-Sanitized $verify (Join-Path $evidenceDir 'verify.txt')
+    if ($verifyCode -ne 0) { throw 'verify failed' }
     $beforeHash = (Get-Content -LiteralPath (Join-Path $evidenceDir 'ledger-before.sha256') -Raw).Trim()
     $upgradeHash = Get-SHA256 $ledger
     $upgradeHash | Set-Content -LiteralPath (Join-Path $evidenceDir 'ledger-after-upgrade.sha256') -Encoding ASCII
@@ -135,10 +140,11 @@ try {
 
     Invoke-Recorded 'reinstall-to' { Invoke-Installer -InstallerArguments @('--version', $toVersion, '--install-dir', $installDir, '--no-modify-path', '--no-bootstrap') }
     $arguments = @('--home', $env:QLOG_HOME, 'verify')
-    $verifyReinstall = & $qlog @arguments | Out-String
-    if ($LASTEXITCODE -ne 0) { throw 'verify after reinstall failed' }
-    Add-Content -LiteralPath $commands -Value "verify-reinstall`t0" -Encoding UTF8
+    $verifyReinstall = & $qlog @arguments 2>&1 | Out-String
+    $verifyReinstallCode = $LASTEXITCODE
+    Add-Content -LiteralPath $commands -Value "verify-reinstall`t$verifyReinstallCode" -Encoding UTF8
     Write-Sanitized $verifyReinstall (Join-Path $evidenceDir 'verify-reinstall.txt')
+    if ($verifyReinstallCode -ne 0) { throw 'verify after reinstall failed' }
     $reinstallHash = Get-SHA256 $ledger
     $reinstallHash | Set-Content -LiteralPath (Join-Path $evidenceDir 'ledger-after-reinstall.sha256') -Encoding ASCII
     if ($migrationHash -ne $reinstallHash) { throw 'ledger hash changed during reinstall' }
