@@ -1197,7 +1197,7 @@ func TestReleaseLifecycleHarnessContracts(t *testing.T) {
 			if err != nil {
 				t.Fatalf("full lifecycle failed: %v\n%s", err, output)
 			}
-			if !strings.Contains(string(output), "PASS lifecycle: v1 -> v2") {
+			if !strings.Contains(string(output), "PASS lifecycle: v1.0.0 -> v2.0.0") {
 				t.Fatalf("output=%q", output)
 			}
 			callBytes, err := os.ReadFile(calls)
@@ -1206,7 +1206,7 @@ func TestReleaseLifecycleHarnessContracts(t *testing.T) {
 			}
 			callsText := strings.ReplaceAll(string(callBytes), "\r\n", "\n")
 			normalizedCalls := strings.ReplaceAll(callsText, " ", "|")
-			for _, want := range []string{"--version|v1|--install-dir|", "--version|v2|--install-dir|", "qlog|--home|", "|ingest|file|", "|migrate\n", "qlog|uninstall|--json", "uninstaller|--install-dir|"} {
+			for _, want := range []string{"--version|v1.0.0|--install-dir|", "--version|v2.0.0|--install-dir|", "qlog|--home|", "|ingest|file|", "|migrate\n", "qlog|uninstall|--json", "uninstaller|--install-dir|"} {
 				if !strings.Contains(normalizedCalls, want) {
 					t.Errorf("argv log missing %q:\n%s", want, callsText)
 				}

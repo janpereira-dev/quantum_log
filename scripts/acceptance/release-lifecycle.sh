@@ -141,4 +141,4 @@ hash_file "$LEDGER" > "$EVIDENCE_DIR/ledger-after-reinstall.sha256"
 cmp -s "$EVIDENCE_DIR/ledger-after-migration.sha256" "$EVIDENCE_DIR/ledger-after-reinstall.sha256" || { printf '%s\n' 'ledger hash changed during reinstall' >&2; exit 1; }
 
 printf '%s\n' "PASS lifecycle: $QLOG_FROM_VERSION -> $QLOG_TO_VERSION"
-printf '%s\n' "evidence: $EVIDENCE_DIR"
+printf '%s\n' 'evidence: <TEMP>'

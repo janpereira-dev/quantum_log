@@ -149,7 +149,7 @@ try {
     $reinstallHash | Set-Content -LiteralPath (Join-Path $evidenceDir 'ledger-after-reinstall.sha256') -Encoding ASCII
     if ($migrationHash -ne $reinstallHash) { throw 'ledger hash changed during reinstall' }
     Write-Output "PASS lifecycle: $fromVersion -> $toVersion"
-    Write-Output "evidence: $evidenceDir"
+    Write-Output 'evidence: <TEMP>'
 } finally {
     foreach ($name in $originalEnvironment.Keys) { [Environment]::SetEnvironmentVariable($name, $originalEnvironment[$name]) }
     if (Test-Path -LiteralPath $runRoot) { Remove-Item -LiteralPath $runRoot -Recurse -Force }
