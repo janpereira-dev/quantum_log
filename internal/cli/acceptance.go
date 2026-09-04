@@ -237,10 +237,24 @@ func writeAcceptancePackageWithBoundaries(ctx context.Context, home string, vers
 	}
 	files["manifest.json"] = append(manifestJSON, '\n')
 	files["SHA256SUMS"] = acceptanceChecksumFile(files)
+	reservations, err := reserveAcceptanceBoundaries(service.Paths.Home, boundaryIDs)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			releaseAcceptanceReservations(reservations)
+		}
+	}()
 	if err := writeAcceptanceZIP(output, files); err != nil {
 		return err
 	}
-	return consumeAcceptanceBoundaries(service.Paths.Home, boundaryIDs, time.Now().UTC())
+	if err := commitAcceptanceReservations(reservations, time.Now().UTC()); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
 
 func applyRealAgentEvidence(agents []acceptanceAgentResult, evidence []acceptancecontract.RealAgentEvidence) []acceptanceAgentResult {

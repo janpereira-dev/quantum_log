@@ -197,19 +197,19 @@ func loadAcceptanceBoundary(home, id string) (acceptancecontract.RealAgentBounda
 	return boundary, nil
 }
 
-func consumeAcceptanceBoundaries(home string, ids []string, now time.Time) error {
+func reserveAcceptanceBoundaries(home string, ids []string) ([]string, error) {
 	if len(ids) == 0 {
-		return nil
+		return nil, nil
 	}
 	paths := make([]string, 0, len(ids))
 	for _, id := range ids {
 		p := filepath.Join(home, "acceptance", "boundaries", id+".used")
 		if _, err := os.Lstat(p); err == nil {
-			return errors.New("acceptance boundary has already been used")
+			return nil, errors.New("acceptance boundary has already been used")
 		} else if !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("inspect acceptance boundary usage: %w", err)
+			return nil, fmt.Errorf("inspect acceptance boundary usage: %w", err)
 		}
-		paths = append(paths, p)
+		paths = append(paths, p+".reservation")
 	}
 	created := make([]string, 0, len(paths))
 	rollback := func() {
@@ -221,19 +221,43 @@ func consumeAcceptanceBoundaries(home string, ids []string, now time.Time) error
 		file, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if errors.Is(err, os.ErrExist) {
 			rollback()
-			return errors.New("acceptance boundary has already been used")
+			return nil, errors.New("acceptance boundary has already been used")
 		}
 		if err != nil {
 			rollback()
-			return fmt.Errorf("consume acceptance boundary: %w", err)
+			return nil, fmt.Errorf("reserve acceptance boundary: %w", err)
 		}
-		_, writeErr := fmt.Fprintln(file, now.Format(time.RFC3339Nano))
-		closeErr := file.Close()
-		if err := errors.Join(writeErr, closeErr); err != nil {
+		if err := file.Close(); err != nil {
 			rollback()
-			return fmt.Errorf("consume acceptance boundary: %w", err)
+			return nil, fmt.Errorf("reserve acceptance boundary: %w", err)
 		}
 		created = append(created, p)
+	}
+	return paths, nil
+}
+
+func releaseAcceptanceReservations(paths []string) {
+	for _, p := range paths {
+		_ = os.Remove(p)
+	}
+}
+
+func commitAcceptanceReservations(paths []string, now time.Time) error {
+	for _, reservation := range paths {
+		file, err := os.OpenFile(reservation, os.O_WRONLY|os.O_TRUNC, 0o600)
+		if err != nil {
+			return fmt.Errorf("commit acceptance boundary reservation: %w", err)
+		}
+		if _, err = fmt.Fprintln(file, now.Format(time.RFC3339Nano)); err != nil {
+			_ = file.Close()
+			return err
+		}
+		if err = file.Close(); err != nil {
+			return err
+		}
+		if err = os.Rename(reservation, strings.TrimSuffix(reservation, ".reservation")); err != nil {
+			return fmt.Errorf("commit acceptance boundary: %w", err)
+		}
 	}
 	return nil
 }
