@@ -3622,7 +3622,11 @@ func newID() string {
 	return hex.EncodeToString(bytes)
 }
 
-func timestamp(value time.Time) string { return value.UTC().Format(time.RFC3339Nano) }
+// timestamp uses fixed-width nanoseconds so SQLite TEXT ordering is numeric
+// chronological ordering even when adjacent values differ only in precision.
+func timestamp(value time.Time) string {
+	return value.UTC().Format("2006-01-02T15:04:05.000000000Z07:00")
+}
 
 func parseTimestamp(value string) time.Time {
 	parsed, _ := time.Parse(time.RFC3339Nano, value)
