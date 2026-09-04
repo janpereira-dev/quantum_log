@@ -1348,6 +1348,34 @@ func (s *Store) verifyAllocationRevisionContents(ctx context.Context) error {
 		if want := allocationRevisionHash(r, inputs, r.PreviousHash); want != r.RevisionHash {
 			return errors.New("allocation revision hash does not match content")
 		}
+		r.Allocations = allocations
+		// Keep the complete revision for projection verification.
+		for i := range items {
+			if items[i].ID == r.ID {
+				items[i] = r
+				break
+			}
+		}
+	}
+	return s.verifyAllocationProjection(ctx, items)
+}
+
+func (s *Store) verifyAllocationProjection(ctx context.Context, revisions []AllocationRevision) error {
+	for _, revision := range revisions {
+		var latest int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM allocation_revisions WHERE subject_type=? AND subject_id=? AND revision_number > ?`, revision.SubjectType, revision.SubjectID, revision.RevisionNumber).Scan(&latest); err != nil {
+			return err
+		}
+		if latest > 0 {
+			continue
+		}
+		var count int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_allocations WHERE subject_type=? AND subject_id=?`, revision.SubjectType, revision.SubjectID).Scan(&count); err != nil {
+			return err
+		}
+		if count != len(revision.Allocations) {
+			return errors.New("allocation projection does not match latest revision")
+		}
 	}
 	return nil
 }
@@ -1986,8 +2014,12 @@ func (s *Store) ReplaceAllocations(ctx context.Context, subjectType, subjectID s
 // ReplaceAllocationsWithKey makes split retries idempotent at the public
 // boundary while preserving the compatibility wrapper above.
 func (s *Store) ReplaceAllocationsWithKey(ctx context.Context, subjectType, subjectID string, allocations []AllocationInput, idempotencyKey string) error {
-	_, err := s.AppendAllocationRevision(ctx, AllocationRevisionInput{SubjectType: subjectType, SubjectID: subjectID, Allocations: allocations, IdempotencyKey: idempotencyKey, Source: "split", Reason: "replace allocation", Method: "split"})
+	_, err := s.ReplaceAllocationsWithKeyRevision(ctx, subjectType, subjectID, allocations, idempotencyKey)
 	return err
+}
+
+func (s *Store) ReplaceAllocationsWithKeyRevision(ctx context.Context, subjectType, subjectID string, allocations []AllocationInput, idempotencyKey string) (AllocationRevision, error) {
+	return s.AppendAllocationRevision(ctx, AllocationRevisionInput{SubjectType: subjectType, SubjectID: subjectID, Allocations: allocations, IdempotencyKey: idempotencyKey, Source: "split", Reason: "replace allocation", Method: "split"})
 }
 
 func (s *Store) RepairModelCallAllocation(ctx context.Context, modelCallID, projectID string) error {
@@ -2078,7 +2110,7 @@ func (s *Store) AppendAllocationRevision(ctx context.Context, input AllocationRe
 
 // AllocationHistory returns immutable revisions in deterministic order.
 func (s *Store) AllocationHistory(ctx context.Context, subjectType, subjectID string) ([]AllocationRevision, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT revision_id, revision_number, parent_revision_id, idempotency_key, author, source, reason, created_at FROM allocation_revisions WHERE subject_type = ? AND subject_id = ? GROUP BY revision_id, revision_number, parent_revision_id, idempotency_key, author, source, reason, created_at ORDER BY revision_number, revision_id`, subjectType, subjectID)
+	rows, err := s.db.QueryContext(ctx, `SELECT revision_id, revision_number, parent_revision_id, idempotency_key, author, source, reason, created_at, previous_revision_hash, revision_hash FROM allocation_revisions WHERE subject_type = ? AND subject_id = ? GROUP BY revision_id, revision_number, parent_revision_id, idempotency_key, author, source, reason, created_at, previous_revision_hash, revision_hash ORDER BY revision_number, revision_id`, subjectType, subjectID)
 	if err != nil {
 		return nil, err
 	}
@@ -2086,7 +2118,7 @@ func (s *Store) AllocationHistory(ctx context.Context, subjectType, subjectID st
 	for rows.Next() {
 		var r AllocationRevision
 		var created string
-		if err := rows.Scan(&r.ID, &r.RevisionNumber, &r.ParentRevisionID, &r.IdempotencyKey, &r.Author, &r.Source, &r.Reason, &created); err != nil {
+		if err := rows.Scan(&r.ID, &r.RevisionNumber, &r.ParentRevisionID, &r.IdempotencyKey, &r.Author, &r.Source, &r.Reason, &created, &r.PreviousHash, &r.RevisionHash); err != nil {
 			_ = rows.Close()
 			return nil, err
 		}

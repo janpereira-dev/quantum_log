@@ -96,7 +96,9 @@ type allocationRevertInput struct {
 }
 
 type allocationsOutput struct {
-	Allocations []sqlite.Allocation `json:"allocations"`
+	Allocations  []sqlite.Allocation `json:"allocations"`
+	RevisionID   string              `json:"revision_id,omitempty"`
+	RevisionHash string              `json:"revision_hash,omitempty"`
 }
 
 type allocationHistoryOutput struct {
@@ -308,11 +310,12 @@ func (s *server) splitUsage(ctx context.Context, _ *mcp.CallToolRequest, input s
 	if strings.TrimSpace(input.IdempotencyKey) == "" {
 		return nil, allocationsOutput{}, errors.New("idempotency_key is required for split_usage")
 	}
-	if err := service.Store.ReplaceAllocationsWithKey(ctx, "model_call", input.ModelCallID, allocations, input.IdempotencyKey); err != nil {
+	revision, err := service.Store.ReplaceAllocationsWithKeyRevision(ctx, "model_call", input.ModelCallID, allocations, input.IdempotencyKey)
+	if err != nil {
 		return nil, allocationsOutput{}, err
 	}
 	result, err := service.Store.ModelCallAllocations(ctx, input.ModelCallID)
-	return nil, allocationsOutput{Allocations: result}, err
+	return nil, allocationsOutput{Allocations: result, RevisionID: revision.ID, RevisionHash: revision.RevisionHash}, err
 }
 
 func (s *server) allocationHistory(ctx context.Context, _ *mcp.CallToolRequest, input allocationHistoryInput) (*mcp.CallToolResult, allocationHistoryOutput, error) {
