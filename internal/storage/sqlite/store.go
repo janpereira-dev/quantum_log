@@ -1424,12 +1424,16 @@ func (s *Store) verifyAllocationProjection(ctx context.Context, revisions []Allo
 			var p, m, c string
 			var bp int64
 			if err := rows.Scan(&p, &bp, &m, &c); err != nil {
-				rows.Close()
+				if closeErr := rows.Close(); closeErr != nil {
+					return err
+				}
 				return err
 			}
 			actual[fmt.Sprintf("%s|%d|%s|%s", p, bp, m, c)] = true
 		}
-		rows.Close()
+		if err := rows.Close(); err != nil {
+			return err
+		}
 		for _, a := range revision.Allocations {
 			if !actual[fmt.Sprintf("%s|%d|%s|%s", a.ProjectID, a.BasisPoints, a.Method, a.Confidence)] {
 				return errors.New("allocation projection entry does not match latest revision")
