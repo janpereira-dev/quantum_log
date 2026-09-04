@@ -66,7 +66,13 @@ function Invoke-Installer([string[]]$InstallerArguments) {
 
 function Write-Sanitized([string]$Text, [string]$Path) {
     $jsonEscapedRoot = $runRoot.Replace('\', '\\')
-    $Text.Replace($jsonEscapedRoot, '<TEMP>').Replace($runRoot, '<TEMP>') | Set-Content -LiteralPath $Path -Encoding UTF8
+    $sanitized = $Text.Replace($jsonEscapedRoot, '<TEMP>').Replace($runRoot, '<TEMP>')
+    # Go can render the disposable root with a short 8.3 user component or a
+    # different separator. Redact the lifecycle anchor without dropping the
+    # diagnostic text or its useful suffix.
+    $sanitized = [regex]::Replace($sanitized, '(?i)[A-Z]:[\\/][^\s"'']*[\\/]qlog-release-lifecycle[^\s"'']*', '<TEMP>')
+    $sanitized = [regex]::Replace($sanitized, '(?i)/[^\s"'']*/qlog-release-lifecycle[^\s"'']*', '<TEMP>')
+    $sanitized | Set-Content -LiteralPath $Path -Encoding UTF8
 }
 
 function Get-SHA256([string]$Path) {
