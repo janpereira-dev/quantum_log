@@ -2234,8 +2234,13 @@ func replaceAllocationProjection(ctx context.Context, tx *sql.Tx, revision Alloc
 
 func loadRevisionTx(ctx context.Context, tx *sql.Tx, revision *AllocationRevision) error {
 	var err error
-	if err = tx.QueryRowContext(ctx, `SELECT revision_number, parent_revision_id, idempotency_key, author, source, reason, created_at FROM allocation_revisions WHERE revision_id = ? LIMIT 1`, revision.ID).Scan(&revision.RevisionNumber, &revision.ParentRevisionID, &revision.IdempotencyKey, &revision.Author, &revision.Source, &revision.Reason, new(string)); err != nil {
+	var created string
+	if err = tx.QueryRowContext(ctx, `SELECT revision_number, parent_revision_id, idempotency_key, author, source, reason, created_at FROM allocation_revisions WHERE revision_id = ? LIMIT 1`, revision.ID).Scan(&revision.RevisionNumber, &revision.ParentRevisionID, &revision.IdempotencyKey, &revision.Author, &revision.Source, &revision.Reason, &created); err != nil {
 		return err
+	}
+	revision.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
+	if err != nil {
+		return fmt.Errorf("parse allocation revision created_at: %w", err)
 	}
 	revision.Allocations, err = revisionAllocations(ctx, tx, revision.ID)
 	return err

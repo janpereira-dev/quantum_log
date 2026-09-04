@@ -517,6 +517,9 @@ func inspectAcceptancePackage(path string, version Version) error {
 	if manifest.CandidateAuthenticity != "PENDING_EXTERNAL_REVIEW" {
 		return errors.New("acceptance package candidate authenticity is not pending external review")
 	}
+	if manifest.ImplementationStatus != acceptanceImplementationComplete {
+		return errors.New("acceptance package implementation status is not complete")
+	}
 	if len(manifest.RealAgentEvidence) > 0 && len(entries) < acceptanceMinPackageEntriesWithEvidence {
 		return fmt.Errorf("acceptance package with real-agent evidence has invalid entry count: %d", len(entries))
 	}
@@ -547,7 +550,9 @@ func inspectAcceptancePackage(path string, version Version) error {
 			return errors.New("manifest evidence is missing its package entry")
 		}
 		var packaged []acceptancecontract.RealAgentEvidence
-		if err := json.Unmarshal(data, &packaged); err != nil {
+		decoder := json.NewDecoder(bytes.NewReader(data))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&packaged); err != nil {
 			return err
 		}
 		manifestCanonical, _ := json.Marshal(manifest.RealAgentEvidence)
@@ -578,8 +583,13 @@ func inspectAcceptancePackage(path string, version Version) error {
 		return err
 	}
 	var diagnostics acceptanceDiagnostics
-	if err := json.Unmarshal(entries["diagnostics.json"], &diagnostics); err != nil {
+	diagnosticsDecoder := json.NewDecoder(bytes.NewReader(entries["diagnostics.json"]))
+	diagnosticsDecoder.DisallowUnknownFields()
+	if err := diagnosticsDecoder.Decode(&diagnostics); err != nil {
 		return errors.New("invalid acceptance diagnostics")
+	}
+	if (diagnostics.LedgerStatus != acceptancePass && diagnostics.LedgerStatus != acceptanceFail) || diagnostics.CollectorLogFingerprint == "" {
+		return errors.New("acceptance diagnostics contains invalid status values")
 	}
 	if diagnostics.LedgerStatus == acceptanceFail && manifest.ExternalE2EStatus != acceptanceFail {
 		return errors.New("ledger FAIL must override acceptance aggregate status")
