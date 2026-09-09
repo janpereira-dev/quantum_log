@@ -470,3 +470,73 @@ func TestAcceptanceSanitizesUnknownNestedVocabulary(t *testing.T) {
 		t.Fatalf("unknown capture quality was not opaque: %#v", report.Sources[1])
 	}
 }
+
+func TestAcceptanceInspectionRejectsTamperedRenderedReports(t *testing.T) {
+	report := sqlite.CapabilityReport{Interactions: 1, Prompts: 2}
+	data, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := map[string][]byte{"report.json": data}
+	textReport, csvReport := new(bytes.Buffer), new(bytes.Buffer)
+	if err := writeCapabilityReport(textReport, report); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeCapabilityCSV(csvReport, report); err != nil {
+		t.Fatal(err)
+	}
+	entries["report.txt"], entries["report.csv"] = textReport.Bytes(), csvReport.Bytes()
+	if err := validateAcceptanceRenderedReports(entries); err != nil {
+		t.Fatalf("canonical reports rejected: %v", err)
+	}
+	entries["report.txt"] = append([]byte(nil), entries["report.txt"]...)
+	entries["report.txt"][0]++
+	if err := validateAcceptanceRenderedReports(entries); err == nil {
+		t.Fatal("tampered report.txt was accepted")
+	}
+	entries["report.txt"] = textReport.Bytes()
+	entries["report.csv"] = append([]byte(nil), entries["report.csv"]...)
+	entries["report.csv"][0]++
+	if err := validateAcceptanceRenderedReports(entries); err == nil {
+		t.Fatal("tampered report.csv was accepted")
+	}
+}
+
+func TestCollectorFingerprintPairingsAreCanonical(t *testing.T) {
+	if err := validateCollectorFingerprint(acceptanceDiagnostics{CollectorLogFingerprint: "not_available"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateCollectorFingerprint(acceptanceDiagnostics{CollectorLogSHA256: strings.Repeat("a", 64), CollectorLogFingerprint: "sha256"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, diagnostics := range []acceptanceDiagnostics{
+		{CollectorLogFingerprint: "sha256"},
+		{CollectorLogSHA256: strings.Repeat("A", 64), CollectorLogFingerprint: "sha256"},
+		{CollectorLogSHA256: strings.Repeat("a", 63), CollectorLogFingerprint: "sha256"},
+		{CollectorLogSHA256: strings.Repeat("a", 64), CollectorLogFingerprint: "not_available"},
+	} {
+		if err := validateCollectorFingerprint(diagnostics); err == nil {
+			t.Fatalf("accepted contradictory fingerprint: %#v", diagnostics)
+		}
+	}
+}
+
+func TestReleaseLifecycleChecksUninstallSentinelBeforeRemoval(t *testing.T) {
+	for _, name := range []string{"release-lifecycle.sh", "release-lifecycle.ps1"} {
+		path := filepath.Join("..", "..", "scripts", "acceptance", name)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(data)
+		sentinelToken, removalToken := "check_sentinel uninstall", "record_status uninstall"
+		if strings.HasSuffix(name, ".ps1") {
+			sentinelToken, removalToken = "Check-Sentinel 'uninstall'", "Invoke-Recorded 'uninstall'"
+		}
+		sentinel := strings.Index(text, sentinelToken)
+		removal := strings.Index(text, removalToken)
+		if sentinel < 0 || removal < 0 || sentinel > removal {
+			t.Fatalf("%s does not check uninstall sentinel before invoking removal", name)
+		}
+	}
+}

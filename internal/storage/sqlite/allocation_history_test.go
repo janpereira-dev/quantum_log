@@ -108,6 +108,24 @@ func TestAllocationRevisionIdempotency(t *testing.T) {
 	}
 }
 
+func TestRepairModelCallAllocationWithKeyIsReplaySafe(t *testing.T) {
+	ctx := context.Background()
+	s, call, _, project := allocationFixture(t)
+	if err := s.RepairModelCallAllocationWithKey(ctx, call, project, "repair-replay"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RepairModelCallAllocationWithKey(ctx, call, project, "repair-replay"); err != nil {
+		t.Fatal(err)
+	}
+	history, err := s.AllocationHistory(ctx, "model_call", call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 2 || history[1].IdempotencyKey != "repair-replay" {
+		t.Fatalf("history after repair replay = %#v", history)
+	}
+}
+
 func TestRecordModelCallCreatesAllocationRevisionHead(t *testing.T) {
 	ctx := context.Background()
 	s, call, _, _ := allocationFixture(t)

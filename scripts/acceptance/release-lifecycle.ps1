@@ -139,6 +139,7 @@ try {
     $migrationHash = (Get-Content -LiteralPath (Join-Path $evidenceDir 'ledger-after-migration.sha256') -Raw).Trim()
     if ($migrationHash -ne $upgradeHash) { throw 'ledger hash changed during upgrade diagnostics' }
 
+    Check-Sentinel 'uninstall'
     Invoke-Recorded 'uninstall' { $arguments = @('--install-dir', $installDir, '--no-modify-path'); & $uninstaller @arguments | Out-Null }
     if (-not (Test-Path -LiteralPath $ledger -PathType Leaf)) { throw 'qlog.db was removed by uninstall' }
     $uninstallHash = Get-SHA256 $ledger

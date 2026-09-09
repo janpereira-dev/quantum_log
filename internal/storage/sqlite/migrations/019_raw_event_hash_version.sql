@@ -1,0 +1,1 @@
+ALTER TABLE raw_events ADD COLUMN event_hash_version INTEGER NOT NULL DEFAULT 1;

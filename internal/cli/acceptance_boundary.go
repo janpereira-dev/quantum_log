@@ -534,6 +534,9 @@ func inspectAcceptancePackage(path string, version Version) error {
 			return fmt.Errorf("acceptance package missing %s", required)
 		}
 	}
+	if err := validateAcceptanceRenderedReports(entries); err != nil {
+		return err
+	}
 	if len(entries) < acceptanceMinPackageEntries || len(entries) > acceptanceMaxPackageEntries {
 		return fmt.Errorf("acceptance package has invalid entry count: %d", len(entries))
 	}
@@ -622,7 +625,7 @@ func inspectAcceptancePackage(path string, version Version) error {
 			seenAgents[evidence.AgentID] = true
 			previousStarted, previousEnded = evidence.StartedAt, evidence.EndedAt
 			evaluated, err := acceptancecontract.EvaluateRealAgentEvidenceForCandidate(evidence, canonicalCandidateTag(version.Version), commit)
-			if err != nil || evaluated.Status != evidence.Status {
+			if err != nil || evaluated.Status != evidence.Status || evaluated.SourceEvidence != evidence.SourceEvidence {
 				return errors.New("packaged real-agent evidence status is not reproducible")
 			}
 		}
@@ -639,11 +642,51 @@ func inspectAcceptancePackage(path string, version Version) error {
 	if (diagnostics.LedgerStatus != acceptancePass && diagnostics.LedgerStatus != acceptanceFail) || diagnostics.CollectorLogFingerprint == "" {
 		return errors.New("acceptance diagnostics contains invalid status values")
 	}
+	if err := validateCollectorFingerprint(diagnostics); err != nil {
+		return err
+	}
 	if diagnostics.LedgerStatus == acceptanceFail && manifest.ExternalE2EStatus != acceptanceFail {
 		return errors.New("ledger FAIL must override acceptance aggregate status")
 	}
 	if acceptancePackagePrivacyStatus(entries, manifest.RealAgentEvidence) != acceptancecontract.StatusPass {
 		return errors.New("acceptance package privacy scan failed")
+	}
+	return nil
+}
+
+func validateCollectorFingerprint(diagnostics acceptanceDiagnostics) error {
+	if diagnostics.CollectorLogSHA256 == "" {
+		if diagnostics.CollectorLogFingerprint != "not_available" {
+			return errors.New("collector fingerprint must be not_available when no digest is present")
+		}
+		return nil
+	}
+	if diagnostics.CollectorLogFingerprint != "sha256" || !isLowerHex(diagnostics.CollectorLogSHA256, 64) {
+		return errors.New("collector fingerprint requires a lowercase SHA-256 digest")
+	}
+	return nil
+}
+
+func validateAcceptanceRenderedReports(entries map[string][]byte) error {
+	var report sqlite.CapabilityReport
+	decoder := json.NewDecoder(bytes.NewReader(entries["report.json"]))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&report); err != nil {
+		return fmt.Errorf("invalid report.json: %w", err)
+	}
+	textReport := new(bytes.Buffer)
+	if err := writeCapabilityReport(textReport, report); err != nil {
+		return fmt.Errorf("render report.txt: %w", err)
+	}
+	if !bytes.Equal(textReport.Bytes(), entries["report.txt"]) {
+		return errors.New("report.txt does not match canonical report.json rendering")
+	}
+	csvReport := new(bytes.Buffer)
+	if err := writeCapabilityCSV(csvReport, report); err != nil {
+		return fmt.Errorf("render report.csv: %w", err)
+	}
+	if !bytes.Equal(csvReport.Bytes(), entries["report.csv"]) {
+		return errors.New("report.csv does not match canonical report.json rendering")
 	}
 	return nil
 }

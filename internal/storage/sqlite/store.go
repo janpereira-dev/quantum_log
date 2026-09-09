@@ -96,6 +96,8 @@ type AcceptanceBoundaryMarker struct {
 const (
 	acceptanceBoundarySource    = "qlog.acceptance"
 	acceptanceBoundaryEventType = "acceptance.boundary.v1"
+	rawEventHashVersionLegacy   = 1
+	rawEventHashVersionSequence = 2
 )
 
 type AllocationInput struct {
@@ -981,7 +983,7 @@ func (s *Store) AppendRawEvent(ctx context.Context, input RawEventInput) (RawEve
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(event_sequence), 0) + 1 FROM raw_events`).Scan(&sequence); err != nil {
 		return RawEventAppendResult{}, fmt.Errorf("read ledger sequence: %w", err)
 	}
-	canonical := canonicalEvent(input, payload)
+	canonical := canonicalEventWithSequence(input, payload, sequence)
 	event := audit.NewRecord(chainKey(input.Source, input.SessionID), canonical, previousHash)
 	if input.acceptanceBoundaryMarker {
 		var marker AcceptanceBoundaryMarker
@@ -996,10 +998,10 @@ func (s *Store) AppendRawEvent(ctx context.Context, input RawEventInput) (RawEve
 		if err != nil {
 			return RawEventAppendResult{}, fmt.Errorf("encode acceptance boundary marker: %w", err)
 		}
-		canonical = canonicalEvent(input, payload)
+		canonical = canonicalEventWithSequence(input, payload, sequence)
 		event = audit.NewRecord(chainKey(input.Source, input.SessionID), canonical, previousHash)
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO raw_events (id, source, source_version, event_type, occurred_at, received_at, trace_id, span_id, parent_span_id, project_id, project_location_id, work_context_id, session_id, project_resolution_method, project_resolution_confidence, project_resolution_evidence_json, payload_json_sanitized, previous_event_hash, event_hash, created_at, event_sequence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, input.Source, strings.TrimSpace(input.SourceVersion), input.EventType, timestamp(input.OccurredAt), now, input.TraceID, input.SpanID, input.ParentSpanID, nullable(input.ProjectID), nullable(input.ProjectLocationID), nullable(input.WorkContextID), nullable(input.SessionID), input.ResolutionMethod, input.ResolutionConfidence, input.EvidenceJSON, string(payload), previousHash, event.Hash, now, sequence)
+	_, err = tx.ExecContext(ctx, `INSERT INTO raw_events (id, source, source_version, event_type, occurred_at, received_at, trace_id, span_id, parent_span_id, project_id, project_location_id, work_context_id, session_id, project_resolution_method, project_resolution_confidence, project_resolution_evidence_json, payload_json_sanitized, previous_event_hash, event_hash, created_at, event_sequence, event_hash_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, input.Source, strings.TrimSpace(input.SourceVersion), input.EventType, timestamp(input.OccurredAt), now, input.TraceID, input.SpanID, input.ParentSpanID, nullable(input.ProjectID), nullable(input.ProjectLocationID), nullable(input.WorkContextID), nullable(input.SessionID), input.ResolutionMethod, input.ResolutionConfidence, input.EvidenceJSON, string(payload), previousHash, event.Hash, now, sequence, rawEventHashVersionSequence)
 	if err != nil {
 		return RawEventAppendResult{}, fmt.Errorf("insert raw event: %w", err)
 	}
@@ -1323,30 +1325,46 @@ func (s *Store) RecordToolCall(ctx context.Context, input ToolCallInput) (bool, 
 }
 
 func (s *Store) VerifyLedger(ctx context.Context, sessionID string) error {
-	query := `SELECT source, source_version, COALESCE(session_id, ''), event_type, occurred_at, project_id, project_location_id, work_context_id, project_resolution_method, project_resolution_confidence, project_resolution_evidence_json, payload_json_sanitized, previous_event_hash, event_hash FROM raw_events`
+	query := `SELECT source, source_version, COALESCE(session_id, ''), event_type, occurred_at, project_id, project_location_id, work_context_id, project_resolution_method, project_resolution_confidence, project_resolution_evidence_json, payload_json_sanitized, previous_event_hash, event_hash, event_sequence, event_hash_version FROM raw_events`
 	args := []any{}
 	if sessionID != "" {
 		query += " WHERE session_id = ?"
 		args = append(args, sessionID)
 	}
-	query += " ORDER BY source, COALESCE(session_id, ''), created_at, id"
+	query += " ORDER BY event_sequence"
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("query ledger: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 	previous := make(map[string]string)
+	var previousSequence int64
 	for rows.Next() {
 		var source, sourceVersion, session, eventType, occurredAt, resolutionMethod, resolutionConfidence, evidence, payload, previousHash, eventHash string
 		var projectID, locationID, contextID sql.NullString
-		if err := rows.Scan(&source, &sourceVersion, &session, &eventType, &occurredAt, &projectID, &locationID, &contextID, &resolutionMethod, &resolutionConfidence, &evidence, &payload, &previousHash, &eventHash); err != nil {
+		var sequence int64
+		var hashVersion int
+		if err := rows.Scan(&source, &sourceVersion, &session, &eventType, &occurredAt, &projectID, &locationID, &contextID, &resolutionMethod, &resolutionConfidence, &evidence, &payload, &previousHash, &eventHash, &sequence, &hashVersion); err != nil {
 			return fmt.Errorf("scan ledger event: %w", err)
 		}
+		if sequence <= previousSequence || (sessionID == "" && sequence != previousSequence+1) {
+			return errors.New("ledger event sequence is not contiguous")
+		}
+		previousSequence = sequence
 		key := chainKey(source, session)
 		if previousHash != previous[key] {
 			return errors.New("ledger previous hash does not match")
 		}
-		canonical := canonicalEvent(RawEventInput{Source: source, SourceVersion: sourceVersion, SessionID: session, EventType: eventType, OccurredAt: parseTimestamp(occurredAt), ProjectID: projectID.String, ProjectLocationID: locationID.String, WorkContextID: contextID.String, ResolutionMethod: resolutionMethod, ResolutionConfidence: resolutionConfidence, EvidenceJSON: evidence}, []byte(payload))
+		input := RawEventInput{Source: source, SourceVersion: sourceVersion, SessionID: session, EventType: eventType, OccurredAt: parseTimestamp(occurredAt), ProjectID: projectID.String, ProjectLocationID: locationID.String, WorkContextID: contextID.String, ResolutionMethod: resolutionMethod, ResolutionConfidence: resolutionConfidence, EvidenceJSON: evidence}
+		var canonical string
+		switch hashVersion {
+		case rawEventHashVersionLegacy:
+			canonical = canonicalEvent(input, []byte(payload))
+		case rawEventHashVersionSequence:
+			canonical = canonicalEventWithSequence(input, []byte(payload), sequence)
+		default:
+			return fmt.Errorf("unsupported raw event hash version %d", hashVersion)
+		}
 		if audit.Hash(key, canonical, previousHash) != eventHash {
 			return errors.New("ledger event hash does not match")
 		}
@@ -1362,7 +1380,7 @@ func (s *Store) VerifyLedger(ctx context.Context, sessionID string) error {
 }
 
 func (s *Store) verifyAllocationRevisionChain(ctx context.Context, sessionID string) error {
-	rows, err := s.db.QueryContext(ctx, `SELECT revision_id, subject_type, subject_id, revision_number, parent_revision_id, idempotency_key, MAX(project_id), MAX(allocation_basis_points), MAX(allocation_method), MAX(confidence), author, source, reason, created_at, previous_revision_hash, revision_hash FROM allocation_revisions r WHERE (? = '' OR EXISTS (SELECT 1 FROM model_calls c WHERE c.id = r.subject_id AND c.session_id = ?)) GROUP BY revision_id, subject_type, subject_id, revision_number, parent_revision_id, idempotency_key, author, source, reason, created_at, previous_revision_hash, revision_hash ORDER BY subject_type, subject_id, revision_number, revision_id`, sessionID, sessionID)
+	rows, err := s.db.QueryContext(ctx, `SELECT revision_id, subject_type, subject_id, revision_number, parent_revision_id, idempotency_key, COALESCE(MAX(project_id), ''), MAX(allocation_basis_points), MAX(allocation_method), MAX(confidence), author, source, reason, created_at, previous_revision_hash, revision_hash FROM allocation_revisions r WHERE (? = '' OR EXISTS (SELECT 1 FROM model_calls c WHERE c.id = r.subject_id AND c.session_id = ?)) GROUP BY revision_id, subject_type, subject_id, revision_number, parent_revision_id, idempotency_key, author, source, reason, created_at, previous_revision_hash, revision_hash ORDER BY subject_type, subject_id, revision_number, revision_id`, sessionID, sessionID)
 	if err != nil {
 		return fmt.Errorf("query allocation revisions: %w", err)
 	}
@@ -2196,10 +2214,16 @@ func (s *Store) ReplaceAllocationsWithKeyRevision(ctx context.Context, subjectTy
 }
 
 func (s *Store) RepairModelCallAllocation(ctx context.Context, modelCallID, projectID string) error {
+	return s.RepairModelCallAllocationWithKey(ctx, modelCallID, projectID, newID())
+}
+
+// RepairModelCallAllocationWithKey makes repair retries idempotent while
+// preserving the compatibility wrapper above for existing callers.
+func (s *Store) RepairModelCallAllocationWithKey(ctx context.Context, modelCallID, projectID, idempotencyKey string) error {
 	if strings.TrimSpace(projectID) == "" {
 		return errors.New("repair project id is required")
 	}
-	_, err := s.AppendAllocationRevision(ctx, AllocationRevisionInput{SubjectType: "model_call", SubjectID: modelCallID, Allocations: []AllocationInput{{ProjectID: projectID, BasisPoints: 10000}}, IdempotencyKey: newID(), Source: "manual", Reason: "repair allocation", Method: "manual"})
+	_, err := s.AppendAllocationRevision(ctx, AllocationRevisionInput{SubjectType: "model_call", SubjectID: modelCallID, Allocations: []AllocationInput{{ProjectID: projectID, BasisPoints: 10000}}, IdempotencyKey: idempotencyKey, Source: "manual", Reason: "repair allocation", Method: "manual"})
 	return err
 }
 
@@ -3620,6 +3644,16 @@ func canonicalEvent(input RawEventInput, payload []byte) string {
 	value := struct {
 		Source, SourceVersion, SessionID, EventType, OccurredAt, ProjectID, ProjectLocationID, WorkContextID, ResolutionMethod, ResolutionConfidence, EvidenceJSON, Payload string
 	}{input.Source, input.SourceVersion, input.SessionID, input.EventType, timestamp(input.OccurredAt), input.ProjectID, input.ProjectLocationID, input.WorkContextID, input.ResolutionMethod, input.ResolutionConfidence, input.EvidenceJSON, string(payload)}
+	encoded, _ := json.Marshal(value)
+	return string(encoded)
+}
+
+func canonicalEventWithSequence(input RawEventInput, payload []byte, sequence int64) string {
+	value := struct {
+		Version                                                                                                                                                             int   `json:"canonical_version"`
+		EventSequence                                                                                                                                                       int64 `json:"event_sequence"`
+		Source, SourceVersion, SessionID, EventType, OccurredAt, ProjectID, ProjectLocationID, WorkContextID, ResolutionMethod, ResolutionConfidence, EvidenceJSON, Payload string
+	}{rawEventHashVersionSequence, sequence, input.Source, input.SourceVersion, input.SessionID, input.EventType, timestamp(input.OccurredAt), input.ProjectID, input.ProjectLocationID, input.WorkContextID, input.ResolutionMethod, input.ResolutionConfidence, input.EvidenceJSON, string(payload)}
 	encoded, _ := json.Marshal(value)
 	return string(encoded)
 }

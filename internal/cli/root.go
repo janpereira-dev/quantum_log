@@ -740,7 +740,8 @@ func runReportSummary(command *cobra.Command, home *string, fromValue, toValue, 
 
 func newAllocationCommand(home *string) *cobra.Command {
 	allocation := &cobra.Command{Use: "allocation", Short: "Manage model call cost allocations"}
-	allocation.AddCommand(&cobra.Command{Use: "split <model-call-id> <project=basis-points>...", Short: "Split a model call cost", Args: cobra.MinimumNArgs(3), RunE: func(command *cobra.Command, args []string) error {
+	var splitKey string
+	split := &cobra.Command{Use: "split <model-call-id> <project=basis-points>...", Short: "Split a model call cost", Args: cobra.MinimumNArgs(3), RunE: func(command *cobra.Command, args []string) error {
 		service, err := app.Open(command.Context(), *home)
 		if err != nil {
 			return err
@@ -765,12 +766,18 @@ func newAllocationCommand(home *string) *cobra.Command {
 			}
 			allocations = append(allocations, sqlite.AllocationInput{ProjectID: project.ID, BasisPoints: basis})
 		}
-		if err := service.Store.ReplaceAllocations(command.Context(), "model_call", args[0], allocations); err != nil {
+		key := splitKey
+		if key == "" {
+			key = "cli-split:" + args[0] + ":" + strings.Join(args[1:], ",")
+		}
+		if err := service.Store.ReplaceAllocationsWithKey(command.Context(), "model_call", args[0], allocations, key); err != nil {
 			return err
 		}
 		_, err = fmt.Fprintln(command.Root().OutOrStdout(), "allocation: updated")
 		return err
-	}})
+	}}
+	split.Flags().StringVar(&splitKey, "idempotency-key", "", "stable replay key")
+	allocation.AddCommand(split)
 	var showJSON bool
 	show := &cobra.Command{Use: "show <model-call-id>", Short: "Show model call allocations", Args: cobra.ExactArgs(1), RunE: func(command *cobra.Command, args []string) error {
 		service, err := app.Open(command.Context(), *home)
@@ -796,6 +803,7 @@ func newAllocationCommand(home *string) *cobra.Command {
 	allocation.AddCommand(show)
 
 	var repairProject string
+	var repairKey string
 	repair := &cobra.Command{Use: "repair <model-call-id>", Short: "Repair an allocation with one explicit project", Args: cobra.ExactArgs(1), RunE: func(command *cobra.Command, args []string) error {
 		service, err := app.Open(command.Context(), *home)
 		if err != nil {
@@ -809,13 +817,18 @@ func newAllocationCommand(home *string) *cobra.Command {
 		if !found {
 			return fmt.Errorf("project %q not found", repairProject)
 		}
-		if err := service.Store.RepairModelCallAllocation(command.Context(), args[0], project.ID); err != nil {
+		key := repairKey
+		if key == "" {
+			key = "cli-repair:" + args[0] + ":" + repairProject
+		}
+		if err := service.Store.RepairModelCallAllocationWithKey(command.Context(), args[0], project.ID, key); err != nil {
 			return err
 		}
 		_, err = fmt.Fprintln(command.Root().OutOrStdout(), "allocation: repaired")
 		return err
 	}}
 	repair.Flags().StringVar(&repairProject, "project", "", "project slug")
+	repair.Flags().StringVar(&repairKey, "idempotency-key", "", "stable replay key")
 	_ = repair.MarkFlagRequired("project")
 	allocation.AddCommand(repair)
 	var historyJSON bool

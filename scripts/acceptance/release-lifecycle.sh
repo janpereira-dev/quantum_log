@@ -130,11 +130,11 @@ capture_sanitized verify "$EVIDENCE_DIR/verify.txt" "$INSTALL_DIR/qlog" --home "
 check_sentinel upgrade
 hash_file "$LEDGER" > "$EVIDENCE_DIR/ledger-after-upgrade.sha256"
 cmp -s "$EVIDENCE_DIR/ledger-after-migration.sha256" "$EVIDENCE_DIR/ledger-after-upgrade.sha256" || { printf '%s\n' 'ledger hash changed during upgrade diagnostics' >&2; exit 1; }
+check_sentinel uninstall
 
 record_status uninstall sh "$UNINSTALLER" --install-dir "$INSTALL_DIR" --no-modify-path
 [ -f "$LEDGER" ] || { printf '%s\n' 'qlog.db was removed by uninstall' >&2; exit 1; }
 hash_file "$LEDGER" > "$EVIDENCE_DIR/ledger-after-uninstall.sha256"
-check_sentinel uninstall
 cmp -s "$EVIDENCE_DIR/ledger-after-migration.sha256" "$EVIDENCE_DIR/ledger-after-uninstall.sha256" || { printf '%s\n' 'ledger hash changed during uninstall' >&2; exit 1; }
 
 record_status reinstall-to sh "$INSTALLER" --version "$QLOG_TO_VERSION" --install-dir "$INSTALL_DIR" --no-modify-path --no-bootstrap
