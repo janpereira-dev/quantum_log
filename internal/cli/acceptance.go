@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	acceptancecontract "github.com/janpereira-dev/quantum_log/internal/acceptance"
 	"github.com/janpereira-dev/quantum_log/internal/adapters"
 	"github.com/janpereira-dev/quantum_log/internal/app"
 	"github.com/janpereira-dev/quantum_log/internal/storage/sqlite"
@@ -44,18 +45,22 @@ type acceptanceAgentResult struct {
 }
 
 type acceptanceManifest struct {
-	SchemaVersion        int                     `json:"schema_version"`
-	GeneratedAt          time.Time               `json:"generated_at"`
-	Version              string                  `json:"version"`
-	Commit               string                  `json:"commit"`
-	BuildDate            string                  `json:"build_date"`
-	Platform             string                  `json:"platform"`
-	ImplementationStatus string                  `json:"implementation_status"`
-	ReadinessStatus      string                  `json:"readiness_status"`
-	ExternalE2EStatus    string                  `json:"external_e2e_status"`
-	Agents               []acceptanceAgentResult `json:"agents"`
-	Files                map[string]string       `json:"files"`
-	Privacy              []string                `json:"privacy"`
+	SchemaVersion         int                                    `json:"schema_version"`
+	GeneratedAt           time.Time                              `json:"generated_at"`
+	Version               string                                 `json:"version"`
+	Commit                string                                 `json:"commit"`
+	BuildDate             string                                 `json:"build_date"`
+	Platform              string                                 `json:"platform"`
+	CollectorReachable    bool                                   `json:"collector_reachable"`
+	ImplementationStatus  string                                 `json:"implementation_status"`
+	ReadinessStatus       string                                 `json:"readiness_status"`
+	ExternalE2EStatus     string                                 `json:"external_e2e_status"`
+	Agents                []acceptanceAgentResult                `json:"agents"`
+	Files                 map[string]string                      `json:"files"`
+	Privacy               []string                               `json:"privacy"`
+	RealAgentEvidence     []acceptancecontract.RealAgentEvidence `json:"real_agent_evidence,omitempty"`
+	CandidateBinarySHA256 string                                 `json:"candidate_binary_sha256"`
+	CandidateAuthenticity string                                 `json:"candidate_authenticity"`
 }
 
 type acceptanceDiagnostics struct {
@@ -67,22 +72,70 @@ type acceptanceDiagnostics struct {
 func newAcceptanceCommand(home *string, version Version) *cobra.Command {
 	acceptance := &cobra.Command{Use: "acceptance", Short: "Create privacy-safe local acceptance evidence"}
 	var output string
+	var boundaryIDs []string
 	run := &cobra.Command{Use: "run", Short: "Write a sanitized local acceptance ZIP package", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
 		if strings.TrimSpace(output) == "" {
 			return errors.New("acceptance run requires --output <zip>")
 		}
-		if err := writeAcceptancePackage(command.Context(), *home, version, output); err != nil {
+		if err := writeAcceptancePackageWithBoundaries(command.Context(), *home, version, output, boundaryIDs); err != nil {
 			return err
 		}
 		_, err := fmt.Fprintf(command.OutOrStdout(), "acceptance evidence: %s\n", output)
 		return err
 	}}
 	run.Flags().StringVar(&output, "output", "", "destination ZIP path")
-	acceptance.AddCommand(run)
+	run.Flags().StringArrayVar(&boundaryIDs, "boundary", nil, "repeatable qlog-created pre-action boundary id")
+	var agentID, agentVersion string
+	begin := &cobra.Command{Use: "begin", Short: "Create a one-use pre-action real-agent boundary", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+		boundary, err := createAcceptanceBoundary(command.Context(), *home, version, agentID, agentVersion)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(command.OutOrStdout(), boundary.ID)
+		return err
+	}}
+	begin.Flags().StringVar(&agentID, "agent", "", "supported agent id")
+	begin.Flags().StringVar(&agentVersion, "agent-version", "", "sanitized exact agent version")
+	_ = begin.MarkFlagRequired("agent")
+	_ = begin.MarkFlagRequired("agent-version")
+	acceptance.AddCommand(begin, run, newAcceptanceInspectCommand(version))
+	var source, sourceVersion, eventType, payloadFingerprint string
+	sentinel := &cobra.Command{Use: "sentinel", Short: "Verify an exact sanitized ledger sentinel", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+		service, err := app.OpenSnapshotReadOnly(command.Context(), *home)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = service.Close() }()
+		verified, err := service.Store.VerifyRawEventSentinel(command.Context(), source, sourceVersion, eventType, payloadFingerprint)
+		if err != nil {
+			return err
+		}
+		if !verified {
+			return errors.New("acceptance sentinel not verified")
+		}
+		_, err = fmt.Fprintln(command.OutOrStdout(), "acceptance sentinel: VERIFIED")
+		return err
+	}}
+	sentinel.Flags().StringVar(&source, "source", "", "exact ledger source")
+	sentinel.Flags().StringVar(&sourceVersion, "source-version", "", "exact ledger source version")
+	sentinel.Flags().StringVar(&eventType, "event-type", "", "exact ledger event type")
+	sentinel.Flags().StringVar(&payloadFingerprint, "payload-sha256", "", "SHA-256 fingerprint of the sanitized payload")
+	_ = sentinel.MarkFlagRequired("source")
+	_ = sentinel.MarkFlagRequired("event-type")
+	_ = sentinel.MarkFlagRequired("payload-sha256")
+	acceptance.AddCommand(sentinel)
 	return acceptance
 }
 
 func writeAcceptancePackage(ctx context.Context, home string, version Version, output string) error {
+	return writeAcceptancePackageWithBoundaries(ctx, home, version, output, nil)
+}
+
+func writeAcceptancePackageWithBoundaries(ctx context.Context, home string, version Version, output string, boundaryIDs []string) error {
+	tag, commit, binaryHash, platform, err := acceptanceRuntimeIdentity(version)
+	if err != nil {
+		return err
+	}
 	service, err := app.OpenSnapshotReadOnly(ctx, home)
 	if err != nil {
 		return err
@@ -116,6 +169,10 @@ func writeAcceptancePackage(ctx context.Context, home string, version Version, o
 			diagnostics.CollectorLogSHA256 = fingerprint
 			diagnostics.CollectorLogFingerprint = "sha256"
 		}
+	}
+	realAgentEvidence, err := evaluateAcceptanceBoundaries(ctx, service, tag, commit, binaryHash, platform, diagnostics.LedgerStatus, boundaryIDs)
+	if err != nil {
+		return err
 	}
 
 	reportJSON, err := json.MarshalIndent(report, "", "  ")
@@ -159,6 +216,22 @@ func writeAcceptancePackage(ctx context.Context, home string, version Version, o
 		"report.txt":       reportText.Bytes(),
 		"sessions.json":    append(sessionsJSON, '\n'),
 	}
+	privacyStatus := acceptancePackagePrivacyStatus(files, realAgentEvidence)
+	if privacyStatus != acceptancecontract.StatusPass {
+		return errors.New("acceptance package privacy scan failed")
+	}
+	for index := range realAgentEvidence {
+		realAgentEvidence[index].PrivacyStatus = privacyStatus
+		realAgentEvidence[index], _ = acceptancecontract.EvaluateRealAgentEvidence(realAgentEvidence[index])
+	}
+	agents = applyRealAgentEvidence(agents, realAgentEvidence)
+	if len(realAgentEvidence) > 0 {
+		evidenceJSON, err := json.MarshalIndent(realAgentEvidence, "", "  ")
+		if err != nil {
+			return fmt.Errorf("encode real-agent evidence: %w", err)
+		}
+		files["real-agent-evidence.json"] = append(evidenceJSON, '\n')
+	}
 	externalE2EStatus := acceptanceExternalStatus(agents)
 	if diagnostics.LedgerStatus == acceptanceFail {
 		externalE2EStatus = acceptanceFail
@@ -170,6 +243,7 @@ func writeAcceptancePackage(ctx context.Context, home string, version Version, o
 		Commit:               version.Commit,
 		BuildDate:            version.BuildDate,
 		Platform:             runtime.GOOS + "/" + runtime.GOARCH,
+		CollectorReachable:   collector.Reachable,
 		ImplementationStatus: acceptanceImplementationComplete,
 		ReadinessStatus:      acceptanceReadiness(agents),
 		ExternalE2EStatus:    externalE2EStatus,
@@ -181,14 +255,62 @@ func writeAcceptancePackage(ctx context.Context, home string, version Version, o
 			"Diagnostics contain only status and qlog-owned log fingerprints, never log content or paths.",
 			"PASS records local evidence only and never asserts external verification.",
 		},
+		RealAgentEvidence:     realAgentEvidence,
+		CandidateAuthenticity: "PENDING_EXTERNAL_REVIEW",
 	}
+	manifest.Commit, manifest.CandidateBinarySHA256, manifest.Platform = commit, binaryHash, platform
 	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode manifest: %w", err)
 	}
 	files["manifest.json"] = append(manifestJSON, '\n')
 	files["SHA256SUMS"] = acceptanceChecksumFile(files)
-	return writeAcceptanceZIP(output, files)
+	if err := validateAcceptancePackageFileSizes(files); err != nil {
+		return err
+	}
+	reservations, err := reserveAcceptanceBoundaries(service.Paths.Home, boundaryIDs)
+	if err != nil {
+		return err
+	}
+	committed := false
+	published := false
+	defer func() {
+		// Once publication succeeds, retain reservations if marking consumption
+		// fails so the boundary cannot be silently reused for another package.
+		if !committed && !published {
+			releaseAcceptanceReservations(reservations)
+		}
+	}()
+	if err := writeAcceptanceZIP(output, files); err != nil {
+		return err
+	}
+	published = true
+	if err := commitAcceptanceReservations(reservations, time.Now().UTC()); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+func applyRealAgentEvidence(agents []acceptanceAgentResult, evidence []acceptancecontract.RealAgentEvidence) []acceptanceAgentResult {
+	byAgent := make(map[string]acceptancecontract.RealAgentEvidence, len(evidence))
+	for _, item := range evidence {
+		byAgent[item.AgentID] = item
+	}
+	for index := range agents {
+		item, found := byAgent[agents[index].AdapterID]
+		if !found {
+			agents[index].Status = acceptancePendingExternalE2E
+			agents[index].SourceEvidence = false
+			continue
+		}
+		agents[index].Status = item.Status
+		agents[index].SourceEvidence = item.SourceEvidence
+		if !item.SourceEvidence {
+			agents[index].SourceEvidence = false
+		}
+	}
+	return agents
 }
 
 func acceptanceSafeReport(report sqlite.CapabilityReport) sqlite.CapabilityReport {
@@ -198,6 +320,10 @@ func acceptanceSafeReport(report sqlite.CapabilityReport) sqlite.CapabilityRepor
 	for index := range report.Sources {
 		report.Sources[index].Source = acceptanceSafeVocabulary(report.Sources[index].Source, acceptanceKnownSources)
 		report.Sources[index].Quality = acceptanceSafeVocabulary(report.Sources[index].Quality, acceptanceKnownCaptureQuality)
+		if report.Sources[index].Version != nil && (strings.ContainsAny(*report.Sources[index].Version, `/\\:`) || strings.ContainsAny(*report.Sources[index].Version, "\r\n\x00")) {
+			redacted := acceptanceOpaqueID(*report.Sources[index].Version)
+			report.Sources[index].Version = &redacted
+		}
 	}
 	for index := range report.MetricCoverage {
 		for provenanceIndex := range report.MetricCoverage[index].Provenance {
@@ -257,7 +383,7 @@ func acceptanceAgents(ctx context.Context, service *app.Service, collectorReacha
 		result := acceptanceAgentStatus(adapter.Descriptor().ID, status.Available, status.Installed, recentEvidence)
 		result.CaptureQuality = string(status.CaptureQuality)
 		result.Source = contract.Source
-		result.SourceEvidence = contract.SourceEvidence
+		result.SourceEvidence = false
 		if !collectorReachable {
 			result.Readiness = acceptancePendingExternalE2E
 		}
@@ -269,9 +395,6 @@ func acceptanceAgents(ctx context.Context, service *app.Service, collectorReacha
 
 func acceptanceAgentStatus(adapterID string, available, installed, recentEvidence bool) acceptanceAgentResult {
 	result := acceptanceAgentResult{AdapterID: adapterID, Available: available, Installed: installed, RecentEvidence: recentEvidence, Status: acceptancePendingExternalE2E, Readiness: acceptancePendingExternalE2E}
-	if recentEvidence {
-		result.Status = acceptancePass
-	}
 	if available && installed {
 		result.Readiness = acceptanceReadyForExternalE2E
 	}
@@ -288,10 +411,17 @@ func acceptanceReadiness(results []acceptanceAgentResult) string {
 }
 
 func acceptanceExternalStatus(results []acceptanceAgentResult) string {
+	pending := false
 	for _, result := range results {
-		if result.Status != acceptancePass {
-			return acceptancePendingExternalE2E
+		if result.Status == acceptanceFail {
+			return acceptanceFail
 		}
+		if result.Status != acceptancePass {
+			pending = true
+		}
+	}
+	if pending {
+		return acceptancePendingExternalE2E
 	}
 	return acceptancePass
 }
@@ -354,6 +484,11 @@ func writeAcceptanceZIP(output string, files map[string][]byte) error {
 	directory := filepath.Dir(output)
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return fmt.Errorf("create output directory: %w", err)
+	}
+	if _, err := os.Lstat(output); err == nil {
+		return errors.New("acceptance package output already exists; refusing overwrite")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect acceptance package output: %w", err)
 	}
 	temporary, err := os.CreateTemp(directory, ".qlog-acceptance-*.zip")
 	if err != nil {

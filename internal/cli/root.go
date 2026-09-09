@@ -57,8 +57,20 @@ func New(version Version) *cobra.Command {
 	}
 	root.PersistentFlags().StringVar(&home, "home", "", "override the local QUANTUM_LOG data directory")
 	root.SetVersionTemplate("{{.Version}}\n")
-	root.AddCommand(newInitCommand(&home), newConfigCommand(&home), newDoctorCommand(&home), newVerifyCommand(&home), newMaintenanceCommand(&home), newProjectCommand(&home), newIngestCommand(&home), newUsageCommand(&home), newLogCommand(&home), newReportCommand(&home), newLegacySummaryCommand(&home), newAllocationCommand(&home), newPricingCommand(&home), newTaskCommand(&home), newSessionCommand(&home), newExportCommand(&home), newTUICommand(&home), newAdapterCommand(&home), newSetupCommand(&home), newCollectorCommand(&home), newHookCommand(&home), newUninstallCommand(&home), newRunCommand(&home), newMCPCommand(&home, version), newUnattributedCommand(&home), newBudgetCommand(&home), newAnchorCommand(&home), newAcceptanceCommand(&home, version))
+	root.AddCommand(newInitCommand(&home), newMigrateCommand(&home), newConfigCommand(&home), newDoctorCommand(&home), newVerifyCommand(&home), newMaintenanceCommand(&home), newProjectCommand(&home), newIngestCommand(&home), newUsageCommand(&home), newLogCommand(&home), newReportCommand(&home), newLegacySummaryCommand(&home), newAllocationCommand(&home), newPricingCommand(&home), newTaskCommand(&home), newSessionCommand(&home), newExportCommand(&home), newTUICommand(&home), newAdapterCommand(&home), newSetupCommand(&home), newCollectorCommand(&home), newHookCommand(&home), newUninstallCommand(&home), newRunCommand(&home), newMCPCommand(&home, version), newUnattributedCommand(&home), newBudgetCommand(&home), newAnchorCommand(&home), newAcceptanceCommand(&home, version))
 	return root
+}
+
+func newMigrateCommand(home *string) *cobra.Command {
+	return &cobra.Command{Use: "migrate", Short: "Apply pending local ledger migrations", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+		service, err := app.Open(command.Context(), *home)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = service.Close() }()
+		_, err = fmt.Fprintln(command.OutOrStdout(), "ledger: migrated")
+		return err
+	}}
 }
 
 func newInitCommand(home *string) *cobra.Command {
@@ -728,7 +740,8 @@ func runReportSummary(command *cobra.Command, home *string, fromValue, toValue, 
 
 func newAllocationCommand(home *string) *cobra.Command {
 	allocation := &cobra.Command{Use: "allocation", Short: "Manage model call cost allocations"}
-	allocation.AddCommand(&cobra.Command{Use: "split <model-call-id> <project=basis-points>...", Short: "Split a model call cost", Args: cobra.MinimumNArgs(3), RunE: func(command *cobra.Command, args []string) error {
+	var splitKey string
+	split := &cobra.Command{Use: "split <model-call-id> <project=basis-points>...", Short: "Split a model call cost", Args: cobra.MinimumNArgs(3), RunE: func(command *cobra.Command, args []string) error {
 		service, err := app.Open(command.Context(), *home)
 		if err != nil {
 			return err
@@ -753,12 +766,18 @@ func newAllocationCommand(home *string) *cobra.Command {
 			}
 			allocations = append(allocations, sqlite.AllocationInput{ProjectID: project.ID, BasisPoints: basis})
 		}
-		if err := service.Store.ReplaceAllocations(command.Context(), "model_call", args[0], allocations); err != nil {
+		key := splitKey
+		if key == "" {
+			key = "cli-split:" + args[0] + ":" + strings.Join(args[1:], ",")
+		}
+		if err := service.Store.ReplaceAllocationsWithKey(command.Context(), "model_call", args[0], allocations, key); err != nil {
 			return err
 		}
 		_, err = fmt.Fprintln(command.Root().OutOrStdout(), "allocation: updated")
 		return err
-	}})
+	}}
+	split.Flags().StringVar(&splitKey, "idempotency-key", "", "stable replay key")
+	allocation.AddCommand(split)
 	var showJSON bool
 	show := &cobra.Command{Use: "show <model-call-id>", Short: "Show model call allocations", Args: cobra.ExactArgs(1), RunE: func(command *cobra.Command, args []string) error {
 		service, err := app.Open(command.Context(), *home)
@@ -784,6 +803,7 @@ func newAllocationCommand(home *string) *cobra.Command {
 	allocation.AddCommand(show)
 
 	var repairProject string
+	var repairKey string
 	repair := &cobra.Command{Use: "repair <model-call-id>", Short: "Repair an allocation with one explicit project", Args: cobra.ExactArgs(1), RunE: func(command *cobra.Command, args []string) error {
 		service, err := app.Open(command.Context(), *home)
 		if err != nil {
@@ -797,15 +817,61 @@ func newAllocationCommand(home *string) *cobra.Command {
 		if !found {
 			return fmt.Errorf("project %q not found", repairProject)
 		}
-		if err := service.Store.RepairModelCallAllocation(command.Context(), args[0], project.ID); err != nil {
+		key := repairKey
+		if key == "" {
+			key = "cli-repair:" + args[0] + ":" + repairProject
+		}
+		if err := service.Store.RepairModelCallAllocationWithKey(command.Context(), args[0], project.ID, key); err != nil {
 			return err
 		}
 		_, err = fmt.Fprintln(command.Root().OutOrStdout(), "allocation: repaired")
 		return err
 	}}
 	repair.Flags().StringVar(&repairProject, "project", "", "project slug")
+	repair.Flags().StringVar(&repairKey, "idempotency-key", "", "stable replay key")
 	_ = repair.MarkFlagRequired("project")
 	allocation.AddCommand(repair)
+	var historyJSON bool
+	history := &cobra.Command{Use: "history <model-call-id>", Short: "Show immutable allocation revisions", Args: cobra.ExactArgs(1), RunE: func(command *cobra.Command, args []string) error {
+		service, err := app.Open(command.Context(), *home)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = service.Close() }()
+		items, err := service.Store.AllocationHistory(command.Context(), "model_call", args[0])
+		if err != nil {
+			return err
+		}
+		if historyJSON {
+			return writeJSON(command.Root().OutOrStdout(), items)
+		}
+		for _, item := range items {
+			if _, err := fmt.Fprintf(command.Root().OutOrStdout(), "%s | revision %d | %s | %s\n", item.ID, item.RevisionNumber, item.Reason, item.CreatedAt.Format(time.RFC3339)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}}
+	history.Flags().BoolVar(&historyJSON, "json", false, "output JSON")
+	allocation.AddCommand(history)
+	var revertKey, revertReason string
+	revert := &cobra.Command{Use: "revert <revision-id>", Short: "Append a revision restoring an earlier allocation", Args: cobra.ExactArgs(1), RunE: func(command *cobra.Command, args []string) error {
+		service, err := app.Open(command.Context(), *home)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = service.Close() }()
+		item, err := service.Store.RevertAllocationRevision(command.Context(), args[0], revertKey, revertReason)
+		if err != nil {
+			return err
+		}
+		return writeJSON(command.Root().OutOrStdout(), item)
+	}}
+	revert.Flags().StringVar(&revertKey, "idempotency-key", "", "stable replay key")
+	revert.Flags().StringVar(&revertReason, "reason", "", "reason for the correction")
+	_ = revert.MarkFlagRequired("idempotency-key")
+	_ = revert.MarkFlagRequired("reason")
+	allocation.AddCommand(revert)
 	return allocation
 }
 

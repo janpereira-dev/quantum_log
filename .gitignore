@@ -1,8 +1,13 @@
 /qlog
 /qlog.exe
+/.qlog/
+/.claude/worktrees/
+/.claude/*.patch
 /dist
 *.db
 *.db-shm
 *.db-wal
 coverage.out
+/qlog-external-acceptance.zip
+/*.test
 .atl/

@@ -329,7 +329,9 @@ func hasAdapterEvidence(ctx context.Context, store *sqlite.Store, adapterID, pro
 	if err != nil || !found || contract.LifecycleSource == "" {
 		return found, err
 	}
-	return store.HasRecentAdapterEvidence(ctx, sqlite.AdapterEvidenceQuery{AdapterID: adapterID, Source: contract.LifecycleSource, From: from, To: to, ProjectSlug: projectSlug, RequiredQuality: string(contract.LifecycleQuality)})
+	return store.HasCorrelatedAdapterEvidence(ctx,
+		sqlite.AdapterEvidenceQuery{AdapterID: adapterID, Source: contract.Source, From: from, To: to, ProjectSlug: projectSlug, RequiredQuality: string(contract.requiredEvidenceQuality())},
+		sqlite.AdapterEvidenceQuery{AdapterID: adapterID, Source: contract.LifecycleSource, From: from, To: to, ProjectSlug: projectSlug, RequiredQuality: string(contract.LifecycleQuality)})
 }
 
 func (contract adapterEvidenceContract) requiredEvidenceQuality() adapters.CaptureQuality {

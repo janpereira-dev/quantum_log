@@ -84,15 +84,24 @@ Known P0 external blocks:
 
 Do not add synthetic events to clear these stages.
 
-## Install cannot fetch RC
+## Install cannot fetch RC10
 
-`v0.3.2-rc.3` is a local candidate artifact, not a public end-to-end installer acceptance. Use local artifact directory only for RC validation:
+`v0.4.0-rc10` is a published prerelease with signed checksums. Retry through
+the exact-version GitHub RC installer rather than npm, `go install`, or an older
+stable release:
 
-```powershell
-cmd /c "set QLOG_INSTALL_LOCAL_ARTIFACT_DIR=C:\path\to\dist&& npm install --prefix C:\qlog-install .\packaging\npm"
+```sh
+sh install.sh --version v0.4.0-rc10
 ```
 
-Official installer full download/bootstrap remains blocked until signed HTTPS RC artifact exists. Do not downgrade silently to older release.
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 --version v0.4.0-rc10
+```
+
+If download or checksum verification fails, stop. Confirm the requested tag is
+exactly `v0.4.0-rc10`, inspect the installer error, and do not downgrade or
+bypass checksum verification. The historical npm/local-artifact workflow is
+unsupported for current installation or RC10 verification.
 
 ## Remove qlog-owned configuration
 

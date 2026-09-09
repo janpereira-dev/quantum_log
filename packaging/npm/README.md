@@ -1,19 +1,25 @@
-# @janpereira.dev/quantum-log
+# Legacy npm packaging fixture
 
-Thin npm distributor for verified QUANTUM_LOG CLI binary.
+This package is a legacy, unpublished packaging-validation fixture. Its source
+metadata is pinned to `v0.3.2-rc.3`, while the public npm registry's historical
+`latest` version is `0.1.0`. It is unsupported for installing or verifying the
+current Quantum Log candidate.
 
-## Install
+Install published prerelease `v0.4.0-rc10` through the exact-version signed
+GitHub Release installers documented in [`../../docs/INSTALL.md`](../../docs/INSTALL.md):
 
 ```sh
-npm install -g @janpereira.dev/quantum-log
-qlog --version
+sh install.sh --version v0.4.0-rc10
 ```
 
-Installation selects current supported platform (`darwin`, `linux`, or `win32`) and architecture (`x64` or `arm64`), downloads matching `v0.3.2-rc.3` GitHub Release archive and `checksums.txt`, verifies archive SHA-256, then extracts only `qlog` (or `qlog.exe`). It does not collect or transmit telemetry.
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 --version v0.4.0-rc10
+```
 
-Only Node.js built-in modules are used. Node.js 18 or newer is required.
+Do not publish or globally install this npm package as a substitute for those
+installers.
 
-## Validation
+## Historical fixture validation only
 
 ```sh
 npm test
@@ -21,6 +27,11 @@ npm run test:dry-run
 npm pack --dry-run
 ```
 
-`npm run test:dry-run` prints selected release URLs without downloading or changing files. `QLOG_INSTALL_DRY_RUN=1` provides same behavior for direct script invocation.
+These commands exercise legacy packaging code; they are not current release or
+external-E2E evidence. `npm run test:dry-run` prints selected historical URLs
+without downloading or changing files. `QLOG_INSTALL_DRY_RUN=1` provides the
+same behavior for direct script invocation.
 
-For unpublished release-candidate validation, set `QLOG_INSTALL_LOCAL_ARTIFACT_DIR` to a GoReleaser-generated artifact directory containing candidate `checksums.txt` and the exact archive for the host platform. `npm run test:artifact` packs and installs the local package into a temporary prefix, then runs its installed binary. The same checksum and platform/architecture checks apply; this path never publishes npm content.
+`QLOG_INSTALL_LOCAL_ARTIFACT_DIR` and `npm run test:artifact` remain only for
+maintaining this historical fixture against its pinned candidate. They do not
+validate RC10 and must not be presented as a supported user installation path.

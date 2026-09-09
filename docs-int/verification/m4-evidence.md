@@ -1,6 +1,8 @@
 # M4 Evidence
 
-M4 is `IN_PROGRESS`. Synthetic tests and local setup state do not prove real-agent capture.
+M4 is `IN_PROGRESS`. The current audit candidate is repository `HEAD` `72acc4f` (2026-09-04), not a published stable release. Published RC10 archives and repository tests establish availability and implementation, not two-machine or five-agent external verification. Synthetic tests, historical runs, and local setup state do not prove current-candidate real-agent capture. Technical CI may be green for repository checks, but it does not substitute for independent multi-device real-agent evidence.
+
+Status semantics are strict: `IMPLEMENTED` means code exists; `READY_FOR_EXTERNAL_E2E` means the implementation can be exercised; `PASS` means matching local evidence exists for a recorded command, platform, and candidate; `VERIFIED` requires the committed acceptance matrix and independent review.
 
 ## Stable Scope And Source-Evidence Gates
 
@@ -20,11 +22,11 @@ OpenCode token capture remains unavailable. Copilot VS Code reported-token handl
 
 | Adapter | State | Evidence |
 |---|---|---|
-| copilot-vscode | OTEL_REPORTED | Documented VS Code Copilot OTel configuration and receiver support are ready; GitHub Copilot extension acceptance remains required on another device. |
-| opencode | LIFECYCLE_ONLY | Plugin records lifecycle/tool events only; token field names have not been source-verified. |
-| codex | OTEL_REPORTED | qlog manages documented user-level Codex OTLP logs; real-agent clean-device acceptance remains required. |
-| copilot | LIFECYCLE_ONLY | Official Copilot CLI lifecycle hooks are configured in a qlog-owned user hook file; real CLI action emitted no observable hook event in this environment. |
-| claude-code | LIFECYCLE_ONLY | Lifecycle hooks exist; token capture is not claimed. |
+| copilot-vscode | `READY_FOR_EXTERNAL_E2E` | Implemented `otel_reported` path; extension acceptance on two clean devices remains `NOT_RUN` for the current audit candidate. |
+| opencode | `READY_FOR_EXTERNAL_E2E` | Implemented `lifecycle_only` plugin path; current-candidate real-source acceptance remains `NOT_RUN`. |
+| codex | `READY_FOR_EXTERNAL_E2E` | Implemented `otel_reported` path; current-candidate clean-device acceptance remains `NOT_RUN`. |
+| copilot | `READY_FOR_EXTERNAL_E2E` | Implemented `lifecycle_only` hooks; historical real CLI action produced no observable hook event, and RC10 acceptance remains `NOT_RUN`. |
+| claude-code | `READY_FOR_EXTERNAL_E2E` | Implemented `lifecycle_only` hooks; current-candidate real-source acceptance remains `NOT_RUN`. |
 
 Adapter verification is fail-closed. `qlog adapter verify <adapter> --project <slug> --json` emits its stage result and exits non-zero while any required setup, availability, collector, capture-quality, source-evidence, or fresh durable-evidence stage fails. Reported-token quality additionally requires a linked normalized model call with source-reported tokens. Clean-device real-agent evidence keeps Codex unverified; source-evidence gates keep Copilot VS Code and OpenCode unverified.
 
@@ -76,7 +78,9 @@ For lifecycle-only adapters, first event must create sanitized raw evidence with
 - [ ] `qlog usage project <slug>` shows model and tokens for the target project, or explicitly records `unattributed` if Copilot did not provide reliable project context.
 - [ ] No prompt, response, tool arguments, tool results, secrets, or authorization fields are persisted.
 
-## Evidence Log
+## Dated Historical Evidence Log
+
+The entries below retain the commands and results observed on their stated dates and candidates. They are not current RC10 evidence and cannot be used to mark M4 `VERIFIED`.
 
 ### 2026-08-05 Real Copilot Observations And Provenance Gate
 

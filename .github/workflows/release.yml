@@ -5,41 +5,198 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
-  id-token: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  release:
+  prepublish:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - name: Enforce release-candidate tag format
+          ref: ${{ github.sha }}
+      - name: Validate immutable release source
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          EVENT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$REF_TYPE" == 'tag' ]] || { echo 'NO-GO: release ref is not a tag' >&2; exit 1; }
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]] || {
+            echo 'NO-GO: release tag must be an immutable vX.Y.Z tag' >&2
+            exit 1
+          }
+          [[ "$EVENT_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'NO-GO: event SHA is invalid' >&2; exit 1; }
+          tag_sha="$(git rev-list -n 1 "$RELEASE_TAG")"
+          [[ "$tag_sha" == "$EVENT_SHA" ]] || { echo 'NO-GO: local tag differs from the release event SHA' >&2; exit 1; }
+          [[ "$(git rev-parse HEAD)" == "$EVENT_SHA" ]] || { echo 'NO-GO: checkout differs from workflow source' >&2; exit 1; }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.26.6
+          cache: true
+      - uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+      - name: Validate source and tests
         shell: bash
         run: |
-          tag='${{ github.ref_name }}'
-          case "$tag" in
-            *-alpha.*|*-beta.*|*-rc.*)
-              echo "Release-candidate tags must use -alphaN, -betaN, or -rcN (for example v0.4.0-rc10)." >&2
-              exit 1
-              ;;
-          esac
-      - uses: actions/setup-go@v7
-        with:
-          go-version: stable
-      - uses: anchore/sbom-action/download-syft@v0
-      - uses: goreleaser/goreleaser-action@v7
+          set -euo pipefail
+          test -z "$(gofmt -l .)"
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+          go vet ./...
+          go test ./...
+          go test -race ./...
+          go build ./...
+      - name: Check GoReleaser configuration
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
           distribution: goreleaser
-          version: latest
+          version: v2.18.0
+          args: check
+      - name: Build unpublished snapshot
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          distribution: goreleaser
+          version: v2.18.0
+          args: release --snapshot --clean --skip=publish
+      - name: Verify unpublished snapshot lifecycle
+        shell: bash
+        run: |
+          set -euo pipefail
+          while read -r checksum filename; do
+            [[ "$checksum" =~ ^[0-9a-f]{64}$ ]] || { echo "NO-GO: invalid checksum for $filename" >&2; exit 1; }
+            [[ "$filename" != */* && -f "dist/$filename" ]] || { echo "NO-GO: missing snapshot asset $filename" >&2; exit 1; }
+            printf '%s  %s\n' "$checksum" "dist/$filename" | sha256sum --check --strict -
+          done < dist/checksums.txt
+          archive="$(find dist -maxdepth 1 -type f -name 'qlog_*_linux_amd64.tar.gz' -print -quit)"
+          [[ -n "$archive" ]] || { echo 'NO-GO: linux amd64 snapshot archive is missing' >&2; exit 1; }
+          stage="$(mktemp -d)"
+          trap 'rm -rf "$stage"' EXIT
+          tar -xzf "$archive" -C "$stage"
+          "$stage/qlog" --version
+
+  publish:
+    needs: prepublish
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - name: Revalidate remote tag at privileged job start
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          EVENT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]] || { echo 'NO-GO: invalid release tag' >&2; exit 1; }
+          [[ "$EVENT_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'NO-GO: invalid event SHA' >&2; exit 1; }
+          remote_refs="$(git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" "refs/tags/$RELEASE_TAG^{}")" || { echo 'NO-GO: remote tag is unavailable or ambiguous' >&2; exit 1; }
+          remote_sha="$(printf '%s\n' "$remote_refs" | awk -v direct="refs/tags/$RELEASE_TAG" -v peeled="refs/tags/$RELEASE_TAG^{}" '
+            $2 == direct { direct_sha=$1; direct_count++ }
+            $2 == peeled { peeled_sha=$1; peeled_count++ }
+            END { if (direct_count != 1 || peeled_count > 1) exit 1; print peeled_count == 1 ? peeled_sha : direct_sha }
+          ')" || { echo 'NO-GO: remote tag response is ambiguous' >&2; exit 1; }
+          [[ "$remote_sha" == "$EVENT_SHA" ]] || { echo 'NO-GO: remote tag moved after the release event' >&2; exit 1; }
+          [[ "$(git rev-parse HEAD)" == "$EVENT_SHA" ]] || { echo 'NO-GO: privileged checkout differs from event SHA' >&2; exit 1; }
+      - name: Reject pre-existing release
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]] || { echo 'NO-GO: invalid release tag' >&2; exit 1; }
+          [[ "$REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo 'NO-GO: invalid repository identity' >&2; exit 1; }
+          response="$(mktemp)"
+          trap 'rm -f "$response"' EXIT
+          if ! HTTP_STATUS="$(curl --silent --show-error --location --proto '=https' --proto-redir '=https' \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            --output "$response" --write-out '%{http_code}' \
+            "https://api.github.com/repos/$REPOSITORY/releases/tags/$RELEASE_TAG")"; then
+            echo 'NO-GO: release existence could not be determined; manual reconciliation is required' >&2
+            exit 1
+          fi
+          case "$HTTP_STATUS" in
+            404) ;;
+            200) echo 'NO-GO: a release already exists for this tag; manual reconciliation is required' >&2; exit 1 ;;
+            *) echo "NO-GO: release existence returned HTTP $HTTP_STATUS; manual reconciliation is required" >&2; exit 1 ;;
+          esac
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.26.6
+          cache: true
+      - uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+      - name: Build draft release
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          distribution: goreleaser
+          version: v2.18.0
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - uses: sigstore/cosign-installer@v3
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
       - name: Sign release checksums
+        shell: bash
         run: cosign sign-blob dist/checksums.txt --bundle dist/checksums.txt.sigstore.json --yes
       - name: Upload signature bundle
-        run: gh release upload "${{ github.ref_name }}" dist/checksums.txt.sigstore.json --clobber
+        shell: bash
         env:
+          RELEASE_TAG: ${{ github.ref_name }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$RELEASE_TAG" dist/checksums.txt.sigstore.json --clobber
+      - name: Download published bundle into a clean directory
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          rm -rf published-assets
+          mkdir published-assets
+          gh release download "$RELEASE_TAG" --dir published-assets
+      - name: Verify published release authenticity
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: sh scripts/acceptance/verify-release-authenticity.sh --version "$RELEASE_TAG" --artifact-dir published-assets
+      - name: Revalidate remote tag before publishing draft
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          EVENT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]] || { echo 'NO-GO: invalid release tag' >&2; exit 1; }
+          [[ "$EVENT_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'NO-GO: invalid event SHA' >&2; exit 1; }
+          remote_refs="$(git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" "refs/tags/$RELEASE_TAG^{}")" || { echo 'NO-GO: remote tag is unavailable or ambiguous' >&2; exit 1; }
+          remote_sha="$(printf '%s\n' "$remote_refs" | awk -v direct="refs/tags/$RELEASE_TAG" -v peeled="refs/tags/$RELEASE_TAG^{}" '
+            $2 == direct { direct_sha=$1; direct_count++ }
+            $2 == peeled { peeled_sha=$1; peeled_count++ }
+            END { if (direct_count != 1 || peeled_count > 1) exit 1; print peeled_count == 1 ? peeled_sha : direct_sha }
+          ')" || { echo 'NO-GO: remote tag response is ambiguous' >&2; exit 1; }
+          [[ "$remote_sha" == "$EVENT_SHA" ]] || { echo 'NO-GO: remote tag moved before publication' >&2; exit 1; }
+      - name: Publish verified draft
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$RELEASE_TAG" --draft=false
+      - name: Mark failed release as NO-GO
+        if: failure()
+        shell: bash
+        run: echo 'NO-GO - verification failed; any draft requires manual reconciliation and remains unpublished.' >&2

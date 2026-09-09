@@ -28,24 +28,26 @@ To remove qlog-owned startup, collector, and adapter configuration in one step,
 run `qlog uninstall`. It always retains the local ledger in RC.10: automatic
 `--purge-data` is temporarily unavailable and fails closed.
 
-| Agent | Interaction | Prompt | Tokens | Cache | Cost | Duration | Tools |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| Copilot CLI | captured | configurable | reported | reported | not_emitted_by_source | reported | captured |
-| Copilot VS Code | captured | configurable | reported | reported | reported | reported | captured |
-| Codex | captured | configurable | reported | reported | not_emitted_by_source | reported | captured |
-| Claude Code | captured | configurable | reported | reported | not_emitted_by_source | reported | captured |
-| OpenCode | captured | not_emitted_by_source | reported | reported | reported | reported | captured |
+| Agent | Implemented capture path | Current evidence state |
+| --- | --- | --- |
+| Copilot CLI | Sanitized lifecycle hooks | `READY_FOR_EXTERNAL_E2E`; native hook-origin RC10 evidence is not recorded |
+| Copilot VS Code | Privacy-disabled-content OTLP | `READY_FOR_EXTERNAL_E2E`; two-machine RC10 evidence is not recorded |
+| Codex | Privacy-disabled-prompt OTLP logs | `READY_FOR_EXTERNAL_E2E`; clean-device RC10 evidence is not recorded |
+| Claude Code | Sanitized lifecycle hooks | `READY_FOR_EXTERNAL_E2E`; real-source RC10 evidence is not recorded |
+| OpenCode | Sanitized plugin lifecycle events | `READY_FOR_EXTERNAL_E2E`; real-source RC10 evidence is not recorded |
 
 `lifecycle_only` records sanitized lifecycle evidence with no token counters. `unavailable` means qlog does not claim automatic counters. `agent_reported`, `otel_reported`, and `provider_reported` require documented source counters; `estimated` is visibly non-measured. Reports keep capture qualities separate and label cost fields as estimated; they never manufacture tokens or provider spend.
 
 ## Quick start
 
-There is no stable public release yet. Do not use `go install` or the legacy npm
-package to evaluate an RC: both bypass the verified release channel and can point
-at an older candidate. When an RC artifact is published, install it explicitly
-with `install.sh --version v0.4.0-rc10` or `install.ps1 --version v0.4.0-rc10` as
-described in [Install](docs/INSTALL.md). For auto-capture and reports, use
-[Auto-capture](docs/AUTOCAPTURE.md).
+No stable `v0.4.0` release has been published. Published prerelease `v0.4.0-rc10`
+(`35ae43bd0031b3aca2621c52ede74731ae136357`) is available for evaluation, but
+does not have complete two-machine or five-agent external E2E evidence. Do not
+use `go install` or the legacy npm package: both bypass the published archive and
+checksum lifecycle. The older stable release line is not the supported
+evaluation path. Install the RC explicitly with
+`install.sh --version v0.4.0-rc10` or `install.ps1 --version v0.4.0-rc10` as
+described in [Install](docs/INSTALL.md).
 
 ## License
 

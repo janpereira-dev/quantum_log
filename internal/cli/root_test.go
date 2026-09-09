@@ -109,6 +109,22 @@ func TestCoreCommandsInitializeAndReportProject(t *testing.T) {
 	}
 }
 
+func TestAllocationCommandsExposeReplayKeys(t *testing.T) {
+	command := newAllocationCommand(new(string))
+	for _, name := range []string{"split", "repair"} {
+		var found *cobra.Command
+		for _, child := range command.Commands() {
+			if child.Name() == name {
+				found = child
+				break
+			}
+		}
+		if found == nil || found.Flags().Lookup("idempotency-key") == nil {
+			t.Fatalf("allocation %s does not expose --idempotency-key", name)
+		}
+	}
+}
+
 func TestDoctorIsReadOnly(t *testing.T) {
 	parent := t.TempDir()
 	home := filepath.Join(parent, "uninitialized")

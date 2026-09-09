@@ -2,6 +2,7 @@
 
 ## 0.4.0-rc10 - 2026-09-01
 
+- Published prerelease artifacts for tag `v0.4.0-rc10` at commit `35ae43bd0031b3aca2621c52ede74731ae136357`, including checksums, a Sigstore bundle, and per-archive SBOMs. Publication is not stable-release or external-E2E verification.
 - Withdrew automatic `qlog uninstall --purge-data` deletion while its cross-release recovery protocol is audited. The command now fails closed with `data_purged: false`; it still reports adapter and collector cleanup accurately and never deletes a ledger.
 - Retained compatibility with the published RC.9 in-home `qlog.db.purge.pending` sentinel. Cooperative database opens, snapshots, read-only access, checkpoints, and initialization reject a protected ledger rather than creating or modifying configuration.
 - Updated the Copilot PowerShell launcher to retain non-terminating native failure semantics without spawning `cmd.exe` or terminating the caller.
@@ -80,7 +81,9 @@
 
 ## 0.2.0 - 2026-07-20
 
-### M1 closed (integrity and attribution)
+### Historical M1 implementation claim (integrity and attribution)
+
+This section preserves the 2026-07-20 release notes. The current acceptance matrix keeps M1 `BLOCKED`; these historical implementation and local-test claims are not current-candidate `VERIFIED` evidence.
 
 - Fixed project resolver precedence: explicit -> QLOG_PROJECT -> CWD -> Git root -> registered path -> adapter -> unattributed.
 - Fixed SQLite store location selection to use normalized matching paths instead of first-by-slug.

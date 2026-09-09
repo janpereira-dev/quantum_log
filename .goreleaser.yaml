@@ -1,8 +1,5 @@
 version: 2
 project_name: quantum-log
-before:
-  hooks:
-    - go mod tidy
 builds:
   - id: qlog
     main: ./cmd/qlog
@@ -34,6 +31,7 @@ changelog:
       - '^docs:'
       - '^test:'
 release:
+  draft: true
   prerelease: auto
   # RC tags deliberately use the form -rcN (for example v0.4.0-rc10). That is
   # the prerelease indicator understood by GoReleaser's `auto` mode.
@@ -42,5 +40,3 @@ release:
   make_latest: '{{ if or (contains "-alpha" .Tag) (contains "-beta" .Tag) (contains "-rc" .Tag) }}false{{ else }}true{{ end }}'
   footer: |
     Full project history: https://github.com/janpereira-dev/quantum_log/blob/{{ .Tag }}/CHANGELOG.md
-snapshot:
-  version_template: "0.4.0-rc10"

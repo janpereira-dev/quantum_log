@@ -1,8 +1,16 @@
 # M4 Closure Backlog
 
-P0-01 audit completed on 2026-08-04. Release candidate is `v0.3.2-rc.1`. This is the only candidate supported by current repository evidence: the default binary version is `0.3.2`, while no local `v0.3.2*` tag exists. M4 remains `IN_PROGRESS`; this ledger does not claim runtime proof.
+## Current baseline (2026-09-03)
 
-## Release Baseline
+The current published candidate is prerelease `v0.4.0-rc10`, commit `35ae43bd0031b3aca2621c52ede74731ae136357`. GitHub published its release archives, checksums, Sigstore bundle, and SBOMs on 2026-09-01. This establishes availability only. M4 remains `IN_PROGRESS`: no current-candidate two-machine or complete five-agent real-source acceptance is recorded.
+
+The P0 ledger below is dated historical evidence. It must not be promoted to current-candidate `PASS` or `VERIFIED` evidence.
+
+## Historical evidence: 2026-08-04
+
+P0-01 audited `v0.3.2-rc.1`. At that date, it was the candidate supported by that audit's repository snapshot; it is not the current candidate.
+
+## Historical Release Baseline
 
 | Topic | Observed evidence |
 |---|---|

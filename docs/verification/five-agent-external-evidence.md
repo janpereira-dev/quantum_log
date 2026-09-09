@@ -10,6 +10,6 @@
 | Copilot VS Code | JSONC OTel settings, collector state, source/model summary | Run Copilot Chat action in uniquely attributable registered workspace | `PENDING_EXTERNAL_E2E` |
 | OpenCode | Plugin setup, lifecycle quality, collector state, lifecycle summary | Run normal OpenCode action after plugin installation | `PENDING_EXTERNAL_E2E` |
 
-`IMPLEMENTATION_COMPLETE` states installed qlog implementation only. `READY_FOR_EXTERNAL_E2E` states local readiness only. Neither status proves external acceptance. A package `PASS` means matching local evidence exists; it does not claim external review or verification.
+`IMPLEMENTED` means code exists. `READY_FOR_EXTERNAL_E2E` means the implementation can be exercised under this protocol. `PASS` means matching local evidence exists for the recorded command, candidate, and platform. `VERIFIED` requires the committed acceptance matrix and independent review. None of these five adapters currently has recorded two-machine current-candidate verification.
 
 No package entry includes prompts, responses, raw tool inputs or outputs, credentials, authorization fields, secrets, raw event payloads, paths, or collector log contents. Verify ZIP checksums with `SHA256SUMS` before sharing evidence.
