@@ -61,7 +61,7 @@ func TestVerifyLedgerDetectsEventSequenceTampering(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	for _, eventType := range []string{"one", "two"} {
 		if _, err := s.AppendRawEvent(ctx, RawEventInput{Source: "agent", EventType: eventType, Payload: []byte(`{"ok":true}`), OccurredAt: time.Now().UTC()}); err != nil {
 			t.Fatal(err)
@@ -84,7 +84,7 @@ func TestVerifyLedgerDetectsEventSequenceSwapAcrossChains(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	first, err := s.AppendRawEvent(ctx, RawEventInput{Source: "agent-a", SessionID: "session-a", EventType: "one", Payload: []byte(`{"n":1}`), OccurredAt: time.Now().UTC()})
 	if err != nil {
@@ -108,11 +108,11 @@ func TestVerifyLedgerDetectsEventSequenceSwapAcrossChains(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE raw_events SET event_sequence = CASE id WHEN ? THEN -1 WHEN ? THEN -2 END WHERE id IN (?, ?)`, first.ID, second.ID, first.ID, second.ID); err != nil {
-		tx.Rollback()
+		_ = tx.Rollback()
 		t.Fatal(err)
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE raw_events SET event_sequence = CASE id WHEN ? THEN ? WHEN ? THEN ? END WHERE id IN (?, ?)`, first.ID, second.Sequence, second.ID, first.Sequence, first.ID, second.ID); err != nil {
-		tx.Rollback()
+		_ = tx.Rollback()
 		t.Fatal(err)
 	}
 	if err := tx.Commit(); err != nil {
