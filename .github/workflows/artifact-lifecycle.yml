@@ -121,7 +121,7 @@ jobs:
         run: pwsh -NoProfile -File scripts/acceptance/release-lifecycle.ps1
       - name: Upload bounded lifecycle evidence
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: artifact-lifecycle-${{ runner.os }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/qlog-release-lifecycle-evidence
