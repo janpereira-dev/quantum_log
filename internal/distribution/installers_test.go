@@ -1297,7 +1297,7 @@ func TestHostedArtifactLifecycleWorkflowContract(t *testing.T) {
 		"timeout-minutes:",
 		"os: [ubuntu-latest, macos-latest, windows-latest]",
 		"actions/checkout@v7",
-		"actions/upload-artifact@v6",
+		"actions/upload-artifact@v7",
 		"if: always()",
 		"QLOG_FROM_VERSION:",
 		"QLOG_TO_VERSION:",
