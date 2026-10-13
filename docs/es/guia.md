@@ -1,5 +1,7 @@
 # Guía
 
+> Esta página describe los comandos de la versión anterior. Compile `./cmd/qlog-legacy` para utilizar estos ejemplos. Para el ejecutable actual bajo demanda, consulte la [guía simple](../SIMPLE.md).
+
 Esta guía lleva desde un libro mayor local vacío hasta evidencia de uso verificada y explícitamente calificada. QUANTUM_LOG prioriza lo local: no requiere cuenta SaaS, proxy ni archivo de prompts.
 
 [Read in English](../en/guide.md)
@@ -26,7 +28,7 @@ de release y su verificación de checksum.
 Para desarrollo, compila desde este checkout:
 
 ```bash
-go build -o qlog ./cmd/qlog
+go build -o qlog ./cmd/qlog-legacy
 ./qlog --help
 ```
 
