@@ -40,6 +40,8 @@ and what the counters mean.
 
 Tokens come from cumulative counters reported in available Codex session
 files, labeled `agent_reported`. Usage samples are not a count of model calls.
+Inherited parent snapshots in spawned or forked session files are excluded;
+ambiguous ownership is skipped rather than counted as new child usage.
 Missing counters remain unavailable. Costs and subscription spend are
 unavailable; the tool does not invent prices or treat missing costs as zero.
 
@@ -51,8 +53,9 @@ agent configuration, or MCP server.
 ## Earlier version
 
 This source change narrows the default product. It does not replace an existing
-installed collector or change a published release. Existing release downloads
-and installers belong to the earlier product until a new release is published.
+installed collector or change a published release. Release archives remain on
+`cmd/qlog-legacy` to preserve shipped installer bootstrap commands until release
+tooling is deliberately migrated.
 Use the source build above for this version.
 
 The previous ledger and implementation are preserved. The old entry point is

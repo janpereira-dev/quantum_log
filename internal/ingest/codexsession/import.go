@@ -56,18 +56,44 @@ type envelope struct {
 }
 
 type metadata struct {
-	ID       string `json:"id"`
-	CWD      string `json:"cwd"`
-	Version  string `json:"cli_version"`
-	Provider string `json:"model_provider"`
-	Model    string `json:"model"`
+	ID           string          `json:"id"`
+	CWD          string          `json:"cwd"`
+	Version      string          `json:"cli_version"`
+	Provider     string          `json:"model_provider"`
+	Model        string          `json:"model"`
+	Timestamp    string          `json:"timestamp"`
+	ParentID     string          `json:"parent_thread_id"`
+	ForkedFromID string          `json:"forked_from_id"`
+	Source       json.RawMessage `json:"source"`
 }
 
 type usageEvent struct {
 	Type string `json:"type"`
 	Info *struct {
 		Total *counters `json:"total_token_usage"`
+		Last  *counters `json:"last_token_usage"`
 	} `json:"info"`
+}
+
+func (m metadata) isChild() bool {
+	var source struct {
+		Subagent json.RawMessage `json:"subagent"`
+	}
+	_ = json.Unmarshal(m.Source, &source)
+	return m.ParentID != "" || m.ForkedFromID != "" || len(source.Subagent) != 0
+}
+
+func sameCounters(current counters, last *counters) bool {
+	if last == nil || last.Total == nil || current.Total == nil || *last.Total != *current.Total {
+		return false
+	}
+	for index, value := range current.values() {
+		other := last.values()[index]
+		if value != nil && (other == nil || *value != *other) {
+			return false
+		}
+	}
+	return true
 }
 
 // Import never changes the source log and only persists whitelisted metadata.
@@ -85,6 +111,9 @@ func (i *Importer) Import(ctx context.Context, reader io.Reader) (Result, error)
 	buffer := bufio.NewReaderSize(reader, 64*1024)
 	var meta metadata
 	var previous *counters
+	var child bool
+	var childCreated time.Time
+	var childStarted bool
 	for lineNumber := 1; ; lineNumber++ {
 		if err := ctx.Err(); err != nil {
 			return result, err
@@ -115,8 +144,11 @@ func (i *Importer) Import(ctx context.Context, reader io.Reader) (Result, error)
 			}
 			if next.ID != meta.ID {
 				previous = nil
+				childStarted = false
 			}
 			meta = next
+			child = meta.isChild()
+			childCreated, _ = time.Parse(time.RFC3339Nano, meta.Timestamp)
 		case "turn_context":
 			var turn metadata
 			if json.Unmarshal(event.Payload, &turn) != nil {
@@ -139,15 +171,37 @@ func (i *Importer) Import(ctx context.Context, reader io.Reader) (Result, error)
 				break
 			}
 			current := *usage.Info.Total
+			occurredAt, err := time.Parse(time.RFC3339Nano, event.Timestamp)
+			if err != nil {
+				return result, fmt.Errorf("codex session line %d: invalid usage timestamp", lineNumber)
+			}
+			if child {
+				if childCreated.IsZero() || !occurredAt.After(childCreated) {
+					previous = &current
+					result.Skipped++ // Forked history belongs to the parent, not the new session ID.
+					break
+				}
+				if !childStarted {
+					if previous != nil && previous.Total != nil && *current.Total == *previous.Total {
+						previous = &current
+						result.Skipped++ // Re-emitting the inherited total does not prove child usage.
+						break
+					}
+					childStarted = true
+					if sameCounters(current, usage.Info.Last) {
+						previous = nil // Native last usage confirms a fresh child counter.
+					} else if previous == nil {
+						previous = &current
+						result.Skipped++ // Ambiguous inherited total: establish a baseline first.
+						break
+					}
+				}
+			}
 			delta, usable := difference(current, previous)
 			previous = &current
 			if !usable {
 				result.Skipped++
 				break
-			}
-			occurredAt, err := time.Parse(time.RFC3339Nano, event.Timestamp)
-			if err != nil {
-				return result, fmt.Errorf("codex session line %d: invalid usage timestamp", lineNumber)
 			}
 			var project app.ResolvedProject
 			if cwd := strings.TrimSpace(meta.CWD); cwd != "" {

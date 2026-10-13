@@ -435,6 +435,11 @@ func TestReleaseConfigKeepsPrereleaseTagsOutOfLatest(t *testing.T) {
 		t.Fatal(err)
 	}
 	config := string(contents)
+	// Published installers still bootstrap legacy commands. Switching this
+	// artifact to the simple CLI requires an explicit installer migration.
+	if !strings.Contains(config, "main: ./cmd/qlog-legacy") {
+		t.Fatal("release artifacts must retain the shipped installers' bootstrap command set")
+	}
 	for _, want := range []string{`contains "-alpha" .Tag`, `contains "-beta" .Tag`, `contains "-rc" .Tag`, `}}false{{ else }}true{{`} {
 		if !strings.Contains(config, want) {
 			t.Fatalf("release config missing %q:\n%s", want, config)

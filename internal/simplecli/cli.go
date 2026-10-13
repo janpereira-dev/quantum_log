@@ -29,11 +29,12 @@ type Version struct {
 }
 
 type Row struct {
-	Project string `json:"project"`
-	Agent   string `json:"agent"`
-	Model   string `json:"model"`
-	Tokens  int64  `json:"tokens"`
-	Quality string `json:"quality"`
+	Project  string `json:"project"`
+	Agent    string `json:"agent"`
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	Tokens   int64  `json:"tokens"`
+	Quality  string `json:"quality"`
 }
 
 type Summary struct {
@@ -58,6 +59,7 @@ Usage:
   qlog import [flags] [path]    Read local Codex session logs
   qlog report [flags]          Show usage by project and model
   qlog export [flags]          Write an aggregate CSV to stdout
+  qlog migrate                 Upgrade an explicitly selected older ledger
 
 Import flags: --days 7 --limit 100 --json
 Report flags: --today --project <slug> --json
@@ -100,11 +102,41 @@ func Run(ctx context.Context, args []string, out, errOut io.Writer, version Vers
 	switch command {
 	case "import":
 		return importSessions(ctx, home, args, out, errOut)
+	case "migrate":
+		return migrate(ctx, home, args, out, errOut)
 	case "report", "export":
 		return report(ctx, home, command, args, out, errOut)
 	default:
 		return fmt.Errorf("unknown command %q; run qlog --help", command)
 	}
+}
+
+func migrate(ctx context.Context, home string, args []string, out, errOut io.Writer) (resultErr error) {
+	flags := flag.NewFlagSet("migrate", flag.ContinueOnError)
+	flags.SetOutput(errOut)
+	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("migrate accepts no positional arguments; use --home to select the ledger")
+	}
+	paths, err := config.Resolve(home)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(paths.Database); err != nil {
+		return fmt.Errorf("migrate requires an existing ledger; run qlog import to create one: %w", err)
+	}
+	service, err := app.Open(ctx, home)
+	if err != nil {
+		return err
+	}
+	defer func() { resultErr = errors.Join(resultErr, service.Close()) }()
+	_, err = fmt.Fprintln(out, "Ledger schema upgraded. Existing usage evidence is retained.")
+	return err
 }
 
 func extractHome(args []string) (string, []string, error) {
@@ -302,7 +334,7 @@ func report(ctx context.Context, home, command string, args []string, out, errOu
 			return err
 		}
 		defer func() { resultErr = errors.Join(resultErr, service.Close()) }()
-		query := sqlite.UsageQuery{ProjectSlug: *project, GroupBy: []string{"project", "agent", "model", "capture_quality"}}
+		query := sqlite.UsageQuery{ProjectSlug: *project, GroupBy: []string{"project", "agent", "provider", "model", "capture_quality"}}
 		if *today {
 			now := time.Now()
 			query.From = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
@@ -317,16 +349,16 @@ func report(ctx context.Context, home, command string, args []string, out, errOu
 			summary.UsageSamples += measure.ModelCallCount
 		}
 		for _, row := range usage.Rows {
-			summary.Rows = append(summary.Rows, Row{Project: row.ProjectSlug, Agent: row.AgentName, Model: row.Model, Tokens: row.TotalTokens, Quality: row.CaptureQuality})
+			summary.Rows = append(summary.Rows, Row{Project: row.ProjectSlug, Agent: row.AgentName, Provider: row.Provider, Model: row.Model, Tokens: row.TotalTokens, Quality: row.CaptureQuality})
 		}
 	}
 	if command == "export" {
 		writer := csv.NewWriter(out)
-		if err := writer.Write([]string{"project", "agent", "model", "tokens", "quality", "cost_quality"}); err != nil {
+		if err := writer.Write([]string{"project", "agent", "provider", "model", "tokens", "quality", "cost_quality"}); err != nil {
 			return err
 		}
 		for _, row := range summary.Rows {
-			if err := writer.Write([]string{row.Project, row.Agent, row.Model, strconv.FormatInt(row.Tokens, 10), row.Quality, summary.CostQuality}); err != nil {
+			if err := writer.Write([]string{row.Project, row.Agent, row.Provider, row.Model, strconv.FormatInt(row.Tokens, 10), row.Quality, summary.CostQuality}); err != nil {
 				return err
 			}
 		}
@@ -344,11 +376,11 @@ func report(ctx context.Context, home, command string, args []string, out, errOu
 		return err
 	}
 	writer := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-	if _, err := fmt.Fprintln(writer, "PROJECT\tAGENT\tMODEL\tTOKENS\tQUALITY"); err != nil {
+	if _, err := fmt.Fprintln(writer, "PROJECT\tAGENT\tPROVIDER\tMODEL\tTOKENS\tQUALITY"); err != nil {
 		return err
 	}
 	for _, row := range summary.Rows {
-		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%d\t%s\n", row.Project, row.Agent, row.Model, row.Tokens, row.Quality); err != nil {
+		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%d\t%s\n", row.Project, row.Agent, row.Provider, row.Model, row.Tokens, row.Quality); err != nil {
 			return err
 		}
 	}

@@ -49,6 +49,65 @@ func usage(t *testing.T, service *app.Service) storepkg.UsageReport {
 	return report
 }
 
+func childHeader(ancestry, created string) string {
+	return fmt.Sprintf(`{"type":"session_meta","payload":{"id":"child-session","model_provider":"openai","timestamp":%q,%s}}`+"\n"+`{"type":"turn_context","payload":{"model":"example-model"}}`+"\n", created, ancestry)
+}
+
+func childSample(second int, total, last int64) string {
+	return fmt.Sprintf(`{"type":"event_msg","timestamp":"2026-10-13T09:00:%02dZ","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":%d},"last_token_usage":{"total_tokens":%d}}}}`+"\n", second, total, last)
+}
+
+func TestSpawnedAndForkedSessionsExcludeInheritedUsage(t *testing.T) {
+	for _, ancestry := range []string{
+		`"parent_thread_id":"session-1"`,
+		`"source":{"subagent":{"thread_spawn":{"parent_thread_id":"session-1"}}}`,
+		`"forked_from_id":"session-1"`,
+	} {
+		t.Run(ancestry, func(t *testing.T) {
+			service, _ := fixture(t)
+			prefix := sample(1, `{"total_tokens":100}`) + sample(2, `{"total_tokens":150}`)
+			parent := header + prefix
+			child := childHeader(ancestry, "2026-10-13T09:00:05Z") + prefix + childSample(6, 170, 20) + childSample(7, 185, 15)
+			importLog(t, service, parent)
+			result := importLog(t, service, child)
+			if result.Samples != 2 || result.Skipped != 2 || usage(t, service).TotalTokens != 185 {
+				t.Fatalf("inherited prefix counted: %+v %d", result, usage(t, service).TotalTokens)
+			}
+			if replay := importLog(t, service, child); replay.Samples != 0 || replay.Duplicates != 2 || usage(t, service).TotalTokens != 185 {
+				t.Fatalf("child replay counted: %+v", replay)
+			}
+		})
+	}
+}
+
+func TestChildCounterResetAndRepeatedParentSnapshot(t *testing.T) {
+	service, _ := fixture(t)
+	prefix := sample(1, `{"total_tokens":100}`)
+	importLog(t, service, header+prefix)
+	child := childHeader(`"parent_thread_id":"session-1"`, "2026-10-13T09:00:05Z") + prefix + childSample(6, 100, 100) + childSample(7, 20, 20) + childSample(8, 40, 20)
+	result := importLog(t, service, child)
+	if result.Samples != 2 || result.Skipped != 2 || usage(t, service).TotalTokens != 140 {
+		t.Fatalf("child reset/prefix: %+v %d", result, usage(t, service).TotalTokens)
+	}
+}
+
+func TestAmbiguousChildHistoryIsNotInvented(t *testing.T) {
+	for _, created := range []string{"", "invalid"} {
+		service, _ := fixture(t)
+		child := childHeader(`"parent_thread_id":"session-1"`, created) + childSample(6, 20, 20)
+		result := importLog(t, service, child)
+		if result.Samples != 0 || result.Skipped != 1 || usage(t, service).TotalTokens != 0 {
+			t.Fatalf("unknown boundary counted: %+v", result)
+		}
+	}
+	service, _ := fixture(t)
+	child := childHeader(`"parent_thread_id":"session-1"`, "2026-10-13T09:00:05Z") + sample(6, `{"total_tokens":170}`) + childSample(7, 200, 30)
+	result := importLog(t, service, child)
+	if result.Samples != 1 || result.Skipped != 1 || usage(t, service).TotalTokens != 30 {
+		t.Fatalf("unknown starting total invented: %+v", result)
+	}
+}
+
 func TestReplayCopyAndGrowingLog(t *testing.T) {
 	service, _ := fixture(t)
 	first := header + sample(1, `{"input_tokens":100,"cached_input_tokens":40,"output_tokens":20,"reasoning_output_tokens":5,"total_tokens":120}`)

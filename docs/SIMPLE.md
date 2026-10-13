@@ -66,6 +66,9 @@ Tokens are based on agent-reported cumulative usage snapshots. They are not a
 measurement of subscription charges or a guarantee that every model call is
 present in the logs. Usage sample counts must not be interpreted as actual
 model call counts. Costs are explicitly unavailable.
+Rows retain the provider as well as project, agent, and model. Spawned/forked
+sessions exclude counters from before their creation boundary. An ambiguous
+first child total or missing boundary is skipped; import results expose skips.
 
 ## Storage and privacy
 
@@ -83,6 +86,17 @@ contains the existing storage's configuration, SQLite database, key, and locks.
 `--home PATH` uses the chosen directory directly. Use a new empty directory for
 an isolated trial. An explicit existing ledger is supported, so choose this
 override carefully; it is not automatically isolated from that ledger.
+
+An older ledger may require an explicit schema upgrade before read-only reports:
+
+```powershell
+.\qlog.exe --home C:\path\to\older-ledger migrate
+.\qlog.exe --home C:\path\to\older-ledger report
+```
+
+`migrate` is an optional maintenance operation. It upgrades an existing schema
+and retains usage evidence; reports never migrate implicitly or require source
+session files to perform that upgrade. Make a copy of the older ledger first.
 
 The importer whitelists metadata and usage counters. It does not retain
 prompts, responses, tool arguments, tool results, or source file content. Local
@@ -118,3 +132,5 @@ calling process's setting. Plain `go build` can use a newer installed compiler.
 and [Troubleshooting](TROUBLESHOOTING.md) describe the earlier product. They are
 reference material, not the setup flow for the default source executable.
 The [preserved README](legacy/README-v0.4.md) records that earlier entry point.
+Release packaging keeps that legacy entry point compatible with shipped
+installers. The simple executable is the source/portable-build evaluation path.

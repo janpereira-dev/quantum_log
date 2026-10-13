@@ -39,11 +39,16 @@ An explicit `--home` can target an existing ledger; default isolation is not
 a restriction on that deliberate override. The CLI reuses existing append-only
 storage, privacy controls, idempotency, and hash-chain mechanisms. Existing
 migrations remain; this decision narrows the runtime, not historical source.
+An optional explicit `migrate` operation upgrades a selected older ledger;
+report/export remain read-only and direct users to that supported operation.
 
 The command surface changes for source builds. Existing published releases,
 installers, and installed services do not change merely because this source
 entry point changes. Documentation directs users to build from source until a
 release of the new product passes its release gates.
+GoReleaser continues to package `cmd/qlog-legacy` so shipped installers retain
+their bootstrap/health/uninstall command contract. Source and portable simple
+builds use `cmd/qlog`; switching release packaging needs an installer migration.
 
 ## Consequences
 

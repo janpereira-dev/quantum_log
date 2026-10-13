@@ -106,6 +106,15 @@ golangci-lint v2.14.0 reported zero issues after fixing error handling/style.
 Published-release, SBOM execution, and multi-machine claims remain outside
 this source PR's validation.
 
+Automatic PR review identified four additional contract gaps. Regression checks
+now exclude parent counter history in spawned/forked sessions, including native
+child resets and repeated inherited snapshots; preserve provider distinctions
+in text/JSON/CSV; and upgrade a thirteen-migration historical fixture explicitly
+before read-only reports while retaining its existing token evidence. Release
+packaging stays on the legacy entry point to keep installer bootstrap compatible.
+The new maintenance command is optional; the daily workflow remains import,
+report, and export. These review repairs add five focused regression tests.
+
 ## Reproduction and limits
 
 Build the portable Windows package with `scripts/build-simple.ps1`. Run

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -58,7 +59,7 @@ func TestImportReplayReportAndExportPreserveSourceAndLedger(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 2 || rows[1][3] != "130" || rows[1][5] != "unavailable" {
+	if len(rows) != 2 || rows[1][2] != "openai" || rows[1][4] != "130" || rows[1][6] != "unavailable" {
 		t.Fatalf("CSV: %v", rows)
 	}
 	after, err := os.ReadFile(filepath.Join(home, "qlog.db"))
@@ -74,6 +75,100 @@ func TestImportReplayReportAndExportPreserveSourceAndLedger(t *testing.T) {
 	}
 	if string(unchanged) != source {
 		t.Fatal("source changed")
+	}
+}
+
+func TestProvidersRemainDistinctAcrossReportFormats(t *testing.T) {
+	home := t.TempDir()
+	file := filepath.Join(t.TempDir(), "providers.jsonl")
+	first := nativeSession(time.Now())
+	second := strings.ReplaceAll(strings.ReplaceAll(first, "native-session", "custom-session"), "openai", "custom-provider")
+	if err := os.WriteFile(file, []byte(first+second), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	execute(t, "--home", home, "import", file)
+	var summary Summary
+	if err := json.Unmarshal([]byte(execute(t, "--home", home, "report", "--json")), &summary); err != nil {
+		t.Fatal(err)
+	}
+	if len(summary.Rows) != 2 || summary.TotalTokens != 260 || summary.Rows[0].Provider == summary.Rows[1].Provider {
+		t.Fatalf("provider distinction lost: %+v", summary)
+	}
+	text := execute(t, "--home", home, "report")
+	if !strings.Contains(text, "openai") || !strings.Contains(text, "custom-provider") {
+		t.Fatal("text lost provider")
+	}
+	rows, err := csv.NewReader(strings.NewReader(execute(t, "--home", home, "export"))).ReadAll()
+	if err != nil || len(rows) != 3 || rows[1][2] == rows[2][2] {
+		t.Fatalf("CSV lost provider: %v %v", rows, err)
+	}
+}
+
+func TestExplicitMigrationPreservesOlderLedgerAndEnablesReadonlyReports(t *testing.T) {
+	home := t.TempDir()
+	database := filepath.Join(home, "qlog.db")
+	db, err := sql.Open("sqlite", database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.Exec(`CREATE TABLE schema_migrations(version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	files, err := filepath.Glob(filepath.Join("..", "storage", "sqlite", "migrations", "*.sql"))
+	if err != nil || len(files) < 13 {
+		t.Fatal("missing historical schema fixture")
+	}
+	for _, file := range files[:13] {
+		contents, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(string(contents)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec("INSERT INTO schema_migrations VALUES(?,?)", filepath.Base(file), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO model_calls(id,started_at,agent_name,provider,model_id,input_tokens,total_tokens,capture_quality,created_at) VALUES('legacy',?,'codex','openai','legacy-model',20,20,'agent_reported',?)`, time.Now().UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, suffix := range []string{".quiescence.lock", ".writer.lock"} {
+		if err := os.WriteFile(database+suffix, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, err := os.ReadFile(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	err = Run(context.Background(), []string{"--home", home, "report"}, &out, &errOut, Version{})
+	if err == nil || !strings.Contains(err.Error(), "qlog migrate") || strings.Contains(err.Error(), "qlog init") {
+		t.Fatalf("missing usable migration advice: %v", err)
+	}
+	after, err := os.ReadFile(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sha256.Sum256(before) != sha256.Sum256(after) {
+		t.Fatal("readonly failure mutated old database")
+	}
+	execute(t, "--home", home, "migrate")
+	var summary Summary
+	if err := json.Unmarshal([]byte(execute(t, "--home", home, "report", "--json")), &summary); err != nil {
+		t.Fatal(err)
+	}
+	if summary.TotalTokens != 20 || summary.UsageSamples != 1 {
+		t.Fatalf("migration lost evidence: %+v", summary)
+	}
+	rows, err := csv.NewReader(strings.NewReader(execute(t, "--home", home, "export"))).ReadAll()
+	if err != nil || len(rows) != 2 || rows[1][4] != "20" {
+		t.Fatalf("export after migration: %v %v", rows, err)
 	}
 }
 

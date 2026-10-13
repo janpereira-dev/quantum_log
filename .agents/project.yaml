@@ -36,6 +36,8 @@ product_scope:
     - import
     - report
     - export
+  optional_maintenance:
+    - migrate_existing_ledger
   no_argument_command: report
   sources:
     - codex_local_sessions
@@ -95,5 +97,5 @@ performance:
 
 release:
   source_scope_changed: true
-  published_installer_scope: legacy_until_new_release
+  published_installer_scope: legacy_until_release_tooling_migration
   external_e2e_claim_requires_current_evidence: true
