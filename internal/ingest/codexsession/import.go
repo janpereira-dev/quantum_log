@@ -79,7 +79,7 @@ func Import(ctx context.Context, service *app.Service, reader io.Reader) (Result
 func (i *Importer) Import(ctx context.Context, reader io.Reader) (Result, error) {
 	var result Result
 	if i == nil || i.service == nil || i.service.Store == nil || reader == nil {
-		return result, errors.New("Codex import requires an open ledger and reader")
+		return result, errors.New("codex import requires an open ledger and reader")
 	}
 	service := i.service
 	buffer := bufio.NewReaderSize(reader, 64*1024)
@@ -91,7 +91,7 @@ func (i *Importer) Import(ctx context.Context, reader io.Reader) (Result, error)
 		}
 		line, complete, err := readLine(buffer)
 		if err != nil {
-			return result, fmt.Errorf("Codex session line %d: %w", lineNumber, err)
+			return result, fmt.Errorf("codex session line %d: %w", lineNumber, err)
 		}
 		if len(bytes.TrimSpace(line)) == 0 {
 			if !complete {
@@ -105,13 +105,13 @@ func (i *Importer) Import(ctx context.Context, reader io.Reader) (Result, error)
 				result.Skipped++ // An active writer may not have finished the last line.
 				return result, nil
 			}
-			return result, fmt.Errorf("Codex session line %d: invalid JSON", lineNumber)
+			return result, fmt.Errorf("codex session line %d: invalid JSON", lineNumber)
 		}
 		switch event.Type {
 		case "session_meta":
 			var next metadata
 			if json.Unmarshal(event.Payload, &next) != nil || identifier(next.ID) == "" {
-				return result, fmt.Errorf("Codex session line %d: invalid session metadata", lineNumber)
+				return result, fmt.Errorf("codex session line %d: invalid session metadata", lineNumber)
 			}
 			if next.ID != meta.ID {
 				previous = nil
@@ -120,7 +120,7 @@ func (i *Importer) Import(ctx context.Context, reader io.Reader) (Result, error)
 		case "turn_context":
 			var turn metadata
 			if json.Unmarshal(event.Payload, &turn) != nil {
-				return result, fmt.Errorf("Codex session line %d: invalid turn metadata", lineNumber)
+				return result, fmt.Errorf("codex session line %d: invalid turn metadata", lineNumber)
 			}
 			meta.Model = turn.Model
 			if strings.TrimSpace(turn.CWD) != "" {
@@ -129,7 +129,7 @@ func (i *Importer) Import(ctx context.Context, reader io.Reader) (Result, error)
 		case "event_msg":
 			var usage usageEvent
 			if json.Unmarshal(event.Payload, &usage) != nil {
-				return result, fmt.Errorf("Codex session line %d: invalid usage event", lineNumber)
+				return result, fmt.Errorf("codex session line %d: invalid usage event", lineNumber)
 			}
 			if usage.Type != "token_count" {
 				break
@@ -147,7 +147,7 @@ func (i *Importer) Import(ctx context.Context, reader io.Reader) (Result, error)
 			}
 			occurredAt, err := time.Parse(time.RFC3339Nano, event.Timestamp)
 			if err != nil {
-				return result, fmt.Errorf("Codex session line %d: invalid usage timestamp", lineNumber)
+				return result, fmt.Errorf("codex session line %d: invalid usage timestamp", lineNumber)
 			}
 			var project app.ResolvedProject
 			if cwd := strings.TrimSpace(meta.CWD); cwd != "" {
@@ -156,13 +156,13 @@ func (i *Importer) Import(ctx context.Context, reader io.Reader) (Result, error)
 				if !found {
 					project, err = service.ResolveSourceProject(ctx, cwd)
 					if err != nil {
-						return result, fmt.Errorf("Codex session line %d: resolve source project: %w", lineNumber, err)
+						return result, fmt.Errorf("codex session line %d: resolve source project: %w", lineNumber, err)
 					}
 					i.projects[cwd] = project
 				}
 			}
 			if err := persist(ctx, service, meta, current, delta, occurredAt, project, &result); err != nil {
-				return result, fmt.Errorf("Codex session line %d: %w", lineNumber, err)
+				return result, fmt.Errorf("codex session line %d: %w", lineNumber, err)
 			}
 		}
 		if !complete {
@@ -298,7 +298,8 @@ func identifier(value string) string {
 		return ""
 	}
 	for _, char := range value {
-		if !(char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || strings.ContainsRune("._:/-", char)) {
+		allowed := char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || strings.ContainsRune("._:/-", char)
+		if !allowed {
 			return ""
 		}
 	}

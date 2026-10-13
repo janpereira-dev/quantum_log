@@ -107,7 +107,11 @@ func TestPrivateContentNeverPersists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer database.Close()
+	defer func() {
+		if err := database.Close(); err != nil {
+			t.Errorf("close test database: %v", err)
+		}
+	}()
 	var payload, evidence string
 	if err := database.QueryRow(`SELECT payload_json_sanitized, project_resolution_evidence_json FROM raw_events LIMIT 1`).Scan(&payload, &evidence); err != nil {
 		t.Fatal(err)
@@ -231,7 +235,11 @@ func TestReplayRecoversInterruptedModelWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer database.Close()
+	defer func() {
+		if err := database.Close(); err != nil {
+			t.Errorf("close test database: %v", err)
+		}
+	}()
 	if _, err := database.Exec(`CREATE TRIGGER fail_model_write BEFORE INSERT ON model_calls BEGIN SELECT RAISE(ABORT, 'simulated interruption'); END`); err != nil {
 		t.Fatal(err)
 	}
