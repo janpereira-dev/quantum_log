@@ -1,5 +1,7 @@
 # Guide
 
+> This page describes the legacy command set. Build `./cmd/qlog-legacy` for these examples. For the current on-demand executable, see the [simple guide](../SIMPLE.md).
+
 This guide takes you from an empty local ledger to verified, explicitly qualified usage evidence. QUANTUM_LOG is local-first: it does not require a SaaS account, proxy, or prompt archive.
 
 [Guía en español](../es/guia.md)
@@ -26,7 +28,7 @@ and its checksum verification.
 For development, build from this checkout:
 
 ```bash
-go build -o qlog ./cmd/qlog
+go build -o qlog ./cmd/qlog-legacy
 ./qlog --help
 ```
 

@@ -1,21 +1,24 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
 
-	"github.com/janpereira-dev/quantum_log/internal/cli"
+	"github.com/janpereira-dev/quantum_log/internal/simplecli"
 )
 
 var (
-	version = "0.4.0-rc10"
+	version = "simple-dev"
 	commit  = "none"
 	date    = "unknown"
 )
 
 func main() {
-	command := cli.New(cli.Version{Version: version, Commit: commit, BuildDate: date})
-	if err := command.Execute(); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	if err := simplecli.Run(ctx, os.Args[1:], os.Stdout, os.Stderr, simplecli.Version{Version: version, Commit: commit, BuildDate: date}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
