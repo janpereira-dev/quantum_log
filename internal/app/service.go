@@ -145,6 +145,19 @@ func (s *Service) ResolveCurrent(ctx context.Context, explicitProject string) (r
 // ResolveProject is the sole application boundary that turns user and capture
 // signals into project attribution. Adapters cannot resolve projects themselves.
 func (s *Service) ResolveProject(ctx context.Context, explicitProject, adapterProject, cwd string) (ResolvedProject, error) {
+	return s.resolveProject(ctx, explicitProject, adapterProject, cwd, os.Getenv("QLOG_PROJECT"))
+}
+
+// ResolveSourceProject attributes historical evidence using its source directory,
+// without borrowing the importing process's project or working directory.
+func (s *Service) ResolveSourceProject(ctx context.Context, cwd string) (ResolvedProject, error) {
+	if strings.TrimSpace(cwd) == "" || !filepath.IsAbs(cwd) {
+		return ResolvedProject{Resolution: resolver.ProjectResolution{Method: resolver.Unresolved, Confidence: resolver.Unknown, Evidence: "source directory unavailable"}}, nil
+	}
+	return s.resolveProject(ctx, "", "", cwd, "")
+}
+
+func (s *Service) resolveProject(ctx context.Context, explicitProject, adapterProject, cwd, environmentProject string) (ResolvedProject, error) {
 	paths, err := s.Store.RegisteredPaths(ctx)
 	if err != nil {
 		return ResolvedProject{}, err
@@ -156,7 +169,7 @@ func (s *Service) ResolveProject(ctx context.Context, explicitProject, adapterPr
 		}
 	}
 	resolved := ResolvedProject{CWD: cwd, GitRoot: gitRoot(ctx, cwd)}
-	resolved.Resolution = resolver.Resolve(resolver.Input{ExplicitProject: explicitProject, AdapterProject: adapterProject, EnvironmentProject: os.Getenv("QLOG_PROJECT"), CWD: cwd, GitRoot: resolved.GitRoot}, paths)
+	resolved.Resolution = resolver.Resolve(resolver.Input{ExplicitProject: explicitProject, AdapterProject: adapterProject, EnvironmentProject: environmentProject, CWD: cwd, GitRoot: resolved.GitRoot}, paths)
 	if resolved.Resolution.ProjectSlug == "" {
 		// A Git root is an unambiguous local ownership boundary. Create its
 		// project once; anything without one remains deliberately unattributed.

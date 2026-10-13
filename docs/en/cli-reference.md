@@ -1,5 +1,7 @@
 # CLI Reference
 
+> This page describes the legacy command set. Build `./cmd/qlog-legacy` for these examples. For the current on-demand executable, see the [simple guide](../SIMPLE.md).
+
 This reference documents current Cobra command definitions. Run `qlog <command> --help` for executable help in your installed version. All commands accept root flag `--home <path>` to override the local data directory.
 
 [Referencia CLI en español](../es/referencia-cli.md)

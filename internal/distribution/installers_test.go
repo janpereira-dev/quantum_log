@@ -435,6 +435,11 @@ func TestReleaseConfigKeepsPrereleaseTagsOutOfLatest(t *testing.T) {
 		t.Fatal(err)
 	}
 	config := string(contents)
+	// Published installers still bootstrap legacy commands. Switching this
+	// artifact to the simple CLI requires an explicit installer migration.
+	if !strings.Contains(config, "main: ./cmd/qlog-legacy") {
+		t.Fatal("release artifacts must retain the shipped installers' bootstrap command set")
+	}
 	for _, want := range []string{`contains "-alpha" .Tag`, `contains "-beta" .Tag`, `contains "-rc" .Tag`, `}}false{{ else }}true{{`} {
 		if !strings.Contains(config, want) {
 			t.Fatalf("release config missing %q:\n%s", want, config)
@@ -531,7 +536,9 @@ func TestReleaseDocumentationDoesNotClaimUnsupportedEvidence(t *testing.T) {
 		t.Error("packaging/npm/README.md presents the stale npm package as the verified current installation path")
 	}
 
-	for _, name := range []string{"README.md", "docs/INSTALL.md"} {
+	// The simple source product has no published release contract yet. The
+	// retained release assertions belong to the preserved historical README.
+	for _, name := range []string{"docs/legacy/README-v0.4.md", "docs/INSTALL.md"} {
 		contents, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(name)))
 		if err != nil {
 			t.Fatal(err)

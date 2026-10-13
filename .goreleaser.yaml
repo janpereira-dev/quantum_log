@@ -2,7 +2,9 @@ version: 2
 project_name: quantum-log
 builds:
   - id: qlog
-    main: ./cmd/qlog
+    # Published installers bootstrap setup/doctor and need the legacy command set.
+    # The simple product is built separately by scripts/build-simple.ps1.
+    main: ./cmd/qlog-legacy
     binary: qlog
     env:
       - CGO_ENABLED=0
