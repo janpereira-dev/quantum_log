@@ -1,5 +1,7 @@
 # QUANTUM_LOG documentation
 
+> This page describes the legacy command set. Build `./cmd/qlog-legacy` for these examples. For the current on-demand executable, see the [simple guide](../SIMPLE.md).
+
 Use this documentation to run QUANTUM_LOG safely, understand its evidence boundaries, and contribute changes.
 
 [Leer en español](../es/README.md)
