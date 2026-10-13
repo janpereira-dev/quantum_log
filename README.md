@@ -1,53 +1,64 @@
 # QUANTUM_LOG
 
-Trace every agent. Trust every event.
+A small, local usage ledger for Codex sessions.
 
-QUANTUM_LOG is local-first observability and FinOps for AI coding agents. It records privacy-aware, tamper-evident usage evidence without requiring a SaaS, proxy, or prompt archive.
+Import the session files already on your computer, view reported token usage
+by project, and export an aggregate CSV. The default executable runs only when
+you invoke it and exits when the command finishes.
 
 ## Start here
 
-- [Install](docs/INSTALL.md)
-- [Auto-capture](docs/AUTOCAPTURE.md)
-- [10-minute verification](docs/VERIFY.md)
-- [Troubleshooting](docs/TROUBLESHOOTING.md)
-- [Security policy](SECURITY.md)
-- [Architecture decision records](docs/architecture/)
-- [Collector lifecycle and Windows startup behavior](docs/architecture/ADR-005-collector-lifecycle.md)
+Build this working-tree version with the Go toolchain specified in `go.mod`:
 
-## What it protects
+```powershell
+go build -o qlog.exe ./cmd/qlog
+.\qlog.exe import
+.\qlog.exe
+.\qlog.exe export > usage.csv
+```
 
-Data stays local by default. Prompt and response content, tool arguments and results, secrets, and authorization fields are sanitized before hashing or import. Raw events are append-only and chained by source and session.
+On Linux or macOS, use `go build -o qlog ./cmd/qlog` and `./qlog`.
 
-Capture quality is explicit. Provider-reported, agent-reported, lifecycle-only, unavailable, and other evidence are not treated as equivalent. QUANTUM_LOG never invents token counts.
+Import scans the local Codex sessions directory for files modified within the
+last seven days, with at most 100 eligible files per run. It initializes a
+separate ledger automatically. Repeating an import does not duplicate the same
+usage evidence. No `init` or agent setup is needed.
 
-## Auto-capture ledger
+| Command | Result |
+| --- | --- |
+| `qlog` or `qlog report` | Summarize imported usage by project, agent, and model |
+| `qlog import` | Import recent local Codex session files |
+| `qlog import path/to/session.jsonl` | Import one explicit session file |
+| `qlog report --today` | Report the current local day's usage |
+| `qlog report --project PROJECT --json` | Read one project's summary as JSON |
+| `qlog export > usage.csv` | Export aggregate usage without source paths |
 
-Run `qlog setup --yes`, restart configured agents, and use them normally. The collector is managed as a user-level loopback service when the platform manager permits it; hooks/plugins use the installed absolute qlog binary. On Windows, a Task Scheduler policy denial does not create a Startup-app fallback: use an explicit foreground collector for OTLP capture. Every native prompt creates one canonical interaction; model and tool calls are linked children.
+[Simple mode guide](docs/SIMPLE.md) explains storage, privacy, import limits,
+and what the counters mean.
 
-To remove qlog-owned startup, collector, and adapter configuration in one step,
-run `qlog uninstall`. It always retains the local ledger in RC.10: automatic
-`--purge-data` is temporarily unavailable and fails closed.
+## What the numbers mean
 
-| Agent | Implemented capture path | Current evidence state |
-| --- | --- | --- |
-| Copilot CLI | Sanitized lifecycle hooks | `READY_FOR_EXTERNAL_E2E`; native hook-origin RC10 evidence is not recorded |
-| Copilot VS Code | Privacy-disabled-content OTLP | `READY_FOR_EXTERNAL_E2E`; two-machine RC10 evidence is not recorded |
-| Codex | Privacy-disabled-prompt OTLP logs | `READY_FOR_EXTERNAL_E2E`; clean-device RC10 evidence is not recorded |
-| Claude Code | Sanitized lifecycle hooks | `READY_FOR_EXTERNAL_E2E`; real-source RC10 evidence is not recorded |
-| OpenCode | Sanitized plugin lifecycle events | `READY_FOR_EXTERNAL_E2E`; real-source RC10 evidence is not recorded |
+Tokens come from cumulative counters reported in available Codex session
+files, labeled `agent_reported`. Usage samples are not a count of model calls.
+Missing counters remain unavailable. Costs and subscription spend are
+unavailable; the tool does not invent prices or treat missing costs as zero.
 
-`lifecycle_only` records sanitized lifecycle evidence with no token counters. `unavailable` means qlog does not claim automatic counters. `agent_reported`, `otel_reported`, and `provider_reported` require documented source counters; `estimated` is visibly non-measured. Reports keep capture qualities separate and label cost fields as estimated; they never manufacture tokens or provider spend.
+The importer retains selected metadata and usage counters, not prompt,
+response, tool argument, or tool result content. Files stay local, and the
+default executable has no background service, startup registration, hooks,
+agent configuration, or MCP server.
 
-## Quick start
+## Earlier version
 
-No stable `v0.4.0` release has been published. Published prerelease `v0.4.0-rc10`
-(`35ae43bd0031b3aca2621c52ede74731ae136357`) is available for evaluation, but
-does not have complete two-machine or five-agent external E2E evidence. Do not
-use `go install` or the legacy npm package: both bypass the published archive and
-checksum lifecycle. The older stable release line is not the supported
-evaluation path. Install the RC explicitly with
-`install.sh --version v0.4.0-rc10` or `install.ps1 --version v0.4.0-rc10` as
-described in [Install](docs/INSTALL.md).
+This source change narrows the default product. It does not replace an existing
+installed collector or change a published release. Existing release downloads
+and installers belong to the earlier product until a new release is published.
+Use the source build above for this version.
+
+The previous ledger and implementation are preserved. The old entry point is
+available in source as `cmd/qlog-legacy`; the old installation and capture
+guides are historical reference. See the [preserved README](docs/legacy/README-v0.4.md)
+and [architecture decision](docs/architecture/ADR-008-on-demand-product.md).
 
 ## License
 

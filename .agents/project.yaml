@@ -1,8 +1,11 @@
 project:
   name: quantum-log
-  product_definition: "Ledger riguroso de actividad, consumo y coste para agentes de inteligencia artificial."
+  product_definition: "On-demand local usage ledger for available Codex session files."
   backend_language: go
-  lifecycle_stage: design_and_implementation
+  lifecycle_stage: simplification_and_local_validation
+  default_entrypoint: cmd/qlog
+  legacy_entrypoint: cmd/qlog-legacy
+  decision_record: docs/architecture/ADR-008-on-demand-product.md
 
 principles:
   - ledger_is_authoritative
@@ -11,27 +14,45 @@ principles:
   - offline_capable
   - privacy_by_default
   - telemetry_is_optional
-  - provider_agnostic
-  - deterministic_correlation
   - low_resource_consumption
   - cross_platform
   - explicit_data_quality
+  - no_background_process_by_default
+  - preserve_existing_data
 
 components:
-  local_service:
-    responsibility: "Capturar, normalizar, persistir y consultar eventos."
+  simple_cli:
+    responsibility: "Import, report, and export aggregate usage on demand, then exit."
+  passive_codex_importer:
+    responsibility: "Read existing session files and whitelist metadata and reported usage."
   ledger_core:
-    responsibility: "Mantener historia append-only, correcciones, reversiones e integridad."
-  agent_adapters:
-    responsibility: "Traducir eventos de agentes/proveedores al contrato canónico."
-  token_cost_engine:
-    responsibility: "Normalizar uso, precios, moneda y calidad del dato."
-  tray_application:
-    responsibility: "Control local, estado, activación, exportación y diagnóstico."
-  telemetry_engine:
-    responsibility: "Emitir traces, metrics y logs/events sin bloquear el ledger."
-  optional_collector:
-    responsibility: "Procesar, redactar y exportar OTLP cuando esté habilitado."
+    responsibility: "Reuse append-only storage, privacy controls, duplicate prevention, and hash chain."
+  parked_legacy:
+    responsibility: "Preserve earlier collectors, integrations, accounting, telemetry, and diagnostics as source reference."
+    default_runtime: false
+
+product_scope:
+  commands:
+    - import
+    - report
+    - export
+  no_argument_command: report
+  sources:
+    - codex_local_sessions
+  automatic_initialization: import_only
+  separate_default_data_directory: simple
+  explicit_home_can_target_existing_ledger: true
+  directory_discovery_days: 7
+  directory_discovery_max_files: 100
+  costs: unavailable
+  usage_samples_are_actual_model_calls: false
+  excluded:
+    - services
+    - startup_registration
+    - hooks
+    - agent_configuration
+    - mcp_server
+    - realtime_capture
 
 ledger:
   mutation_policy: append_correction
@@ -40,29 +61,19 @@ ledger:
   idempotency: required
   authoritative_timestamp: ingestion_and_source
   telemetry_dependency: forbidden
+  legacy_ledger_automatic_migration: forbidden
 
-telemetry:
-  framework: opentelemetry
-  enabled_by_default: false
-  collector_required: false
-  supported_modes:
-    - disabled
-    - local_debug
-    - otlp
-  content_capture:
-    prompt: false
-    response: false
-    file_content: false
-    environment_values: false
-  correlation:
-    ledger_entry_id: required_when_entry_exists
-    session_id: required
-    operation_id: required
-    trace_id_persisted_in_ledger: recommended
-    span_id_persisted_in_ledger: recommended
+privacy:
+  prompt_capture: false
+  response_capture: false
+  tool_arguments_capture: false
+  tool_results_capture: false
+  file_content_capture: false
+  export_source_paths: false
 
 cost_accounting:
-  allowed_quality_values:
+  current_product_quality: unavailable
+  legacy_allowed_quality_values:
     - reported
     - estimated
     - inferred
@@ -73,17 +84,16 @@ cost_accounting:
 performance:
   budgets_are_blocking: true
   measured_values_required_before_release: true
+  import_limit_is_not_directory_traversal_or_file_size_limit: true
   provisional_targets:
     idle_cpu_percent: 0.5
     active_cpu_percent: 3.0
     memory_baseline_mb: 80
     ledger_append_p95_ms: 20
     telemetry_queue_max_mb: 100
+  legacy_targets_require_reassessment_for_on_demand_cli: true
 
-initial_agent_targets:
-  - codex
-  - claude_code
-  - github_copilot
-  - opencode
-  - openclaw
-  - mcp
+release:
+  source_scope_changed: true
+  published_installer_scope: legacy_until_new_release
+  external_e2e_claim_requires_current_evidence: true

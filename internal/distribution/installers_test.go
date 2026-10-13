@@ -531,7 +531,9 @@ func TestReleaseDocumentationDoesNotClaimUnsupportedEvidence(t *testing.T) {
 		t.Error("packaging/npm/README.md presents the stale npm package as the verified current installation path")
 	}
 
-	for _, name := range []string{"README.md", "docs/INSTALL.md"} {
+	// The simple source product has no published release contract yet. The
+	// retained release assertions belong to the preserved historical README.
+	for _, name := range []string{"docs/legacy/README-v0.4.md", "docs/INSTALL.md"} {
 		contents, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(name)))
 		if err != nil {
 			t.Fatal(err)
