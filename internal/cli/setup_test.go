@@ -384,7 +384,7 @@ func TestBuiltArtifactSetupWritesDurableHookCommand(t *testing.T) {
 		t.Fatalf("resolve repository root: %v", err)
 	}
 	artifact := filepath.Join(t.TempDir(), "qlog.exe")
-	build := exec.Command("go", "build", "-o", artifact, "./cmd/qlog")
+	build := exec.Command("go", "build", "-o", artifact, "./cmd/qlog-legacy")
 	build.Dir = repositoryRoot
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build qlog artifact: %v\n%s", err, output)

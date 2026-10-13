@@ -3462,10 +3462,10 @@ func (s *Store) validateSchema(ctx context.Context) error {
 		var applied string
 		err := s.db.QueryRowContext(ctx, "SELECT version FROM schema_migrations WHERE version = ?", entry.Name()).Scan(&applied)
 		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("database schema has pending migration %s; run qlog init", entry.Name())
+			return fmt.Errorf("database schema has pending migration %s; run qlog migrate with the same --home", entry.Name())
 		}
 		if err != nil {
-			return fmt.Errorf("database schema is not initialized; run qlog init first: %w", err)
+			return fmt.Errorf("database schema is not initialized; run qlog migrate with the same --home: %w", err)
 		}
 	}
 	return nil

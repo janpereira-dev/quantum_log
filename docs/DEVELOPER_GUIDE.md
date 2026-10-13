@@ -1,5 +1,7 @@
 # Developer Guide
 
+> Legacy capture operations: these commands require `./cmd/qlog-legacy`. The current `./cmd/qlog` workflow is documented in the [simple guide](SIMPLE.md).
+
 ## M4 Capture Operations
 
 M4 stable auto-capture scope contains only `claude-code`, `codex`, `copilot-vscode`, and `opencode`. Do not treat generic JSONL import or a configured adapter as verified auto-capture.
