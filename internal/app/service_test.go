@@ -13,6 +13,18 @@ import (
 	storepkg "github.com/janpereira-dev/quantum_log/internal/storage/sqlite"
 )
 
+func TestResolveSourceProjectRejectsRelativeDirectories(t *testing.T) {
+	// No store is needed: invalid source evidence must be rejected before any
+	// lookup or Git probe can borrow the importing process's current project.
+	service := &Service{}
+	for _, cwd := range []string{"", ".", "relative/project"} {
+		resolved, err := service.ResolveSourceProject(context.Background(), cwd)
+		if err != nil || resolved.ProjectID != "" || resolved.GitRoot != "" || resolved.CWD != "" {
+			t.Fatalf("relative source %q acquired project evidence: %+v %v", cwd, resolved, err)
+		}
+	}
+}
+
 func TestInitializeRejectsPurgeSentinelBeforeConfigurationCreation(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "ledger")
 	paths, err := config.Resolve(home)
