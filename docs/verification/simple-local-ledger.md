@@ -49,7 +49,7 @@ in this report or the generated measurement evidence.
 | Remaining executable processes | 0 |
 | Cost quality | `unavailable` |
 
-The final measured build SHA-256 was
+The initial local measured build SHA-256 was
 `984e4b04b9bb55ffe7ac220d7acc2e0187da21b0533d8a8bba9daa2e4d86e11c`.
 The source SHA-256 was
 `92aa138c3314454383c6ece2f6da7d0ad8fb816e1f574e2ac2608a9f15890c7f`.
@@ -79,6 +79,32 @@ not a claim that CPU or execution time improved by the same percentage.
 Synthetic importer benchmarks, one iteration and 100 samples, with ledger
 opening excluded: append 408.580 ms and 2,340,840 allocated bytes; replay
 134.640 ms and 875,312 allocated bytes. Allocated bytes are not peak memory.
+
+## Publication follow-up
+
+Before uploading the source PR, the branch was placed on the current remote
+main without replaying already-integrated historical work. CI and release
+pins were updated to Go 1.26.9 and x/net to v0.60.0 to address the security
+scan's confirmed findings. The portable build script now uses the exact
+repository toolchain. This maintenance also requires x/term v0.46.0 and
+x/text v0.42.0 through the module graph.
+
+The Go 1.26.9 build was checked again against the same completed native file:
+9 imported samples, 9 duplicates on replay, 531,665 tokens matching the source,
+unchanged source/database hashes, and zero remaining executable processes.
+Observed times were 3,151.671 ms for fresh import, 682.454 ms for replay, and
+100.006 ms for report. Fresh-import peak working set was 48,328,704 bytes;
+report peak was 9,527,296 bytes. These observations replace any assumption that
+the initial build's memory measurement applies to all compiler versions.
+
+The updated binary SHA-256 is
+`9a9197a56ba17e2c411bd99220fee5caeed6993b12abec37c1001662305434ce`.
+With the same patched compiler and build flags, simple/legacy binary sizes
+were 7,416,832 / 23,262,208 bytes (about 68% reduction).
+Fresh `govulncheck` v1.9.0 found no vulnerabilities, and the CI-matching
+golangci-lint v2.14.0 reported zero issues after fixing error handling/style.
+Published-release, SBOM execution, and multi-machine claims remain outside
+this source PR's validation.
 
 ## Reproduction and limits
 
