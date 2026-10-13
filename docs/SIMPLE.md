@@ -99,6 +99,8 @@ The [local validation report](verification/simple-local-ledger.md) records the
 tested build, real source import/replay, resource observations, and limitations.
 Use `scripts/build-simple.ps1` to build a portable Windows package. Generated
 packages and preservation backups are separate under `dist`.
+The build script uses the exact toolchain pinned in `go.mod`, then restores the
+calling process's setting. Plain `go build` can use a newer installed compiler.
 
 - Only available local Codex session logs are supported. Their schema may
   change, and logs may be absent or incomplete.

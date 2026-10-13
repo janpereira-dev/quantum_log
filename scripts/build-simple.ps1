@@ -5,12 +5,22 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $outputRoot = Join-Path $projectRoot 'dist/simple'
 New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
+$toolchainLine = Get-Content -LiteralPath (Join-Path $projectRoot 'go.mod') |
+    Where-Object { $_ -match '^toolchain\s+(go[0-9]+\.[0-9]+\.[0-9]+)$' } |
+    Select-Object -First 1
+if (-not $toolchainLine) { throw 'The repository must specify a Go toolchain.' }
+$pinnedToolchain = ($toolchainLine -split '\s+')[1]
+$previousToolchain = $env:GOTOOLCHAIN
 Push-Location -LiteralPath $projectRoot
 try {
+    $env:GOTOOLCHAIN = $pinnedToolchain
     & go build -trimpath -ldflags '-s -w' -o (Join-Path $outputRoot 'qlog.exe') ./cmd/qlog
     if ($LASTEXITCODE -ne 0) { throw 'Simple executable build failed.' }
 }
-finally { Pop-Location }
+finally {
+    $env:GOTOOLCHAIN = $previousToolchain
+    Pop-Location
+}
 
 @'
 QUANTUM LOG — SIMPLE LOCAL VERSION
