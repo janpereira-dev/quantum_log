@@ -91,6 +91,42 @@ func TestChildCounterResetAndRepeatedParentSnapshot(t *testing.T) {
 	}
 }
 
+func TestReplayedParentMetadataCannotReplaceChildIdentity(t *testing.T) {
+	service, path := fixture(t)
+	prefix := sample(1, `{"total_tokens":100}`)
+	parentContext := `{"type":"turn_context","timestamp":"2026-10-13T09:00:02Z","payload":{"model":"parent-model"}}` + "\n"
+	child := childHeader(`"parent_thread_id":"session-1"`, "2026-10-13T09:00:05Z") + header + parentContext + prefix + childSample(6, 20, 20) + childSample(7, 40, 20)
+	result := importLog(t, service, child)
+	if result.Samples != 2 || result.Skipped != 1 || usage(t, service).TotalTokens != 40 {
+		t.Fatalf("replayed parent became owner: %+v", result)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close database: %v", err)
+		}
+	}()
+	var childRows, parentRows int
+	if err := db.QueryRow("SELECT COUNT(*) FROM model_calls WHERE session_id='child-session'").Scan(&childRows); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow("SELECT COUNT(*) FROM model_calls WHERE session_id='session-1'").Scan(&parentRows); err != nil {
+		t.Fatal(err)
+	}
+	if childRows != 2 || parentRows != 0 {
+		t.Fatalf("wrong owners: child=%d parent=%d", childRows, parentRows)
+	}
+	if report := usage(t, service); len(report.Rows) != 1 || report.Rows[0].Model != "example-model" {
+		t.Fatalf("parent context replaced child model: %+v", report.Rows)
+	}
+	if replay := importLog(t, service, child); replay.Duplicates != 2 || replay.Samples != 0 {
+		t.Fatalf("replay: %+v", replay)
+	}
+}
+
 func TestAmbiguousChildHistoryIsNotInvented(t *testing.T) {
 	for _, created := range []string{"", "invalid"} {
 		service, _ := fixture(t)

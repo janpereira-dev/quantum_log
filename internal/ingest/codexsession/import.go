@@ -142,14 +142,35 @@ func (i *Importer) Import(ctx context.Context, reader io.Reader) (Result, error)
 			if json.Unmarshal(event.Payload, &next) != nil || identifier(next.ID) == "" {
 				return result, fmt.Errorf("codex session line %d: invalid session metadata", lineNumber)
 			}
-			if next.ID != meta.ID {
-				previous = nil
-				childStarted = false
+			if meta.ID != "" {
+				// A rollout has one primary identity. Forked history may replay
+				// other sessions' headers; those cannot change the child owner.
+				if next.ID == meta.ID {
+					if next.CWD != "" {
+						meta.CWD = next.CWD
+					}
+					if next.Provider != "" {
+						meta.Provider = next.Provider
+					}
+					if next.Version != "" {
+						meta.Version = next.Version
+					}
+					if next.Model != "" {
+						meta.Model = next.Model
+					}
+				}
+				break
 			}
 			meta = next
 			child = meta.isChild()
 			childCreated, _ = time.Parse(time.RFC3339Nano, meta.Timestamp)
 		case "turn_context":
+			if child && !childCreated.IsZero() {
+				at, err := time.Parse(time.RFC3339Nano, event.Timestamp)
+				if err == nil && !at.After(childCreated) {
+					break // Parent context cannot replace the child's model or project.
+				}
+			}
 			var turn metadata
 			if json.Unmarshal(event.Payload, &turn) != nil {
 				return result, fmt.Errorf("codex session line %d: invalid turn metadata", lineNumber)

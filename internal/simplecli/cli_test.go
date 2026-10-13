@@ -83,10 +83,13 @@ func TestProvidersRemainDistinctAcrossReportFormats(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "providers.jsonl")
 	first := nativeSession(time.Now())
 	second := strings.ReplaceAll(strings.ReplaceAll(first, "native-session", "custom-session"), "openai", "custom-provider")
-	if err := os.WriteFile(file, []byte(first+second), 0o600); err != nil {
+	if err := os.WriteFile(file, []byte(first), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	execute(t, "--home", home, "import", file)
+	if err := os.WriteFile(filepath.Join(filepath.Dir(file), "custom.jsonl"), []byte(second), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	execute(t, "--home", home, "import", filepath.Dir(file))
 	var summary Summary
 	if err := json.Unmarshal([]byte(execute(t, "--home", home, "report", "--json")), &summary); err != nil {
 		t.Fatal(err)
@@ -101,6 +104,42 @@ func TestProvidersRemainDistinctAcrossReportFormats(t *testing.T) {
 	rows, err := csv.NewReader(strings.NewReader(execute(t, "--home", home, "export"))).ReadAll()
 	if err != nil || len(rows) != 3 || rows[1][2] == rows[2][2] {
 		t.Fatalf("CSV lost provider: %v %v", rows, err)
+	}
+}
+
+func TestEmptyExplicitHomeFailsWithoutUsingDefaultLedger(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("QLOG_HOME", root)
+	for _, args := range [][]string{{"--home=", "import"}, {"--home", "", "import"}, {"--home", "   ", "report"}} {
+		var out, errOut bytes.Buffer
+		if err := Run(context.Background(), args, &out, &errOut, Version{}); err == nil {
+			t.Fatalf("accepted empty override: %v", args)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "simple")); !os.IsNotExist(err) {
+		t.Fatal("empty override used default ledger")
+	}
+}
+
+func TestSelectedSymlinkRootIsFollowedButNestedLinksAreNot(t *testing.T) {
+	root, target := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(target, "own.jsonl"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	nested := t.TempDir()
+	if err := os.WriteFile(filepath.Join(nested, "excluded.jsonl"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "sessions")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := os.Symlink(nested, filepath.Join(target, "nested")); err != nil {
+		t.Fatal(err)
+	}
+	files, count, err := discover(context.Background(), link, time.Time{}, 100)
+	if err != nil || count != 1 || len(files) != 1 || filepath.Base(files[0]) != "own.jsonl" {
+		t.Fatalf("root/nested link contract: %v %d %v", files, count, err)
 	}
 }
 

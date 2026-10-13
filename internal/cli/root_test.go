@@ -145,7 +145,7 @@ func TestDoctorIsReadOnly(t *testing.T) {
 
 	makeSchemaPending(t, filepath.Join(home, "qlog.db"))
 	before = snapshotTree(t, home)
-	if _, err := runQLog(t, home, "doctor", "--json"); err == nil || !strings.Contains(err.Error(), "pending migration") || !strings.Contains(err.Error(), "qlog init") {
+	if _, err := runQLog(t, home, "doctor", "--json"); err == nil || !strings.Contains(err.Error(), "pending migration") || !strings.Contains(err.Error(), "qlog migrate") {
 		t.Fatalf("qlog doctor pending schema error = %v", err)
 	}
 	assertTreeEqual(t, before, snapshotTree(t, home))
@@ -171,7 +171,7 @@ func TestVerifyIsReadOnly(t *testing.T) {
 
 	makeSchemaPending(t, filepath.Join(home, "qlog.db"))
 	before = snapshotTree(t, home)
-	if _, err := runQLog(t, home, "verify"); err == nil || !strings.Contains(err.Error(), "pending migration") || !strings.Contains(err.Error(), "qlog init") {
+	if _, err := runQLog(t, home, "verify"); err == nil || !strings.Contains(err.Error(), "pending migration") || !strings.Contains(err.Error(), "qlog migrate") {
 		t.Fatalf("qlog verify pending schema error = %v", err)
 	}
 	assertTreeEqual(t, before, snapshotTree(t, home))

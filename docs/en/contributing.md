@@ -1,9 +1,11 @@
 # Contributing
 
+> This page describes the legacy command set. Build `./cmd/qlog-legacy` for these examples. For the current on-demand executable, see the [simple guide](../SIMPLE.md).
+
 Contribute changes through focused Go packages, explicit privacy boundaries, and evidence-backed verification. The executable path is deliberately thin:
 
 ```text
-cmd/qlog -> internal/cli -> internal/app -> domain services/resolver -> internal/storage/sqlite
+cmd/qlog-legacy -> internal/cli -> internal/app -> domain services/resolver -> internal/storage/sqlite
 ```
 
 [Contribución en español](../es/contribucion.md)
@@ -11,7 +13,7 @@ cmd/qlog -> internal/cli -> internal/app -> domain services/resolver -> internal
 ## Local development
 
 ```bash
-go build -o qlog ./cmd/qlog
+go build -o qlog ./cmd/qlog-legacy
 go test -count=1 ./...
 go vet ./...
 ```
@@ -38,7 +40,7 @@ CGO_ENABLED=0 go test -count=1 ./...
 
 | Area | Put changes here |
 | --- | --- |
-| Executable startup | `cmd/qlog/` only. |
+| Executable startup | `cmd/qlog-legacy/` only. |
 | Cobra command definition and command tests | `internal/cli/`. |
 | App context lifecycle | `internal/app/`. |
 | Pure project attribution | `internal/attribution/resolver/`. |

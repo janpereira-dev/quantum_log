@@ -150,8 +150,14 @@ func extractHome(args []string) (string, []string, error) {
 			}
 			i++
 			home = args[i]
+			if strings.TrimSpace(home) == "" {
+				return "", nil, errors.New("--home requires a non-empty directory")
+			}
 		case strings.HasPrefix(args[i], "--home="):
 			home = strings.TrimPrefix(args[i], "--home=")
+			if strings.TrimSpace(home) == "" {
+				return "", nil, errors.New("--home requires a non-empty directory")
+			}
 		default:
 			remaining = append(remaining, args[i])
 		}
@@ -260,6 +266,11 @@ func discover(ctx context.Context, root string, since time.Time, limit int) ([]s
 			return nil, 0, errors.New("source must be a regular file or directory")
 		}
 		return []string{root}, 1, nil
+	}
+	// Follow an explicitly selected root, but never traverse nested symlinks.
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil, 0, fmt.Errorf("resolve source directory: %w", err)
 	}
 	selected := make([]candidate, 0, limit+1)
 	count := 0
