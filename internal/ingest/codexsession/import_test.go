@@ -302,6 +302,43 @@ func TestHistoricalGitAttributionIgnoresAmbientProject(t *testing.T) {
 	}
 }
 
+func TestProjectRegistrationFailureDoesNotPersistUnattributedUsage(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git unavailable")
+	}
+	directory := t.TempDir()
+	if output, err := exec.Command("git", "init", directory).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %s: %v", output, err)
+	}
+	service, path := fixture(t)
+	database, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if _, err := database.Exec(`CREATE TRIGGER fail_project_registration BEFORE INSERT ON projects BEGIN SELECT RAISE(ABORT, 'simulated registration failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	cwd, _ := json.Marshal(directory)
+	log := strings.Replace(header, `"id":"session-1"`, `"id":"session-1","cwd":`+string(cwd), 1) + sample(1, `{"total_tokens":15}`)
+	batch := New(service)
+	if result, err := batch.Import(context.Background(), strings.NewReader(log)); err == nil || !strings.Contains(err.Error(), "simulated registration failure") || result.Samples != 0 {
+		t.Fatalf("project registration failure was ignored: %+v %v", result, err)
+	}
+	if report := usage(t, service); report.TotalTokens != 0 {
+		t.Fatalf("failed attribution persisted usage: %+v", report)
+	}
+	if _, err := database.Exec(`DROP TRIGGER fail_project_registration`); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := batch.Import(context.Background(), strings.NewReader(log)); err != nil || result.Samples != 1 {
+		t.Fatalf("retry failed: %+v %v", result, err)
+	}
+	if report := usage(t, service); report.TotalTokens != 15 || len(report.Rows) != 1 || report.Rows[0].ProjectSlug == "unattributed" {
+		t.Fatalf("retry retained failed attribution: %+v", report)
+	}
+}
+
 func TestBatchReusesSourceProjectAndResetsFileBaseline(t *testing.T) {
 	service, _ := fixture(t)
 	directory := t.TempDir()

@@ -144,6 +144,8 @@ func extractHome(args []string) (string, []string, error) {
 	remaining := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
 		switch {
+		case args[i] == "--":
+			return home, append(remaining, args[i:]...), nil
 		case args[i] == "--home":
 			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "--") {
 				return "", nil, errors.New("--home requires a directory")

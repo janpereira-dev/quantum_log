@@ -121,6 +121,14 @@ func TestEmptyExplicitHomeFailsWithoutUsingDefaultLedger(t *testing.T) {
 	}
 }
 
+func TestHomeFlagDoesNotConsumeAnEscapedSourcePath(t *testing.T) {
+	args := []string{"import", "--", "--home=session.jsonl"}
+	home, remaining, err := extractHome(args)
+	if err != nil || home != "" || strings.Join(remaining, "\x00") != strings.Join(args, "\x00") {
+		t.Fatalf("escaped source path was parsed as a home flag: home=%q args=%q error=%v", home, remaining, err)
+	}
+}
+
 func TestSelectedSymlinkRootIsFollowedButNestedLinksAreNot(t *testing.T) {
 	root, target := t.TempDir(), t.TempDir()
 	if err := os.WriteFile(filepath.Join(target, "own.jsonl"), []byte("{}\n"), 0o600); err != nil {
