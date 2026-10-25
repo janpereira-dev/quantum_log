@@ -1,5 +1,8 @@
 # Capability-Aware Reports
 
+> Historical report commands for `cmd/qlog-legacy`. Current reports use
+> `qlog report` and `qlog export`; see the [current guide](SIMPLE.md).
+
 `qlog report` shows evidence quality and metric coverage without fabricating unavailable data.
 
 `qlog log today`, `qlog log list`, `qlog log tail`, and `qlog log show <id>` operate on canonical interactions. Interaction and prompt counts are roots, not model/tool call counts. Token reports retain model-call semantics and do not add parent and child totals together.

@@ -1,5 +1,8 @@
 # Troubleshooting
 
+> Historical recovery and collector guidance for earlier `qlog` installations.
+> For the current on-demand executable, see the [current guide](SIMPLE.md).
+
 ## Windows recovery from RC7 or an interrupted uninstall
 
 Candidates before `0.4.0-rc.8` could leave a qlog-owned Startup value and a

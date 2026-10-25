@@ -1,5 +1,9 @@
 # Architecture
 
+> Historical architecture for `cmd/qlog-legacy`. The current entry point is
+> `cmd/qlog -> internal/simplecli`; see [ADR-008](../architecture/ADR-008-on-demand-product.md)
+> and the [current guide](../SIMPLE.md).
+
 QUANTUM_LOG records local, privacy-aware evidence about AI coding-agent activity. Its core flow is:
 
 ```text

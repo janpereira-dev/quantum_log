@@ -1,5 +1,8 @@
 # Operations
 
+> Historical operations for `cmd/qlog-legacy`. The current executable has no
+> collector or adapters; use the [current guide](../SIMPLE.md).
+
 Operate QUANTUM_LOG through its CLI lifecycle and cooperative locks. Keep the ledger local, verify it before relying on reports, and treat unavailable maintenance actions as boundaries rather than invitations to improvise.
 
 [Operaciones en español](../es/operaciones.md)

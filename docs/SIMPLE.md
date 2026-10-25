@@ -4,25 +4,83 @@ Quantum Log imports existing Codex session files on demand. It stores selected
 usage evidence in a separate local ledger, then reports aggregate totals. There
 is no background process to keep running between commands.
 
-## Build and use
+[Guía en español](es/simple.md) · [All documentation](README.md)
 
-From the repository root, using the Go toolchain specified in `go.mod`:
+## Portable preview — no Go installation
+
+Start at the [v0.4.0-rc11 release](https://github.com/janpereira-dev/quantum_log/releases/tag/v0.4.0-rc11).
+When its assets are available after the release checks, choose your
+`qlog-simple_0.4.0-rc11_OS_ARCH` archive and verify it against `checksums.txt`.
+Extract it and follow the included [bilingual portable README](../packaging/simple/README.md)
+for the demo and your first import. No Go installation is needed.
+
+The portable executable is `qlog-simple` (`qlog-simple.exe` on Windows).
+The remaining examples use the source name `qlog`; replace it with the
+portable name when using a downloaded archive.
+
+## Optional: build from source
+
+On Windows, run the existing script from the repository root:
 
 ```powershell
-go build -o qlog.exe ./cmd/qlog
-.\qlog.exe import
-.\qlog.exe report
-.\qlog.exe export > usage.csv
+.\scripts\build-simple.ps1
 ```
 
-On Linux or macOS, build with `go build -o qlog ./cmd/qlog` and replace
-`.\qlog.exe` with `./qlog`.
+It pins the toolchain declared in `go.mod`, restores the previous setting,
+and handles paths containing brackets. Its executable is
+`.\dist\simple\qlog.exe`; use that path where examples below say `.\qlog.exe`.
+On Linux or macOS, use a patched Go toolchain matching `go.mod`, build with
+`go build -o qlog ./cmd/qlog`, and replace `.\qlog.exe` with `./qlog`.
+Plain `go build` can select a newer installed compiler, which must also be
+patched; see the [Go security advisory](https://pkg.go.dev/vuln/GO-2026-6809).
 
 Running `qlog` is equivalent to `qlog report`. Before the first import it shows
 an empty report; it does not require an initialization command. `qlog --help`
 lists the supported commands.
 
+## Try synthetic data first
+
+The repository includes [a made-up session](../fixtures/demo-session.jsonl).
+From the repository root, use a separate demo ledger:
+
+```powershell
+.\qlog.exe --home .qlog/demo import fixtures/demo-session.jsonl
+.\qlog.exe --home .qlog/demo report
+.\qlog.exe --home .qlog/demo export > demo-usage.csv
+```
+
+The report shows two usage samples and 150 tokens, provider `openai`, and model
+`demo-model`. The project is `unattributed` because there is no real project
+directory in the fixture. The two cumulative counters are 100 and 150, so the
+total is 150. Repeating the import keeps that total. Costs are unavailable.
+All identifiers and counts in this fixture are synthetic; it contains no real
+session content. These commands do not read your Codex sessions or use your
+default ledger.
+
+## Portable downloads
+
+When a release includes `qlog-simple_VERSION_OS_ARCH` assets, download the
+archive for your operating system and architecture together with that
+release's `checksums.txt`. Compare the archive's SHA-256 with its exact entry
+before extracting it. On Windows, `Get-FileHash ARCHIVE.zip -Algorithm SHA256`
+prints the value; Linux uses `sha256sum ARCHIVE.tar.gz`, and macOS uses
+`shasum -a 256 ARCHIVE.tar.gz`.
+
+The executable in these archives is named `qlog-simple` (`qlog-simple.exe`
+on Windows). Use that name in place of `qlog` in this guide. The existing
+`qlog_VERSION_OS_ARCH` assets and installers are for the earlier product;
+they are not the simple executable. Source builds are available independently
+of whether new release assets have been published.
+
 ## Choose what to import
+
+To import your own sessions and see the result:
+
+```powershell
+.\qlog.exe import
+.\qlog.exe report
+.\qlog.exe export > usage.csv
+```
 
 The default source is `$CODEX_HOME/sessions` when `CODEX_HOME` is set, otherwise
 `~/.codex/sessions`. The source files are read, never modified.
@@ -131,6 +189,6 @@ calling process's setting. Plain `go build` can use a newer installed compiler.
 [Install](INSTALL.md), [Auto-capture](AUTOCAPTURE.md), [Verification](VERIFY.md),
 and [Troubleshooting](TROUBLESHOOTING.md) describe the earlier product. They are
 reference material, not the setup flow for the default source executable.
-The [preserved README](legacy/README-v0.4.md) records that earlier entry point.
-Release packaging keeps that legacy entry point compatible with shipped
-installers. The simple executable is the source/portable-build evaluation path.
+The [historical index](legacy/README.md) keeps the earlier guides and original
+README accessible. Legacy release assets keep that entry point compatible with
+shipped installers; the separate portable `qlog-simple` assets use this guide.

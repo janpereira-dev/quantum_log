@@ -1,5 +1,8 @@
 # OpenCode Source Contract
 
+> Historical integration contract for `cmd/qlog-legacy`. The current product
+> supports local Codex session files; see the [current guide](../../SIMPLE.md).
+
 qlog installs a global TypeScript plugin using documented OpenCode plugin events. It posts allowlisted assistant usage plus sanitized local lifecycle and tool event envelopes to qlog.
 
 Source: [OpenCode plugins documentation](https://opencode.ai/docs/plugins) and the OpenCode V1 session event schema. Local inspection used OpenCode CLI `1.18.12`.

@@ -1,5 +1,9 @@
 # Privacy and Security
 
+> Historical integration and security reference for `cmd/qlog-legacy`. The
+> current importer's privacy and export boundaries are in the [current guide](../SIMPLE.md)
+> and [security policy](../../SECURITY.md).
+
 QUANTUM_LOG is designed to retain local usage evidence without retaining sensitive agent content. This is a system boundary, not permission to ingest arbitrary private data or expose local services carelessly.
 
 [Privacidad y seguridad en español](../es/privacidad-seguridad.md)

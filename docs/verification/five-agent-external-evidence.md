@@ -1,5 +1,9 @@
 # Five-Agent External Evidence Package
 
+> Historical evidence packaging for `cmd/qlog-legacy`. The current on-demand
+> Codex importer is described in the [current guide](../SIMPLE.md); this package
+> does not verify that product or a new release.
+
 `qlog acceptance run --output <zip>` packages local, sanitized evidence for five stable capture adapters: Claude Code, Codex, GitHub Copilot CLI, GitHub Copilot for VS Code, and OpenCode.
 
 | Adapter | Local package evidence | External E2E condition | Missing real event |

@@ -1,5 +1,8 @@
 # External Real-Agent Acceptance
 
+> Historical acceptance workflow for `cmd/qlog-legacy`. This does not verify
+> the current on-demand importer or a new release; see the [current guide](SIMPLE.md).
+
 Quantum Log packages privacy-safe evidence around one normal authenticated agent action. This workflow does not configure or replace transports, execute operator-provided commands, or scrape agent logs.
 
 ## Evidence boundary

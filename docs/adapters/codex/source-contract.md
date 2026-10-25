@@ -1,5 +1,8 @@
 # Codex Source Contract
 
+> Historical OTLP integration contract for `cmd/qlog-legacy`. The current
+> passive session-file importer is covered by the [current guide](../../SIMPLE.md).
+
 qlog configures Codex's documented `[otel]` log exporter at `http://127.0.0.1:4318/v1/logs` with binary OTLP/HTTP and `log_user_prompt = false`.
 
 Source: [Codex configuration reference](https://developers.openai.com/codex/config-reference) and [advanced configuration](https://developers.openai.com/codex/config-file/config-advanced).

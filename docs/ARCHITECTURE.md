@@ -1,5 +1,9 @@
 # Canonical Interaction Ledger
 
+> Historical design for `cmd/qlog-legacy`. The current product imports usage
+> counters from existing Codex sessions. Its scope and architecture are defined
+> in [ADR-008](architecture/ADR-008-on-demand-product.md).
+
 An interaction is one upstream user prompt. It is canonical root evidence, separate from zero or more model calls, tool calls, or MCP calls produced while handling it.
 
 `interactions` has a stable source/session/upstream identity. Re-delivery returns existing root. `model_calls.interaction_id` and `tool_calls.interaction_id` link descendants without turning descendants into prompts. Historical model and tool rows remain valid legacy-unlinked rows after migration.

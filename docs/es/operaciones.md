@@ -1,5 +1,8 @@
 # Operaciones
 
+> Operaciones históricas de `cmd/qlog-legacy`. El ejecutable actual no tiene
+> collector ni adaptadores; consulta la [guía actual](simple.md).
+
 Opera QUANTUM_LOG mediante ciclo de vida CLI y bloqueos cooperativos. Mantén libro mayor local, verifícalo antes de confiar en reportes y trata acciones de mantenimiento no disponibles como límites, no invitaciones a improvisar.
 
 [Read in English](../en/operations.md)

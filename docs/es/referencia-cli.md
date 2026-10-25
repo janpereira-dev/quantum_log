@@ -1,6 +1,6 @@
 # Referencia CLI
 
-> Esta página describe los comandos de la versión anterior. Compile `./cmd/qlog-legacy` para utilizar estos ejemplos. Para el ejecutable actual bajo demanda, consulte la [guía simple](../SIMPLE.md).
+> Esta página describe los comandos de la versión anterior. Compila `./cmd/qlog-legacy` para utilizar estos ejemplos. Para el ejecutable actual bajo demanda, consulta la [guía actual en español](simple.md).
 
 Esta referencia documenta definiciones actuales de comandos Cobra. Ejecuta `qlog <command> --help` para ayuda ejecutable de versión instalada. Todos comandos aceptan flag raíz `--home <path>` para sobrescribir directorio local de datos.
 

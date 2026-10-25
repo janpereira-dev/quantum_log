@@ -1,5 +1,8 @@
 # Claude Code Source Contract
 
+> Historical integration contract for `cmd/qlog-legacy`. The current product
+> supports local Codex session files; see the [current guide](../../SIMPLE.md).
+
 Source: Claude Code monitoring documentation: https://code.claude.com/docs/en/monitoring-usage
 
 ## Supported configuration

@@ -1,5 +1,8 @@
 # Verify In Under 10 Minutes
 
+> Historical verification workflow for `cmd/qlog-legacy`. These commands are
+> not in the current simple executable. Start with the [current guide](SIMPLE.md).
+
 Run local setup and evidence checks in under ten minutes. Real capture PASS is **not** claimed: P0 recorded external blockers for Codex, Copilot CLI, and Copilot VS Code.
 
 ## Fast path
