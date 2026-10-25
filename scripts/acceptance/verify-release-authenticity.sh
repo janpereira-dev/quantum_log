@@ -9,9 +9,14 @@ fail() {
 VERSION=''
 ARTIFACT_DIR=''
 RELEASE_BASE=''
+INCLUDE_SIMPLE=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --include-simple)
+      INCLUDE_SIMPLE=1
+      shift
+      ;;
     --version)
       [ "$#" -ge 2 ] || fail '--version requires a value'
       VERSION=$2
@@ -66,6 +71,13 @@ qlog_${plain_version}_windows_amd64.zip
 qlog_${plain_version}_windows_amd64.zip.sbom.json
 qlog_${plain_version}_windows_arm64.zip
 qlog_${plain_version}_windows_arm64.zip.sbom.json"
+asset_count=12
+if [ "$INCLUDE_SIMPLE" -eq 1 ]; then
+  simple_assets=$(printf '%s\n' "$expected_assets" | sed 's/^qlog_/qlog-simple_/')
+  expected_assets="$expected_assets
+$simple_assets"
+  asset_count=24
+fi
 
 if [ -n "$RELEASE_BASE" ]; then
   case "$RELEASE_BASE" in
@@ -122,10 +134,10 @@ verify_entry() {
   [ "$actual" = "$expected" ] || fail "checksum mismatch for $name"
 }
 
-awk 'NF != 2 || length($1) != 64 || $1 !~ /^[0-9A-Fa-f]+$/ || $2 ~ /\// { exit 1 }
-     END { if (NR != 12) exit 1 }' "$manifest" ||
+awk -v count="$asset_count" 'NF != 2 || length($1) != 64 || $1 !~ /^[0-9A-Fa-f]+$/ || $2 ~ /\// { exit 1 }
+     END { if (NR != count) exit 1 }' "$manifest" ||
   fail 'checksums.txt does not contain the exact expected asset set'
 for name in $expected_assets; do
   verify_entry "$name"
 done
-printf 'PASS authenticity: %s (all 12 archives and SBOMs)\n' "$VERSION"
+printf 'PASS authenticity: %s (all %s archives and SBOMs)\n' "$VERSION" "$asset_count"

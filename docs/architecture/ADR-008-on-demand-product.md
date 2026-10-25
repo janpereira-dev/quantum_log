@@ -46,9 +46,15 @@ The command surface changes for source builds. Existing published releases,
 installers, and installed services do not change merely because this source
 entry point changes. Documentation directs users to build from source until a
 release of the new product passes its release gates.
-GoReleaser continues to package `cmd/qlog-legacy` so shipped installers retain
-their bootstrap/health/uninstall command contract. Source and portable simple
-builds use `cmd/qlog`; switching release packaging needs an installer migration.
+GoReleaser continues to package `cmd/qlog-legacy` as `qlog` so shipped installers
+retain their bootstrap/health/uninstall command contract. A separate portable
+`qlog-simple` binary and `qlog-simple_VERSION_OS_ARCH` archive use `cmd/qlog`.
+Neither portable extraction nor the existing installers replace an installed
+collector with the simple executable. Both archive families receive SBOMs and
+belong to the signed release manifest; verification requires `--include-simple`
+or `-IncludeSimple` to enforce the complete 24-asset set. Omitting the flag keeps
+the historical 12-asset verification contract for older releases. Replacing the
+legacy installer channel still requires an explicit installer migration.
 
 ## Consequences
 
@@ -72,6 +78,10 @@ does it prove that the new runtime has met a resource budget.
   fixture size, elapsed time, and memory measurements before claiming resource
   improvement.
 - Distinguish unit/fixture coverage from real agent end-to-end evidence.
+- Smoke the portable executable on Linux, macOS, and Windows with the synthetic
+  `fixtures/demo-session.jsonl`, isolated storage, idempotent replay, unchanged
+  source/legacy data, and byte-preserving report/export. This is fixture evidence;
+  release publication and real-session performance still need separate validation.
 
 The earlier release's five-agent validation matrix is historical. It is not
 the acceptance matrix for this narrowed product or proof of its runtime.

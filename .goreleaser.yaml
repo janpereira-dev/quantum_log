@@ -3,7 +3,7 @@ project_name: quantum-log
 builds:
   - id: qlog
     # Published installers bootstrap setup/doctor and need the legacy command set.
-    # The simple product is built separately by scripts/build-simple.ps1.
+    # The simple product ships under its own binary and archive names.
     main: ./cmd/qlog-legacy
     binary: qlog
     env:
@@ -14,13 +14,38 @@ builds:
     mod_timestamp: "{{ .CommitTimestamp }}"
     ldflags:
       - -s -w -X main.version={{ .Version }} -X main.commit={{ .Commit }} -X main.date={{ .CommitDate }}
+  - id: qlog-simple
+    main: ./cmd/qlog
+    binary: qlog-simple
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    ldflags:
+      - -s -w -X main.version={{ .Version }} -X main.commit={{ .Commit }} -X main.date={{ .CommitDate }}
 archives:
   - id: default
+    ids: [qlog]
     name_template: "qlog_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     formats: [tar.gz]
     format_overrides:
       - goos: windows
         formats: [zip]
+  - id: simple
+    ids: [qlog-simple]
+    name_template: "qlog-simple_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE
+      - src: packaging/simple/README.md
+        dst: .
+        strip_parent: true
+      - fixtures/demo-session.jsonl
 checksum:
   name_template: checksums.txt
 sboms:

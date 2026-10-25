@@ -2,7 +2,8 @@
 param(
     [Parameter(Mandatory = $true)][string]$Version,
     [string]$ArtifactDir,
-    [string]$ReleaseBase
+    [string]$ReleaseBase,
+    [switch]$IncludeSimple
 )
 
 $ErrorActionPreference = 'Stop'
@@ -51,6 +52,9 @@ $expectedAssets = @(
     "qlog_${plainVersion}_windows_arm64.zip",
     "qlog_${plainVersion}_windows_arm64.zip.sbom.json"
 )
+if ($IncludeSimple) {
+    $expectedAssets += @($expectedAssets | ForEach-Object { $_ -creplace '^qlog_', 'qlog-simple_' })
+}
 
 $temporaryDirectory = $null
 try {
@@ -116,7 +120,7 @@ try {
             Fail "checksum mismatch for $name"
         }
     }
-    Write-Output "PASS authenticity: $Version (all 12 archives and SBOMs)"
+    Write-Output "PASS authenticity: $Version (all $($expectedAssets.Count) archives and SBOMs)"
 } finally {
     if ($null -ne $temporaryDirectory -and (Test-Path -LiteralPath $temporaryDirectory)) {
         Remove-Item -LiteralPath $temporaryDirectory -Recurse -Force
