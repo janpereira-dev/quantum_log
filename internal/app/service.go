@@ -183,7 +183,7 @@ func (s *Service) resolveProject(ctx context.Context, explicitProject, adapterPr
 		slug := name + "-" + hex.EncodeToString(digest[:])
 		project, location, registerErr := s.Store.RegisterProject(ctx, name, slug, resolved.GitRoot)
 		if registerErr != nil {
-			return resolved, nil
+			return ResolvedProject{}, fmt.Errorf("register Git project: %w", registerErr)
 		}
 		resolved.ProjectID, resolved.LocationID, resolved.LocationPath = project.ID, location.ID, location.AbsolutePath
 		resolved.Resolution = resolver.ProjectResolution{ProjectSlug: project.Slug, Method: resolver.GitRoot, Confidence: resolver.High, Evidence: location.AbsolutePath}
