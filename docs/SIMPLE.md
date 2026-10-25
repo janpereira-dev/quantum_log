@@ -6,16 +6,33 @@ is no background process to keep running between commands.
 
 [Guía en español](es/simple.md) · [All documentation](README.md)
 
-## Build
+## Portable preview — no Go installation
 
-From the repository root, using the Go toolchain specified in `go.mod`:
+Start at the [v0.4.0-rc11 release](https://github.com/janpereira-dev/quantum_log/releases/tag/v0.4.0-rc11).
+When its assets are available after the release checks, choose your
+`qlog-simple_0.4.0-rc11_OS_ARCH` archive and verify it against `checksums.txt`.
+Extract it and follow the included [bilingual portable README](../packaging/simple/README.md)
+for the demo and your first import. No Go installation is needed.
+
+The portable executable is `qlog-simple` (`qlog-simple.exe` on Windows).
+The remaining examples use the source name `qlog`; replace it with the
+portable name when using a downloaded archive.
+
+## Optional: build from source
+
+On Windows, run the existing script from the repository root:
 
 ```powershell
-go build -o qlog.exe ./cmd/qlog
+.\scripts\build-simple.ps1
 ```
 
-On Linux or macOS, build with `go build -o qlog ./cmd/qlog` and replace
-`.\qlog.exe` with `./qlog`.
+It pins the toolchain declared in `go.mod`, restores the previous setting,
+and handles paths containing brackets. Its executable is
+`.\dist\simple\qlog.exe`; use that path where examples below say `.\qlog.exe`.
+On Linux or macOS, use a patched Go toolchain matching `go.mod`, build with
+`go build -o qlog ./cmd/qlog`, and replace `.\qlog.exe` with `./qlog`.
+Plain `go build` can select a newer installed compiler, which must also be
+patched; see the [Go security advisory](https://pkg.go.dev/vuln/GO-2026-6809).
 
 Running `qlog` is equivalent to `qlog report`. Before the first import it shows
 an empty report; it does not require an initialization command. `qlog --help`

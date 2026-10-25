@@ -1,7 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.4.0-rc11 - 2026-10-25
 
+- Add separate `qlog-simple` portable archives for the on-demand Codex workflow,
+  with a bilingual quickstart and synthetic demo; keep legacy `qlog` installers unchanged.
+- Require all 24 archive and SBOM entries in the signed release manifest when
+  verifying the new portable releases; retain the older 12-entry verification mode.
+- Build the Windows source package from paths containing brackets using a
+  temporary drive, with allocation retry and cleanup on success or failure.
+- Fix the legacy npm packaging regression so its version check follows the
+  package version and its download dry run is isolated from local-artifact overrides.
 - Pin builds and CI to Go 1.26.10, which includes the `crypto/x509` fix for
   [GO-2026-6809](https://pkg.go.dev/vuln/GO-2026-6809).
 - Fail an import when automatic Git-project registration fails instead of

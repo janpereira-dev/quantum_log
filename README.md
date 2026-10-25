@@ -8,23 +8,57 @@ you invoke it and exits when the command finishes.
 
 [English guide](docs/SIMPLE.md) · [Guía en español](docs/es/simple.md)
 
-## Try it from source
+## Portable preview — no Go installation
 
-Clone the repository, then build with the Go toolchain specified in `go.mod`:
+Open the [v0.4.0-rc11 release](https://github.com/janpereira-dev/quantum_log/releases/tag/v0.4.0-rc11).
+Once its release checks complete and assets are available, choose the
+`qlog-simple_0.4.0-rc11_OS_ARCH` archive for your operating system and
+architecture, and verify its SHA-256 against that release's `checksums.txt`.
+Extract it into a new folder and open a terminal there. The included
+[bilingual README](packaging/simple/README.md) walks through the portable version.
+
+Try the synthetic demo on Windows in PowerShell:
+
+```powershell
+.\qlog-simple.exe --home .qlog/demo import fixtures/demo-session.jsonl
+.\qlog-simple.exe --home .qlog/demo report
+```
+
+On Linux or macOS:
+
+```sh
+./qlog-simple --home .qlog/demo import fixtures/demo-session.jsonl
+./qlog-simple --home .qlog/demo report
+```
+
+Expect two usage samples and **150 synthetic tokens**, with project
+`unattributed` and costs unavailable. The demo uses its own ledger and does
+not read your personal Codex sessions. To import your sessions afterwards,
+run `qlog-simple import`, then `qlog-simple report`; `qlog-simple export`
+writes CSV. Use `.\qlog-simple.exe` or `./qlog-simple` for your platform.
+
+## Optional: build from source
+
+On Windows, use the existing build script from the cloned repository:
 
 ```powershell
 git clone https://github.com/janpereira-dev/quantum_log.git
 cd quantum_log
-go build -o qlog.exe ./cmd/qlog
+.\scripts\build-simple.ps1
 ```
 
-On Linux or macOS, use `go build -o qlog ./cmd/qlog` and `./qlog`.
+The script pins the toolchain declared in `go.mod`, restores the previous
+setting, and handles checkout paths containing brackets. Its executable is
+`.\dist\simple\qlog.exe`. On Linux or macOS, use a patched Go toolchain matching
+`go.mod`, build with `go build -o qlog ./cmd/qlog`, and invoke `./qlog`.
+Plain `go build` can select a newer installed compiler; that compiler must
+also be patched. See the [Go security advisory](https://pkg.go.dev/vuln/GO-2026-6809).
 
 Try the included synthetic example in a separate demo ledger:
 
 ```powershell
-.\qlog.exe --home .qlog/demo import fixtures/demo-session.jsonl
-.\qlog.exe --home .qlog/demo report
+.\dist\simple\qlog.exe --home .qlog/demo import fixtures/demo-session.jsonl
+.\dist\simple\qlog.exe --home .qlog/demo report
 ```
 
 The fixture contains two cumulative usage samples totaling **150 tokens**,
@@ -35,15 +69,18 @@ Importing it again leaves the total at 150.
 To import your own local Codex sessions:
 
 ```powershell
-.\qlog.exe import
-.\qlog.exe
-.\qlog.exe export > usage.csv
+.\dist\simple\qlog.exe import
+.\dist\simple\qlog.exe
+.\dist\simple\qlog.exe export > usage.csv
 ```
 
 Import scans the local Codex sessions directory for files modified within the
 last seven days, with at most 100 eligible files per run. It initializes a
 separate ledger automatically. Repeating an import does not duplicate the same
 usage evidence. No `init` or agent setup is needed.
+
+Command references use `qlog` for the source-built executable; use
+`qlog-simple` for the portable preview.
 
 | Command | Result |
 | --- | --- |
@@ -71,15 +108,7 @@ response, tool argument, or tool result content. Files stay local, and the
 default executable has no background service, startup registration, hooks,
 agent configuration, or MCP server.
 
-## Downloads and earlier versions
-
-Use the source build above for the current product. Release packaging also
-defines portable `qlog-simple_VERSION_OS_ARCH` archives with a `qlog-simple`
-executable (`qlog-simple.exe` on Windows). When those assets are available on
-a [release](https://github.com/janpereira-dev/quantum_log/releases), choose the
-archive for your operating system and architecture, verify its checksum, and
-substitute that executable name in the commands above. This documentation
-does not imply that a new release has been published.
+## Earlier versions
 
 Existing `qlog_VERSION_OS_ARCH` archives and installers use the earlier
 `cmd/qlog-legacy` product. Building or running the simple executable does not

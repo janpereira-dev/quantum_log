@@ -7,18 +7,36 @@ no necesita un proceso en segundo plano.
 
 [English guide](../SIMPLE.md) · [Índice de documentación](README.md)
 
-## Compilar
+## Versión portátil: sin instalar Go
 
-Necesitas Git y la versión de Go indicada en `go.mod`. En PowerShell:
+Empieza en la [release v0.4.0-rc11](https://github.com/janpereira-dev/quantum_log/releases/tag/v0.4.0-rc11).
+Cuando sus archivos estén disponibles tras las comprobaciones de publicación,
+elige el `qlog-simple_0.4.0-rc11_OS_ARCH` de tu sistema y arquitectura y verifica
+su hash con `checksums.txt`. Extrae el paquete y sigue el
+[README bilingüe incluido](../../packaging/simple/README.md) para probar la
+demostración y hacer tu primera importación. No necesitas instalar Go.
+
+El ejecutable portátil se llama `qlog-simple` (`qlog-simple.exe` en Windows).
+Los ejemplos siguientes usan el nombre `qlog` de la compilación desde código;
+sustitúyelo por el nombre portátil si has descargado un paquete.
+
+## Opcional: compilar desde código
+
+En Windows, usa el script existente desde el repositorio clonado:
 
 ```powershell
 git clone https://github.com/janpereira-dev/quantum_log.git
 cd quantum_log
-go build -o qlog.exe ./cmd/qlog
+.\scripts\build-simple.ps1
 ```
 
-En Linux o macOS, compila con `go build -o qlog ./cmd/qlog` y sustituye
-`.\qlog.exe` por `./qlog` en los ejemplos.
+El script fija la versión de Go declarada en `go.mod`, restaura el ajuste
+anterior y admite rutas con corchetes. Genera `.\dist\simple\qlog.exe`;
+usa esa ruta donde los ejemplos siguientes indican `.\qlog.exe`.
+En Linux o macOS, usa una versión de Go corregida que coincida con `go.mod`,
+compila con `go build -o qlog ./cmd/qlog` y sustituye `.\qlog.exe` por `./qlog`.
+Un `go build` directo puede elegir un compilador instalado más reciente, que
+también debe estar corregido; consulta el [aviso de Go](https://pkg.go.dev/vuln/GO-2026-6809).
 
 `import` crea su registro automáticamente cuando encuentra archivos para
 importar. No hay un paso de inicialización ni configuración de agentes.
