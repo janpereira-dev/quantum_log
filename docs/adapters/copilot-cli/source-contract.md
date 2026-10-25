@@ -1,5 +1,8 @@
 # Copilot CLI Source Contract
 
+> Historical integration contract for `cmd/qlog-legacy`. The current product
+> supports local Codex session files; see the [current guide](../../SIMPLE.md).
+
 Primary source: [GitHub Copilot CLI command reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference),
 OpenTelemetry monitoring section.
 

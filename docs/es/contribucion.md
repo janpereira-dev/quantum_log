@@ -1,6 +1,6 @@
 # Contribución
 
-> Esta página describe los comandos de la versión anterior. Compile `./cmd/qlog-legacy` para utilizar estos ejemplos. Para el ejecutable actual bajo demanda, consulte la [guía simple](../SIMPLE.md).
+> Esta página describe los comandos de la versión anterior. Compila `./cmd/qlog-legacy` para utilizar estos ejemplos. Para el ejecutable actual bajo demanda, consulta la [guía actual en español](simple.md) y las [instrucciones de contribución actuales](../../CONTRIBUTING.md).
 
 Contribuye cambios mediante paquetes Go enfocados, límites explícitos de privacidad y verificación respaldada por evidencia. Ruta ejecutable es deliberadamente delgada:
 

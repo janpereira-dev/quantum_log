@@ -1,5 +1,8 @@
 # GitHub Copilot for VS Code Source Contract
 
+> Historical integration contract for `cmd/qlog-legacy`. The current product
+> supports local Codex session files; see the [current guide](../../SIMPLE.md).
+
 Sources: GitHub's [OpenTelemetry agent-monitoring overview](https://docs.github.com/en/copilot/concepts/agents/opentelemetry)
 and the linked official [VS Code Copilot monitoring reference](https://code.visualstudio.com/docs/agents/guides/monitoring-agents).
 

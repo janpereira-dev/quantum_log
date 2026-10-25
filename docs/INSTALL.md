@@ -1,5 +1,9 @@
 # Install QUANTUM_LOG
 
+> Earlier product: these installers use the legacy `qlog` command set, including
+> setup and collector management. For the current on-demand executable, use
+> the [English guide](SIMPLE.md) or [guía en español](es/simple.md).
+
 `v0.4.0-rc10` is a published prerelease. It points to commit
 `35ae43bd0031b3aca2621c52ede74731ae136357` and has GitHub Release archives,
 `checksums.txt`, a Sigstore bundle for that checksum file, and per-archive SBOMs.

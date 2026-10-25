@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- Pin builds and CI to Go 1.26.10, which includes the `crypto/x509` fix for
+  [GO-2026-6809](https://pkg.go.dev/vuln/GO-2026-6809).
+- Fail an import when automatic Git-project registration fails instead of
+  silently recording its usage as unattributed; preserve a safe retry.
+- Respect the `--` argument separator so a source filename beginning with
+  `--home=` is not interpreted as a ledger-directory override.
+- Document the current on-demand Codex import/report/CSV workflow in English
+  and Spanish, with a synthetic first-use example.
+- Route earlier collector, adapter, and MCP documentation through a historical
+  index; update contributor and agent guidance for `cmd/qlog` and `internal/simplecli`.
+- Distinguish the current simple executable from legacy `qlog` release assets
+  and installers. Release publication and verification remain separate claims.
+
 ## 0.4.0-rc10 - 2026-09-01
 
 - Published prerelease artifacts for tag `v0.4.0-rc10` at commit `35ae43bd0031b3aca2621c52ede74731ae136357`, including checksums, a Sigstore bundle, and per-archive SBOMs. Publication is not stable-release or external-E2E verification.

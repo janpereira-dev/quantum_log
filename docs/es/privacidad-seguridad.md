@@ -1,5 +1,9 @@
 # Privacidad y seguridad
 
+> Referencia histórica de integraciones y seguridad de `cmd/qlog-legacy`.
+> Los límites de privacidad y exportación actuales están en la [guía actual](simple.md)
+> y la [política de seguridad](../../SECURITY.md).
+
 QUANTUM_LOG está diseñado para retener evidencia local de uso sin retener contenido sensible de agentes. Es límite del sistema, no permiso para ingerir datos privados arbitrarios ni exponer servicios locales sin cuidado.
 
 [Read in English](../en/privacy-security.md)

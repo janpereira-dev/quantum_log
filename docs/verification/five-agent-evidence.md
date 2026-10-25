@@ -1,5 +1,9 @@
 # Five-Agent Autocapture Evidence
 
+> Historical capture evidence for `cmd/qlog-legacy`. The current on-demand
+> Codex importer is described in the [current guide](../SIMPLE.md); this matrix
+> does not verify that product or a new release.
+
 This table describes implementation and local contract evidence, not external verification. `IMPLEMENTED` means code exists. `READY_FOR_EXTERNAL_E2E` means it can be exercised. `PASS` is reserved for matching local evidence bound to a command, candidate, and platform. `VERIFIED` additionally requires the committed acceptance matrix and independent review. Missing real-source evidence remains `READY_FOR_EXTERNAL_E2E`, not `PASS`. `NOT_EMITTED_BY_SOURCE` means the inspected source contract does not establish that metric.
 
 | Adapter | Setup and ingest contract | Metric evidence | Attribution and dedupe | Acceptance status |

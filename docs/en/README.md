@@ -1,24 +1,32 @@
 # QUANTUM_LOG documentation
 
-> This page describes the legacy command set. Build `./cmd/qlog-legacy` for these examples. For the current on-demand executable, see the [simple guide](../SIMPLE.md).
-
-Use this documentation to run QUANTUM_LOG safely, understand its evidence boundaries, and contribute changes.
+Quantum Log reads the Codex session files already on your computer and shows
+their reported token usage by project. You import when you want to refresh
+the report; no background process is required.
 
 [Leer en español](../es/README.md)
 
-## Users
+## Start here
 
-- [Guide](guide.md): install, initialize, ingest, verify, and report.
-- [CLI reference](cli-reference.md): commands, flags, outputs, and safety limits.
-- [Architecture](architecture.md): project resolution, event lifecycle, and storage boundaries.
-- [Operations](operations.md): diagnostics, locking, backup, and recovery boundaries.
-- [Privacy and security](privacy-security.md): sanitization, capture quality, and threat model.
+- [Current guide](../SIMPLE.md): build, try synthetic data, import, report, and export.
+- [Project overview](../../README.md).
+- [Security policy](../../SECURITY.md).
+
+The three everyday commands are `qlog import`, `qlog report`, and `qlog export`.
+Running `qlog` shows the report. Costs are unavailable, and usage samples are
+not model-call counts.
 
 ## Contributors
 
-- [Contributing](contributing.md): local development, testing, and release handoff.
+- [Contributing](../../CONTRIBUTING.md): current packages, local checks, and review.
+- [Current product decision](../architecture/ADR-008-on-demand-product.md).
 - [Architecture decision records](../architecture/): normative technical decisions.
 
-## Current capture status
+## Earlier product
 
-M4 is `IN_PROGRESS`. Copilot VS Code capture remains experimental until real end-to-end evidence records Copilot-originated usage in SQLite. Capture quality is always explicit; QUANTUM_LOG does not invent token counts.
+The earlier capture-oriented implementation is preserved in `cmd/qlog-legacy`.
+Its [guide](guide.md), [CLI reference](cli-reference.md),
+[architecture](architecture.md), [operations](operations.md),
+[privacy and security](privacy-security.md), and [contributor notes](contributing.md)
+are historical reference. See the [historical index](../legacy/README.md) for
+the complete set. These pages are not the current setup flow.

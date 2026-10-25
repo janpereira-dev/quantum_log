@@ -1,6 +1,6 @@
 # Contributing
 
-> This page describes the legacy command set. Build `./cmd/qlog-legacy` for these examples. For the current on-demand executable, see the [simple guide](../SIMPLE.md).
+> This page describes the legacy command set. Build `./cmd/qlog-legacy` for these examples. For the current on-demand executable, see the [current guide](../SIMPLE.md) and [contributor instructions](../../CONTRIBUTING.md).
 
 Contribute changes through focused Go packages, explicit privacy boundaries, and evidence-backed verification. The executable path is deliberately thin:
 
