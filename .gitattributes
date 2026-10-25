@@ -4,3 +4,4 @@
 *.yaml text eol=lf
 *.md text eol=lf
 *.sql text eol=lf
+fixtures/demo-session.jsonl text eol=lf
