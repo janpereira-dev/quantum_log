@@ -8,7 +8,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const { deflateRawSync, gzipSync } = require('node:zlib');
-const { archiveName, binaryFromArchive, checksumForArchive, localArtifactPaths, releaseUrls, resolvePlatform, verifySha256 } = require('../scripts/install');
+const { VERSION, archiveName, binaryFromArchive, checksumForArchive, localArtifactPaths, releaseUrls, resolvePlatform, verifySha256 } = require('../scripts/install');
 
 const npmCommand = process.execPath;
 const npmCli = process.env.npm_execpath;
@@ -96,8 +96,11 @@ test('uses only matching local candidate archive and checksum manifest', () => {
 });
 
 test('postinstall dry-run performs no release download', () => {
+  const environment = { ...process.env };
+  delete environment.QLOG_INSTALL_LOCAL_ARTIFACT_DIR;
   const output = execFileSync(process.execPath, ['scripts/postinstall.js', '--dry-run'], {
     cwd: path.join(__dirname, '..'),
+    env: environment,
     encoding: 'utf8',
   });
   assert.match(output, /dry-run, no files downloaded or changed/);
@@ -155,7 +158,7 @@ test('installs from generated local candidate artifact', { skip: !process.env.QL
     const version = spawnSync(binary, ['--version'], { encoding: 'utf8' });
     assert.equal(version.error, undefined, version.error?.message);
     assert.equal(version.status, 0, version.stderr);
-    assert.match(version.stdout, /qlog 0\.3\.2-rc\.2/);
+    assert.ok(version.stdout.startsWith(`qlog ${VERSION} `), version.stdout);
   } finally {
     await fs.rm(temporary, { recursive: true, force: true });
     if (packagePath) await fs.rm(packagePath, { force: true });

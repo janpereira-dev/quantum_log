@@ -17,7 +17,7 @@ func normalizeDocumentationText(contents []byte) string {
 	return strings.Join(strings.Fields(plain), " ")
 }
 
-func releaseAssetNames(version string) []string {
+func releaseAssetNames(version string, includeSimple bool) []string {
 	plainVersion := strings.TrimPrefix(version, "v")
 	var names []string
 	for _, platform := range []string{"darwin", "linux", "windows"} {
@@ -30,13 +30,18 @@ func releaseAssetNames(version string) []string {
 			names = append(names, archive, archive+".sbom.json")
 		}
 	}
+	if includeSimple {
+		for _, name := range names {
+			names = append(names, strings.Replace(name, "qlog_", "qlog-simple_", 1))
+		}
+	}
 	return names
 }
 
-func releaseAuthenticityFixture(t *testing.T, root, version, corruptAsset string) {
+func releaseAuthenticityFixture(t *testing.T, root, version, corruptAsset string, includeSimple bool) {
 	t.Helper()
 	var manifest strings.Builder
-	for _, name := range releaseAssetNames(version) {
+	for _, name := range releaseAssetNames(version, includeSimple) {
 		contents := []byte("verified fixture: " + name)
 		if err := os.WriteFile(filepath.Join(root, name), contents, 0o600); err != nil {
 			t.Fatal(err)
@@ -95,6 +100,7 @@ func TestReleaseAuthenticityVerifierContracts(t *testing.T) {
 		"Reject pre-existing release", "Revalidate remote tag at privileged job start", "Revalidate remote tag before publishing draft",
 		"git ls-remote --exit-code --tags origin", "HTTP_STATUS", "404)", "manual reconciliation",
 		"cosign sign-blob", "verify-release-authenticity.sh", "gh release edit", "--draft=false",
+		"--include-simple", "verify-simple-artifact.js",
 	} {
 		if !strings.Contains(workflow, want) {
 			t.Errorf("release workflow missing %q", want)
@@ -181,7 +187,7 @@ func TestPowerShellReleaseAuthenticityVerifier(t *testing.T) {
 	}
 	version := "v9.8.7-rc1"
 	artifacts := t.TempDir()
-	releaseAuthenticityFixture(t, artifacts, version, "")
+	releaseAuthenticityFixture(t, artifacts, version, "", false)
 	bin := t.TempDir()
 	cosign := "@echo off\r\necho %*>>\"%QLOG_COSIGN_CALLS%\"\r\nexit /b 0\r\n"
 	if err := os.WriteFile(filepath.Join(bin, "cosign.cmd"), []byte(cosign), 0o600); err != nil {
@@ -215,12 +221,12 @@ func TestPowerShellReleaseAuthenticityVerifier(t *testing.T) {
 	}
 	corrupt := t.TempDir()
 	nonHostAsset := "qlog_9.8.7-rc1_linux_arm64.tar.gz"
-	releaseAuthenticityFixture(t, corrupt, version, nonHostAsset)
+	releaseAuthenticityFixture(t, corrupt, version, nonHostAsset, false)
 	if output, runErr := run("-Version", version, "-ArtifactDir", corrupt); runErr == nil || !strings.Contains(string(output), "checksum") {
 		t.Fatalf("bad non-host archive checksum accepted: err=%v output=%s", runErr, output)
 	}
 	extra := t.TempDir()
-	releaseAuthenticityFixture(t, extra, version, "")
+	releaseAuthenticityFixture(t, extra, version, "", false)
 	extraContents := []byte("unexpected")
 	if err := os.WriteFile(filepath.Join(extra, "unexpected.txt"), extraContents, 0o600); err != nil {
 		t.Fatal(err)
@@ -241,6 +247,13 @@ func TestPowerShellReleaseAuthenticityVerifier(t *testing.T) {
 	if output, runErr := command.CombinedOutput(); runErr == nil || !strings.Contains(string(output), "cosign") {
 		t.Fatalf("missing cosign accepted: err=%v output=%s", runErr, output)
 	}
+	testSimpleReleaseAuthenticity(t, version, func(directory string, includeSimple bool) ([]byte, error) {
+		args := []string{"-Version", version, "-ArtifactDir", directory}
+		if includeSimple {
+			args = append(args, "-IncludeSimple")
+		}
+		return run(args...)
+	})
 }
 
 func TestPOSIXReleaseAuthenticityVerifier(t *testing.T) {
@@ -253,7 +266,7 @@ func TestPOSIXReleaseAuthenticityVerifier(t *testing.T) {
 	}
 	version := "v9.8.7-rc1"
 	artifacts := t.TempDir()
-	releaseAuthenticityFixture(t, artifacts, version, "")
+	releaseAuthenticityFixture(t, artifacts, version, "", false)
 	bin := t.TempDir()
 	cosign := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$QLOG_COSIGN_CALLS\"\n"
 	if err := os.WriteFile(filepath.Join(bin, "cosign"), []byte(cosign), 0o700); err != nil {
@@ -286,12 +299,12 @@ func TestPOSIXReleaseAuthenticityVerifier(t *testing.T) {
 	}
 	corrupt := t.TempDir()
 	nonHostAsset := "qlog_9.8.7-rc1_windows_arm64.zip"
-	releaseAuthenticityFixture(t, corrupt, version, nonHostAsset)
+	releaseAuthenticityFixture(t, corrupt, version, nonHostAsset, false)
 	if output, runErr := run("--version", version, "--artifact-dir", corrupt); runErr == nil || !strings.Contains(string(output), "checksum") {
 		t.Fatalf("bad non-host archive checksum accepted: err=%v output=%s", runErr, output)
 	}
 	extra := t.TempDir()
-	releaseAuthenticityFixture(t, extra, version, "")
+	releaseAuthenticityFixture(t, extra, version, "", false)
 	extraContents := []byte("unexpected")
 	if err := os.WriteFile(filepath.Join(extra, "unexpected.txt"), extraContents, 0o600); err != nil {
 		t.Fatal(err)
@@ -311,6 +324,55 @@ func TestPOSIXReleaseAuthenticityVerifier(t *testing.T) {
 	command.Env = append(os.Environ(), "PATH="+t.TempDir())
 	if output, runErr := command.CombinedOutput(); runErr == nil || !strings.Contains(string(output), "cosign") {
 		t.Fatalf("missing cosign accepted: err=%v output=%s", runErr, output)
+	}
+	testSimpleReleaseAuthenticity(t, version, func(directory string, includeSimple bool) ([]byte, error) {
+		args := []string{"--version", version, "--artifact-dir", directory}
+		if includeSimple {
+			args = append(args, "--include-simple")
+		}
+		return run(args...)
+	})
+}
+
+func testSimpleReleaseAuthenticity(t *testing.T, version string, run func(string, bool) ([]byte, error)) {
+	t.Helper()
+	for _, test := range []struct {
+		name, corruptAsset string
+		fixtureSimple      bool
+		requireSimple      bool
+		duplicate          bool
+		wantError          bool
+	}{
+		{name: "complete portable release", fixtureSimple: true, requireSimple: true},
+		{name: "portable assets require explicit verification", fixtureSimple: true, wantError: true},
+		{name: "legacy assets cannot satisfy portable release", requireSimple: true, wantError: true},
+		{name: "corrupt non-host portable archive", fixtureSimple: true, requireSimple: true, corruptAsset: "qlog-simple_9.8.7-rc1_darwin_arm64.tar.gz", wantError: true},
+		{name: "corrupt non-host portable SBOM", fixtureSimple: true, requireSimple: true, corruptAsset: "qlog-simple_9.8.7-rc1_linux_arm64.tar.gz.sbom.json", wantError: true},
+		{name: "mixed manifest duplicates one asset and omits another", fixtureSimple: true, requireSimple: true, duplicate: true, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			releaseAuthenticityFixture(t, directory, version, test.corruptAsset, test.fixtureSimple)
+			if test.duplicate {
+				manifest := filepath.Join(directory, "checksums.txt")
+				contents, err := os.ReadFile(manifest)
+				if err != nil {
+					t.Fatal(err)
+				}
+				lines := strings.Split(string(contents), "\n")
+				lines[len(lines)-2] = lines[len(lines)-3]
+				if err := os.WriteFile(manifest, []byte(strings.Join(lines, "\n")), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			output, err := run(directory, test.requireSimple)
+			if (err != nil) != test.wantError {
+				t.Fatalf("error=%v wantError=%v output=%s", err, test.wantError, output)
+			}
+			if !test.wantError && !strings.Contains(string(output), "all 24 archives and SBOMs") {
+				t.Fatalf("portable verifier did not validate all assets: %s", output)
+			}
+		})
 	}
 }
 
@@ -448,6 +510,44 @@ func TestReleaseConfigKeepsPrereleaseTagsOutOfLatest(t *testing.T) {
 	for _, reversed := range []string{`contains .Tag "-alpha"`, `contains .Tag "-beta"`, `contains .Tag "-rc"`} {
 		if strings.Contains(config, reversed) {
 			t.Fatalf("release config reverses Sprig contains arguments %q:\n%s", reversed, config)
+		}
+	}
+}
+
+func TestSimplePortableReleasePreservesLegacyBinaryAndUsesSyntheticSmoke(t *testing.T) {
+	root := filepath.Join("..", "..")
+	config, err := os.ReadFile(filepath.Join(root, ".goreleaser.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"main: ./cmd/qlog-legacy", "binary: qlog\n", "ids: [qlog]",
+		"main: ./cmd/qlog\n", "binary: qlog-simple", "ids: [qlog-simple]",
+		`name_template: "qlog-simple_{{ .Version }}_{{ .Os }}_{{ .Arch }}"`,
+		"src: packaging/simple/README.md\n        dst: .\n        strip_parent: true",
+		"fixtures/demo-session.jsonl",
+	} {
+		if !strings.Contains(strings.ReplaceAll(string(config), "\r\n", "\n"), want) {
+			t.Errorf("portable release config missing %q", want)
+		}
+	}
+	if start := strings.Index(string(config), "  - id: simple"); start >= 0 {
+		simpleConfig := string(config[start:])
+		if strings.Contains(simpleConfig, "      - README.md") || strings.Contains(simpleConfig, "      - docs/") {
+			t.Error("simple archives must use the self-contained portable README instead of source docs")
+		}
+	}
+	ci, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"os: [ubuntu-latest, macos-latest, windows-latest]",
+		"verify-simple-artifact.js", "fixtures/demo-session.jsonl",
+		"node --test packaging/npm/tests/install.test.js",
+	} {
+		if !strings.Contains(string(ci), want) {
+			t.Errorf("portable CI validation missing %q", want)
 		}
 	}
 }

@@ -34,6 +34,10 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: '1.26.10'
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          package-manager-cache: false
       - run: go mod tidy
       - run: git diff --exit-code go.mod go.sum
       - run: test -z "$(gofmt -l $(git ls-files '*.go'))"
@@ -42,6 +46,23 @@ jobs:
       - run: go test ./...
       - run: go test -race ./...
       - run: go build ./...
+      - name: Smoke simple portable archive with synthetic sessions
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="$(mktemp -d)"
+          trap 'rm -rf "$stage"' EXIT
+          suffix=''
+          if [ "$RUNNER_OS" = 'Windows' ]; then suffix='.exe'; fi
+          build_date="$(git show -s --format=%cI HEAD)"
+          go build -trimpath -ldflags "-X main.version=ci -X main.commit=$GITHUB_SHA -X main.date=$build_date" -o "$stage/qlog-simple$suffix" ./cmd/qlog
+          mkdir "$stage/fixtures"
+          cp fixtures/demo-session.jsonl "$stage/fixtures/"
+          tar -czf "$stage/simple.tar.gz" -C "$stage" "qlog-simple$suffix" fixtures
+          node scripts/acceptance/verify-simple-artifact.js "$stage/simple.tar.gz"
+      - name: Test legacy npm packaging fixture without downloads
+        run: node --test packaging/npm/tests/install.test.js
+      - run: node packaging/npm/scripts/postinstall.js --dry-run
       - run: sh -n installers/install.sh installers/uninstall.sh
         shell: bash
       - run: pwsh -NoProfile -File installers/install.ps1 --dry-run --version v0.0.0 --install-dir "${{ runner.temp }}/qlog-bin" --no-modify-path

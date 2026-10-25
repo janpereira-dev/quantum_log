@@ -98,4 +98,6 @@ performance:
 release:
   source_scope_changed: true
   published_installer_scope: legacy_until_release_tooling_migration
+  simple_release_channel: separate_qlog_simple_portable_archives
+  simple_release_validation_gate: synthetic_fixture_smoke_on_linux_macos_windows
   external_e2e_claim_requires_current_evidence: true
