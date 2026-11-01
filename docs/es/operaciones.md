@@ -24,9 +24,19 @@ Ejecuta diagnósticos cuando writers normales estén inactivos. Diagnósticos ad
 
 El código legacy reforzado usa `https://127.0.0.1:4318`. Su certificado propio
 está en `<legacy-home>/collector-tls/cert.pem`; los productores gestionados lo
-comprueban antes de enviar el token v2. Repite la configuración legacy después
-de actualizar. Los binarios publicados anteriormente pueden seguir usando HTTP;
+usan para comprobar HTTPS antes de enviar el token v2. Repite la configuración
+legacy después de actualizar. Los binarios publicados anteriormente pueden seguir usando HTTP;
 instalar una versión antigua firmada no aplica estas correcciones del código.
+
+Copilot CLI 1.0.105 añade la CA proporcionada a las raíces de confianza del
+sistema o seleccionadas por el operador; no limita la confianza exclusivamente
+al certificado de la instalación. La
+[prueba del CLI nativo](../adapters/copilot-cli/source-contract.md) rechazó un
+certificado autofirmado ajeno y un servidor HTTP que ocupaba el puerto
+sin enviar credenciales HTTP. Esto protege frente a otra cuenta ordinaria que
+pueda ocupar el puerto, pero no leer las claves protegidas ni controlar la
+confianza o configuración del cliente. Queda fuera de esa protección quien
+pueda obtener un certificado de loopback aceptado por esas otras raíces.
 
 ```bash
 qlog collector serve

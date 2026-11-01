@@ -24,9 +24,18 @@ Run diagnostics when normal writers are inactive. Diagnostics acquire exclusive 
 
 The hardened legacy source uses `https://127.0.0.1:4318`. Its per-installation
 certificate lives at `<legacy-home>/collector-tls/cert.pem`; managed producers
-pin it before sending the v2 token. Rerun legacy setup after upgrading. Previously
-published binaries may still use the earlier HTTP transport; installing an old
+verify HTTPS before sending the v2 token. Rerun legacy setup after upgrading.
+Previously published binaries may still use the earlier HTTP transport; installing an old
 signed release does not apply these source changes.
+
+Copilot CLI 1.0.105 adds the supplied CA to its OS or operator-selected trust
+roots; it does not restrict trust exclusively to the installation certificate.
+The [native CLI acceptance](../adapters/copilot-cli/source-contract.md) rejected
+an unrelated self-signed certificate and a plaintext port squatter without
+sending HTTP credentials. This protects against another ordinary account that
+can occupy the port but cannot read the protected keys or control the client's
+trust or configuration. A party able to obtain a loopback certificate accepted
+by those other trust roots is outside that protection.
 
 ```bash
 qlog collector serve
