@@ -21,7 +21,7 @@ func TestSecurityPromptPolicyAppliesToEveryEventType(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer service.Close()
+				defer func() { _ = service.Close() }()
 				if err := config.SetPromptCaptureMode(service.Paths, mode); err != nil {
 					t.Fatal(err)
 				}
@@ -33,7 +33,7 @@ func TestSecurityPromptPolicyAppliesToEveryEventType(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer reader.Close()
+				defer func() { _ = reader.Close() }()
 				var payload string
 				if err := reader.QueryRow(`SELECT payload_json_sanitized FROM raw_events WHERE source='audit'`).Scan(&payload); err != nil {
 					t.Fatal(err)

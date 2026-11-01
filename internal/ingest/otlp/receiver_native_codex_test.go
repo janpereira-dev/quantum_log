@@ -28,7 +28,7 @@ func TestNativeCodexLogsWithoutTraceUseNativeIdentityAndInclusiveCounters(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer service.Close()
+	defer func() { _ = service.Close() }()
 	if _, _, err := service.Store.RegisterProject(ctx, "Synthetic", "synthetic", t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestNativeCodexLogsRejectMissingIdentityAndInconsistentUsage(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer service.Close()
+	defer func() { _ = service.Close() }()
 	for _, test := range []struct{ name, key, value, time, trace, span string }{
 		{name: "missing conversation", key: "conversation.id", time: "1760000000000000000"},
 		{name: "missing input", key: "input_token_count", time: "1760000000000000000"},
@@ -127,7 +127,7 @@ func TestNativeCodexLogsKeepMissingCountersDistinctFromZero(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer service.Close()
+	defer func() { _ = service.Close() }()
 	record := nativeCodexUsage()
 	record["input_token_count"] = "0"
 	record["output_token_count"] = "0"
@@ -157,7 +157,7 @@ func TestNativeCodexExecUsesSourceTimestampAndPreservesNativeObservedPrecision(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer service.Close()
+	defer func() { _ = service.Close() }()
 	record := nativeCodexUsage()
 	record["event.timestamp"] = "2026-11-01T19:44:56.057Z"
 	attrs := make([]keyValue, 0, len(record))
@@ -208,7 +208,7 @@ func TestNativeCodexObservedTimeDeduplicatesJSONAndProtobufAndRejectsMissingPrec
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer service.Close()
+	defer func() { _ = service.Close() }()
 	record := nativeCodexUsage()
 	record["event.timestamp"] = "2026-11-01T19:44:56.057Z"
 	for _, observed := range []string{"", "0", "-1", "invalid", "18446744073709551615"} {

@@ -241,7 +241,7 @@ func TestSecurityHookAuthenticatesCustomHomeCollector(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	var mode, fingerprint, content, upstream string
 	if err := reader.QueryRow(`SELECT prompt_capture_mode, prompt_hash, prompt_redacted, upstream_id FROM interactions WHERE session_id='custom-home-session'`).Scan(&mode, &fingerprint, &content, &upstream); err != nil {
 		t.Fatal(err)

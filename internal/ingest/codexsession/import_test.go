@@ -195,7 +195,7 @@ func TestOverlappingPartialLogsFailWithoutChangingRecordedUsage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer database.Close()
+	defer func() { _ = database.Close() }()
 	var count int
 	if err := database.QueryRow(`SELECT COUNT(*) FROM raw_events`).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("overlap changed raw evidence: count=%d err=%v", count, err)
