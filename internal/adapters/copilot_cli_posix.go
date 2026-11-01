@@ -68,10 +68,30 @@ func splitManagedPaths(state string) []string {
 	return paths
 }
 
-func copilotCLIPosixBlock() string {
+func copilotCLIPosixBlock(tokenPaths ...string) string {
+	auth, tokenGuard := "", ""
+	if len(tokenPaths) > 0 {
+		quotedToken := shellQuote(tokenPaths[0])
+		tokenGuard = "  [ -r " + quotedToken + " ] && [ \"$(wc -c < " + quotedToken + ")\" -eq 64 ] && LC_ALL=C grep -Eq '^[0-9a-f]{64}$' " + quotedToken + " || return 1\n"
+		readToken := "\"x-qlog-token=$(cat " + quotedToken + ")\" "
+		auth = "OTEL_EXPORTER_OTLP_HEADERS=" + readToken
+		for _, signal := range []string{"TRACES", "LOGS", "METRICS"} {
+			auth += "OTEL_EXPORTER_OTLP_" + signal + "_HEADERS=" + readToken
+		}
+	}
+	caGuard := ""
+	if len(tokenPaths) > 1 {
+		quotedCA := shellQuote(tokenPaths[1])
+		auth += "NODE_TLS_REJECT_UNAUTHORIZED=1 OTEL_EXPORTER_OTLP_CERTIFICATE=" + quotedCA + " "
+		for _, signal := range []string{"TRACES", "LOGS", "METRICS"} {
+			auth += "OTEL_EXPORTER_OTLP_" + signal + "_CERTIFICATE=" + quotedCA + " OTEL_EXPORTER_OTLP_" + signal + "_PROTOCOL=http/json OTEL_EXPORTER_OTLP_" + signal + "_ENDPOINT=https://127.0.0.1:4318/v1/" + strings.ToLower(signal) + " "
+		}
+		caGuard = "  [ -r " + quotedCA + " ] && [ -s " + quotedCA + " ] || return 1\n"
+	}
+
 	return copilotCLIPosixBlockStart + "\n" +
-		"copilot() {\n" +
-		"  COPILOT_OTEL_ENABLED=true COPILOT_OTEL_EXPORTER_TYPE=otlp-http OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 OTEL_EXPORTER_OTLP_PROTOCOL=http/json OTEL_METRICS_EXPORTER=none OTEL_LOGS_EXPORTER=none OTEL_SERVICE_NAME=github-copilot OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false command copilot \"$@\"\n" +
+		"copilot() {\n" + caGuard + tokenGuard +
+		"  " + auth + "COPILOT_OTEL_ENABLED=true COPILOT_OTEL_EXPORTER_TYPE=otlp-http OTEL_EXPORTER_OTLP_ENDPOINT=https://127.0.0.1:4318 OTEL_EXPORTER_OTLP_PROTOCOL=http/json COPILOT_OTEL_ENDPOINT=https://127.0.0.1:4318 OTEL_METRICS_EXPORTER=none OTEL_LOGS_EXPORTER=none OTEL_SERVICE_NAME=github-copilot OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false command copilot \"$@\"\n" +
 		"}\n" +
 		copilotCLIPosixBlockEnd + "\n"
 }
@@ -81,7 +101,9 @@ func validCopilotCLIPosixBlock(contents string) bool {
 		strings.Contains(contents, copilotCLIPosixBlockEnd) &&
 		strings.Contains(contents, "copilot() {") &&
 		strings.Contains(contents, "COPILOT_OTEL_ENABLED=true") &&
-		strings.Contains(contents, "OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318") &&
+		strings.Contains(contents, "OTEL_EXPORTER_OTLP_HEADERS") &&
+		strings.Contains(contents, "OTEL_EXPORTER_OTLP_TRACES_CERTIFICATE") &&
+		strings.Contains(contents, "OTEL_EXPORTER_OTLP_ENDPOINT=https://127.0.0.1:4318") &&
 		strings.Contains(contents, "command copilot \"$@\"")
 }
 
@@ -93,7 +115,7 @@ func hasUnmanagedCopilotWrapper(contents string) (bool, error) {
 	return copilotCLIPosixWrapper.MatchString(without), nil
 }
 
-func withCopilotCLIPosixBlock(contents string) (string, error) {
+func withCopilotCLIPosixBlock(contents string, tokenPaths ...string) (string, error) {
 	start, end := strings.Index(contents, copilotCLIPosixBlockStart), strings.Index(contents, copilotCLIPosixBlockEnd)
 	if (start == -1) != (end == -1) || end < start {
 		return "", fmt.Errorf("shell profile contains incomplete qlog Copilot OTel block")
@@ -103,12 +125,12 @@ func withCopilotCLIPosixBlock(contents string) (string, error) {
 		if end < len(contents) && contents[end] == '\n' {
 			end++
 		}
-		return contents[:start] + copilotCLIPosixBlock() + contents[end:], nil
+		return contents[:start] + copilotCLIPosixBlock(tokenPaths...) + contents[end:], nil
 	}
 	if contents != "" && !strings.HasSuffix(contents, "\n") {
 		contents += "\n"
 	}
-	return contents + copilotCLIPosixBlock(), nil
+	return contents + copilotCLIPosixBlock(tokenPaths...), nil
 }
 
 func withoutCopilotCLIPosixBlock(contents string) (string, bool, error) {
@@ -126,7 +148,7 @@ func withoutCopilotCLIPosixBlock(contents string) (string, bool, error) {
 	return contents[:start] + contents[end:], true, nil
 }
 
-func (a copilotCLIAdapter) installPosixProfile(dryRun bool) (SetupChange, error) {
+func (a copilotCLIAdapter) installPosixProfile(dryRun bool, tokenPaths ...string) (SetupChange, error) {
 	if unsupportedPosixShell() {
 		return SetupChange{}, fmt.Errorf("unsupported shell %q: Copilot OTel launcher requires bash, zsh, or a POSIX shell", os.Getenv("SHELL"))
 	}
@@ -141,7 +163,7 @@ func (a copilotCLIAdapter) installPosixProfile(dryRun bool) (SetupChange, error)
 	} else if conflict {
 		return SetupChange{}, fmt.Errorf("existing copilot shell wrapper in %s: qlog will not replace it", path)
 	}
-	next, err := withCopilotCLIPosixBlock(string(contents))
+	next, err := withCopilotCLIPosixBlock(string(contents), tokenPaths...)
 	if err != nil {
 		return SetupChange{}, err
 	}

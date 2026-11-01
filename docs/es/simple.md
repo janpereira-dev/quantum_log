@@ -12,7 +12,8 @@ no necesita un proceso en segundo plano.
 Empieza en la [release v0.4.0-rc11](https://github.com/janpereira-dev/quantum_log/releases/tag/v0.4.0-rc11).
 Cuando sus archivos estén disponibles tras las comprobaciones de publicación,
 elige el `qlog-simple_0.4.0-rc11_OS_ARCH` de tu sistema y arquitectura y verifica
-su hash con `checksums.txt`. Extrae el paquete y sigue el
+la firma de `checksums.txt` y después el hash del archivo, como se explica abajo.
+Extrae el paquete y sigue el
 [README bilingüe incluido](../../packaging/simple/README.md) para probar la
 demostración y hacer tu primera importación. No necesitas instalar Go.
 
@@ -67,8 +68,19 @@ Codex ni usan tu registro habitual.
 
 Cuando una release incluya archivos `qlog-simple_VERSION_OS_ARCH`, descarga el
 que corresponda a tu sistema operativo y arquitectura, junto con el
-`checksums.txt` de esa misma release. Antes de extraerlo, compara su SHA-256
-con la entrada exacta del archivo en `checksums.txt`.
+`checksums.txt` y `checksums.txt.sigstore.json` de esa misma release. Instala
+[Cosign](https://docs.sigstore.dev/cosign/system_config/installation/) desde su
+distribución oficial y autentica el manifiesto antes de extraer o ejecutar:
+
+```sh
+cosign verify-blob --bundle checksums.txt.sigstore.json --certificate-oidc-issuer https://token.actions.githubusercontent.com --certificate-identity https://github.com/janpereira-dev/quantum_log/.github/workflows/release.yml@refs/tags/v0.4.0-rc11 checksums.txt
+```
+
+El comando también funciona en PowerShell. Usa el tag exacto que descargaste.
+Detente si la firma falta o no es válida. Después compara el SHA-256 con su
+entrada exacta en el manifiesto autenticado. Desde el repositorio, el verificador
+existente admite `--include-simple` o `-IncludeSimple` en PowerShell para
+comprobar todos los archivos de la release.
 
 En Windows puedes consultar el hash con
 `Get-FileHash ARCHIVO.zip -Algorithm SHA256`; en Linux, con
@@ -110,7 +122,11 @@ independientemente de su antigüedad.
 El límite restringe los archivos importados, no el recorrido de carpetas ni
 el tamaño de cada archivo. Un archivo recién modificado puede contener
 eventos antiguos. Importar de nuevo actualiza la información y evita duplicar
-la evidencia ya guardada.
+la evidencia ya guardada. Un contador anterior desconocido o contradictorio de
+una sesión ya importada se rechaza como solapamiento, conservando la evidencia
+y los totales guardados. Un fragmento posterior usa el contador persistido como
+base. Una importación puede guardar muestras válidas antes de encontrar un error
+posterior; repetir la evidencia ya importada no la duplica.
 
 ## Leer y exportar
 
@@ -126,7 +142,9 @@ la evidencia ya guardada.
 Usa el identificador de proyecto que aparece en el informe. Los resultados
 mantienen proyecto, agente, proveedor, modelo y calidad de los datos. El CSV
 sale por la salida estándar y omite las rutas de origen y el contenido de
-conversaciones.
+conversaciones. Los textos que pueden interpretarse como fórmulas de hoja de
+cálculo llevan un apóstrofo inicial solo en CSV; el identificador almacenado y
+su representación JSON no se modifican.
 
 Los tokens proceden de contadores acumulados registrados por Codex, con
 calidad `agent_reported`. Las muestras de uso no son un recuento de llamadas
@@ -158,6 +176,13 @@ El importador conserva metadatos seleccionados y contadores de uso. No guarda
 prompts, respuestas, argumentos o resultados de herramientas ni contenido de
 archivos. Los metadatos locales siguen identificando sesiones y proyectos;
 protege esa carpeta y revisa los nombres de proyecto antes de compartir un CSV.
+
+Las carpetas nuevas reciben permisos privados. Si una carpeta o archivo existente
+tiene permisos inseguros, se rechaza antes de escribir información sensible, sin
+modificar automáticamente sus permisos ni sus datos. En Windows se comprueban
+las ACL. Si una versión anterior desvió una base por un `#` o un escape porcentual
+en la ruta, se muestra una indicación de recuperación: no se mueve, mezcla ni
+sustituye la base antigua. Conserva una copia y recupérala explícitamente.
 
 Si eliges un registro antiguo que requiere actualizar el esquema, haz primero
 una copia y ejecuta la operación explícita de mantenimiento:

@@ -1,6 +1,8 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const childProcess = require('node:child_process');
+const os = require('node:os');
 const fs = require('node:fs/promises');
 const https = require('node:https');
 const path = require('node:path');
@@ -32,6 +34,7 @@ function releaseUrls(platform) {
     archive,
     archiveUrl: `${release}/${archive}`,
     checksumsUrl: `${release}/checksums.txt`,
+    bundleUrl: `${release}/checksums.txt.sigstore.json`,
   };
 }
 
@@ -40,6 +43,7 @@ function localArtifactPaths(platform, directory) {
   return {
     archive: path.join(directory, archive),
     checksums: path.join(directory, 'checksums.txt'),
+    bundle: path.join(directory, 'checksums.txt.sigstore.json'),
   };
 }
 
@@ -57,6 +61,28 @@ function verifySha256(archive, expected) {
   const actualBuffer = Buffer.from(actual, 'hex');
   if (expectedBuffer.length !== 32 || !crypto.timingSafeEqual(actualBuffer, expectedBuffer)) {
     throw new Error('SHA-256 verification failed for release archive');
+  }
+}
+
+async function verifyManifest(manifest, bundle) {
+  if (manifest.length > MAX_CHECKSUM_BYTES || bundle.length > MAX_CHECKSUM_BYTES) throw new Error('release manifest or signature bundle exceeds size limit');
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'qlog-verify-'));
+  try {
+    const manifestPath = path.join(directory, 'checksums.txt');
+    const bundlePath = path.join(directory, 'checksums.txt.sigstore.json');
+    await fs.writeFile(manifestPath, manifest);
+    await fs.writeFile(bundlePath, bundle);
+    try {
+      childProcess.execFileSync('cosign', ['verify-blob', '--bundle', bundlePath,
+        '--certificate-oidc-issuer', 'https://token.actions.githubusercontent.com',
+        '--certificate-identity', `https://github.com/janpereira-dev/quantum_log/.github/workflows/release.yml@refs/tags/${TAG}`,
+        manifestPath], { stdio: 'pipe' });
+    } catch (error) {
+      if (error.code === 'ENOENT') throw new Error('cosign is required to authenticate releases; install it from https://docs.sigstore.dev/cosign/system_config/installation/');
+      throw new Error('checksum signature or workflow identity is invalid');
+    }
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
   }
 }
 
@@ -208,9 +234,16 @@ async function install() {
     return;
   }
   const manifest = localArtifacts
-    ? await fs.readFile(localArtifacts.checksums, 'utf8')
-    : (await download(urls.checksumsUrl, MAX_CHECKSUM_BYTES)).toString('utf8');
-  const expected = checksumForArchive(manifest, urls.archive);
+    ? await fs.readFile(localArtifacts.checksums)
+    : await download(urls.checksumsUrl, MAX_CHECKSUM_BYTES);
+  let bundle;
+  try {
+    bundle = localArtifacts ? await fs.readFile(localArtifacts.bundle) : await download(urls.bundleUrl, MAX_CHECKSUM_BYTES);
+  } catch {
+    throw new Error('release signature bundle is missing or unavailable; a signed release with checksums.txt.sigstore.json is required');
+  }
+  await verifyManifest(manifest, bundle);
+  const expected = checksumForArchive(manifest.toString('utf8'), urls.archive);
   const archive = localArtifacts
     ? await fs.readFile(localArtifacts.archive)
     : await download(urls.archiveUrl, MAX_ARCHIVE_BYTES);
@@ -219,4 +252,4 @@ async function install() {
   await writeBinary(binaryFromArchive(archive, platform), platform);
 }
 
-module.exports = { VERSION, archiveName, binaryFromArchive, checksumForArchive, install, localArtifactPaths, releaseUrls, resolvePlatform, verifySha256 };
+module.exports = { VERSION, archiveName, binaryFromArchive, checksumForArchive, install, localArtifactPaths, releaseUrls, resolvePlatform, verifyManifest, verifySha256 };

@@ -22,7 +22,11 @@ Ejecuta diagnósticos cuando writers normales estén inactivos. Diagnósticos ad
 
 ## Operación de collector
 
-Endpoint de collector por defecto es `http://127.0.0.1:4318`:
+El código legacy reforzado usa `https://127.0.0.1:4318`. Su certificado propio
+está en `<legacy-home>/collector-tls/cert.pem`; los productores gestionados lo
+comprueban antes de enviar el token v2. Repite la configuración legacy después
+de actualizar. Los binarios publicados anteriormente pueden seguir usando HTTP;
+instalar una versión antigua firmada no aplica estas correcciones del código.
 
 ```bash
 qlog collector serve
@@ -35,10 +39,18 @@ Endpoints son:
 | Endpoint | Entrada |
 | --- | --- |
 | `/v1/traces` | Trazas OTLP/HTTP JSON o protobuf. |
+| `/v1/logs` | Logs OTLP nativos de Codex compatibles. |
 | `/v1/events` | Eventos qlog JSON. |
 | `/healthz` | Comprobación de estado `GET` o `HEAD`. |
 
 Para ciclo de vida de servicio gestionado usa `install`, `start`, `stop`, `restart`, `logs` y `uninstall`. Listener fuera de loopback se rechaza salvo que `--allow-non-loopback` sea explícito. Si haces opt-in, asumes consecuencias de exposición de red, firewall, autenticación y hardening del host.
+
+No desactives la comprobación del certificado para recuperar la conexión. El
+certificado existente debe cubrir el host configurado; una identidad dañada o
+incompatible requiere recuperación explícita. Los clientes y comprobaciones de
+estado nunca crean una identidad ausente. Cierra todas las instancias de VS Code
+y ábrelo mediante el lanzador generado `qlog-code`, que transmite el certificado
+y las credenciales únicamente a ese proceso.
 
 ## Operación de adaptador
 

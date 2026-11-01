@@ -50,14 +50,17 @@ RC10 is already published; do not recreate, move, or overwrite its tag.
 
 ## Verify release authenticity
 
-The installers verify an archive's SHA-256 digest, which detects corruption but
-does not by itself prove who produced `checksums.txt`. Before evaluating a
-downloaded release, install [Cosign](https://docs.sigstore.dev/cosign/system_config/installation/)
-and verify the checksum bundle against the exact GitHub Actions issuer and this
-repository's release workflow identity.
+The current installers require [Cosign](https://docs.sigstore.dev/cosign/system_config/installation/)
+and verify `checksums.txt.sigstore.json` against the exact GitHub Actions issuer
+and this repository's tagged release workflow before extracting or executing an
+archive. They then verify its SHA-256 digest. A missing verifier, unsigned release
+or invalid identity stops installation while retaining the existing installation.
+The same checks apply to the legacy npm distributor, including local artifacts.
+Existing published installer copies do not acquire these source fixes automatically.
 
-On macOS or Linux, the verifier downloads only the checksum manifest, its
-Sigstore bundle, and the archive plus SBOM for the current platform:
+On macOS or Linux, the standalone verifier downloads the manifest, its Sigstore
+bundle and all legacy release archives and SBOMs. Add `--include-simple` to also
+require every portable archive and SBOM (`-IncludeSimple` in PowerShell):
 
 ```sh
 sh scripts/acceptance/verify-release-authenticity.sh \

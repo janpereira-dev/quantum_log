@@ -130,6 +130,7 @@ $archive = "qlog_${artifactVersion}_${os}_${arch}.zip"
 $releaseUrl = "$releaseBase/$tag"
 $checksumUrl = "$releaseUrl/checksums.txt"
 $archiveUrl = "$releaseUrl/$archive"
+$bundleUrl = "$releaseUrl/checksums.txt.sigstore.json"
 Write-Output "platform: $os/$arch"
 Write-Output "channel: $channel"
 Write-Output "release: $tag"
@@ -142,12 +143,24 @@ if ($dryRun) {
     exit 0
 }
 
+$cosign = Get-Command cosign -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $cosign) { Fail 'cosign is required to authenticate releases; install it from https://docs.sigstore.dev/cosign/system_config/installation/' }
+
 $workDir = Join-Path ([System.IO.Path]::GetTempPath()) ("qlog-install-" + [Guid]::NewGuid())
 try {
     New-Item -ItemType Directory -Path $workDir | Out-Null
     $checksums = Join-Path $workDir 'checksums.txt'
+    $bundle = Join-Path $workDir 'checksums.txt.sigstore.json'
     $archivePath = Join-Path $workDir $archive
     Invoke-WebRequest -Uri $checksumUrl -OutFile $checksums -Headers @{ 'User-Agent' = 'qlog-installer' }
+    try {
+        Invoke-WebRequest -Uri $bundleUrl -OutFile $bundle -Headers @{ 'User-Agent' = 'qlog-installer' }
+    } catch {
+        Fail 'release signature bundle is missing or unavailable; a signed release with checksums.txt.sigstore.json is required'
+    }
+    $identity = "https://github.com/janpereira-dev/quantum_log/.github/workflows/release.yml@refs/tags/$tag"
+    & $cosign.Source verify-blob --bundle $bundle --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' --certificate-identity $identity $checksums | Out-Null
+    if ($LASTEXITCODE -ne 0) { Fail 'checksum signature or workflow identity is invalid' }
     Invoke-WebRequest -Uri $archiveUrl -OutFile $archivePath -Headers @{ 'User-Agent' = 'qlog-installer' }
     $entry = Get-Content -LiteralPath $checksums | Where-Object { $_ -match "^([0-9A-Fa-f]{64})\s{2}$([Regex]::Escape($archive))$" } | Select-Object -First 1
     if (-not $entry) { Fail "checksum manifest has no SHA-256 entry for $archive" }

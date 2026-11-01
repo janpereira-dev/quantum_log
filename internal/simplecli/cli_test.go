@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -104,6 +105,56 @@ func TestProvidersRemainDistinctAcrossReportFormats(t *testing.T) {
 	rows, err := csv.NewReader(strings.NewReader(execute(t, "--home", home, "export"))).ReadAll()
 	if err != nil || len(rows) != 3 || rows[1][2] == rows[2][2] {
 		t.Fatalf("CSV lost provider: %v %v", rows, err)
+	}
+}
+
+func TestCSVExportNeutralizesProjectFormulaWithoutChangingStoredIdentity(t *testing.T) {
+	project := filepath.Join(t.TempDir(), "=1+1")
+	if err := os.Mkdir(project, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command("git", "init", "--quiet", project).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v %s", err, output)
+	}
+	home := t.TempDir()
+	file := filepath.Join(t.TempDir(), "session.jsonl")
+	meta, _ := json.Marshal(map[string]any{"type": "session_meta", "payload": map[string]string{"id": "csv-session", "cwd": project}})
+	content := string(meta) + "\n" + strings.SplitN(nativeSession(time.Now()), "\n", 2)[1]
+	if err := os.WriteFile(file, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	execute(t, "--home", home, "import", file)
+	var summary Summary
+	if err := json.Unmarshal([]byte(execute(t, "--home", home, "report", "--json")), &summary); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := csv.NewReader(strings.NewReader(execute(t, "--home", home, "export"))).ReadAll()
+	if err != nil || len(rows) != 2 || len(summary.Rows) != 1 {
+		t.Fatalf("CSV: %v %v; report: %+v", rows, err, summary)
+	}
+	if !strings.HasPrefix(summary.Rows[0].Project, "=1+1-") || rows[1][0] != "'"+summary.Rows[0].Project {
+		t.Fatalf("formula must be escaped only at export: csv=%q report=%q", rows[1][0], summary.Rows[0].Project)
+	}
+}
+
+func TestReportRefusesMisplacedLegacyDatabaseWithoutCreatingReplacement(t *testing.T) {
+	root := t.TempDir()
+	misplaced := filepath.Join(root, "hash")
+	if err := os.WriteFile(misplaced, []byte("existing evidence"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(root, "hash#home")
+	var output bytes.Buffer
+	err := Run(context.Background(), []string{"--home", home, "report"}, &output, &output, Version{})
+	if err == nil || !strings.Contains(err.Error(), "legacy") {
+		t.Fatalf("misplaced data must require recovery instead of an empty report: %v %s", err, output.String())
+	}
+	retained, err := os.ReadFile(misplaced)
+	if err != nil || string(retained) != "existing evidence" {
+		t.Fatalf("misplaced evidence changed: %q %v", retained, err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "qlog.db")); !os.IsNotExist(err) {
+		t.Fatalf("replacement database created: %v", err)
 	}
 }
 
@@ -256,6 +307,11 @@ func TestDefaultImportReadsCodexHomeIntoSeparateLedger(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(legacy, "qlog.db")); !os.IsNotExist(err) {
 		t.Fatal("created legacy database")
+	}
+	for _, name := range []string{"collector-tls", "collector.token"} {
+		if _, err := os.Stat(filepath.Join(legacy, "simple", name)); !os.IsNotExist(err) {
+			t.Fatalf("simple import created legacy collector credentials %s: %v", name, err)
+		}
 	}
 }
 

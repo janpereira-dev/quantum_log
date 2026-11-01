@@ -56,7 +56,6 @@ done
 
 case "$CHANNEL" in stable|latest) ;; *) fail "--channel must be stable or latest" ;; esac
 case "$RELEASE_BASE" in https://*) ;; *) fail "QLOG_RELEASE_BASE must use HTTPS" ;; esac
-case "$INSTALL_DIR" in *'"'*) fail "--install-dir cannot contain a double quote" ;; esac
 case "$INSTALL_DIR" in /*) ;; *) INSTALL_DIR="$(pwd -P)/$INSTALL_DIR" ;; esac
 
 if [ -z "$BOOTSTRAP" ] && [ "$DRY_RUN" -eq 0 ] && [ -t 0 ]; then
@@ -151,9 +150,15 @@ if [ "$DRY_RUN" -eq 1 ]; then
 fi
 
 command -v tar >/dev/null 2>&1 || fail "tar is required to extract releases"
+command -v cosign >/dev/null 2>&1 || fail "cosign is required to authenticate releases; install it from https://docs.sigstore.dev/cosign/system_config/installation/"
 workdir=$(mktemp -d "${TMPDIR:-/tmp}/qlog-install.XXXXXX")
 trap 'rm -rf "$workdir"' EXIT HUP INT TERM
 download "$CHECKSUM_URL" "$workdir/checksums.txt"
+download "$RELEASE_URL/checksums.txt.sigstore.json" "$workdir/checksums.txt.sigstore.json"
+cosign verify-blob --bundle "$workdir/checksums.txt.sigstore.json" \
+  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+  --certificate-identity "https://github.com/janpereira-dev/quantum_log/.github/workflows/release.yml@refs/tags/$TAG" \
+  "$workdir/checksums.txt" >/dev/null || fail "release signature or workflow identity is invalid"
 download "$ARCHIVE_URL" "$workdir/$ARCHIVE"
 expected=$(awk -v file="$ARCHIVE" '$2 == file { print $1; exit }' "$workdir/checksums.txt")
 case "$expected" in [0-9A-Fa-f][0-9A-Fa-f]*) ;; *) fail "checksum manifest has no SHA-256 entry for $ARCHIVE" ;; esac
@@ -197,7 +202,8 @@ if [ "$MODIFY_PATH" -eq 1 ]; then
       else
         : > "$profile"
       fi
-      printf '\n# >>> qlog >>>\nexport PATH="%s:$PATH"\n# <<< qlog <<<\n' "$INSTALL_DIR" >> "$profile"
+      escaped_install_dir=$(printf '%s' "$INSTALL_DIR" | sed 's/[\\$`"]/\\&/g')
+      printf '\n# >>> qlog >>>\nexport PATH="%s:$PATH"\n# <<< qlog <<<\n' "$escaped_install_dir" >> "$profile"
       printf '%s\n' "updated PATH in $profile"
       ;;
   esac

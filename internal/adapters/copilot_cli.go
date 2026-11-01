@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/janpereira-dev/quantum_log/internal/config"
 	"io"
 	"os"
 	"path/filepath"
@@ -34,9 +35,17 @@ func (a copilotCLIAdapter) Descriptor() Descriptor {
 }
 
 func (a copilotCLIAdapter) Install(_ context.Context, options InstallOptions) (InstallResult, error) {
+	paths, token, err := collectorCredentials(options.Home, options.DryRun)
+	if err != nil {
+		return InstallResult{}, err
+	}
+	tokenPath, err := writeCollectorTokenFile(paths.Home, token, options.DryRun)
+	if err != nil {
+		return InstallResult{}, err
+	}
 	changes := make([]SetupChange, 0, 3)
 	if runtime.GOOS == "windows" {
-		profileChange, err := a.installWindowsPowerShellProfile(options.DryRun)
+		profileChange, err := a.installWindowsPowerShellProfile(options.DryRun, tokenPath, config.CollectorCertificatePath(paths))
 		if err != nil {
 			return InstallResult{}, err
 		}
@@ -47,7 +56,7 @@ func (a copilotCLIAdapter) Install(_ context.Context, options InstallOptions) (I
 		}
 		changes = append(changes, legacyChange)
 	} else {
-		profileChange, err := a.installPosixProfile(options.DryRun)
+		profileChange, err := a.installPosixProfile(options.DryRun, tokenPath, config.CollectorCertificatePath(paths))
 		if err != nil {
 			return InstallResult{}, err
 		}

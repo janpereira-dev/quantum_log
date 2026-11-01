@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -223,7 +222,7 @@ func TestAdapterVerifyCopilotRejectsSpoofedOTLPHTTPImport(t *testing.T) {
 
 func TestAdapterVerifyCopilotAcceptsSanctionedOTLPEvidence(t *testing.T) {
 	home, serverURL := setupCopilotVerification(t)
-	postCopilotOTLPTrace(t, serverURL, `,{"key":"gen_ai.provider.name","value":{"stringValue":"github"}}`)
+	postCopilotOTLPTrace(t, home, serverURL, `,{"key":"gen_ai.provider.name","value":{"stringValue":"github"}}`)
 
 	output, err := runQLog(t, home, "adapter", "verify", "copilot-vscode", "--project", "project", "--json")
 	if err != nil {
@@ -249,7 +248,7 @@ func TestAdapterVerifyCopilotRejectsMissingOrNonGitHubProvider(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			home, serverURL := setupCopilotVerification(t)
-			postCopilotOTLPTrace(t, serverURL, test.providerAttribute)
+			postCopilotOTLPTrace(t, home, serverURL, test.providerAttribute)
 
 			output, err := runQLog(t, home, "adapter", "verify", "copilot-vscode", "--project", "project", "--json")
 			if err == nil || !strings.Contains(output, `"ready":false`) {
@@ -281,13 +280,13 @@ func setupCopilotVerification(t *testing.T) (string, string) {
 	if _, err := runQLog(t, home, "project", "register", "--path", filepath.Join(t.TempDir(), "project"), "--name", "Project", "--slug", "project"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	server := httptest.NewServer(newCollectorMux(home))
+	server := newCollectorTLSTestServer(t, home, newCollectorMux(home))
 	t.Cleanup(server.Close)
 	t.Setenv("QLOG_COLLECTOR_URL", server.URL+"/v1/traces")
 	return home, server.URL
 }
 
-func postCopilotOTLPTrace(t *testing.T, serverURL, providerAttribute string) {
+func postCopilotOTLPTrace(t *testing.T, home, serverURL, providerAttribute string) {
 	t.Helper()
 	payload := `{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"copilot-chat"}}]},"scopeSpans":[{"spans":[{"traceId":"trace-copilot","spanId":"span-copilot","attributes":[{"key":"qlog.project","value":{"stringValue":"project"}}` + providerAttribute + `,{"key":"gen_ai.agent.name","value":{"stringValue":"GitHub Copilot Chat"}},{"key":"gen_ai.request.model","value":{"stringValue":"gpt-5"}},{"key":"gen_ai.usage.input_tokens","value":{"intValue":"1"}},{"key":"gen_ai.usage.output_tokens","value":{"intValue":"2"}}]}]}]}]}`
 	request, err := http.NewRequest(http.MethodPost, serverURL+"/v1/traces", strings.NewReader(payload))
@@ -295,7 +294,13 @@ func postCopilotOTLPTrace(t *testing.T, serverURL, providerAttribute string) {
 		t.Fatalf("create request: %v", err)
 	}
 	request.Header.Set("Content-Type", "application/json")
-	response, err := http.DefaultClient.Do(request)
+	authorizeCollectorRequest(t, request, home)
+	client, err := collectorHTTPSClient(home, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.CloseIdleConnections()
+	response, err := client.Do(request)
 	if err != nil {
 		t.Fatalf("collector request: %v", err)
 	}
@@ -340,7 +345,7 @@ func TestAdapterVerifyCodexRejectsGenericOTLPEvidence(t *testing.T) {
 
 func TestAdapterVerifyCodexAcceptsNormalizedResponseCompletedEvidence(t *testing.T) {
 	home, _ := setupCodexVerification(t)
-	server := httptest.NewServer(newCollectorMux(home))
+	server := newCollectorTLSTestServer(t, home, newCollectorMux(home))
 	t.Cleanup(server.Close)
 	t.Setenv("QLOG_COLLECTOR_URL", server.URL+"/v1/logs")
 
@@ -349,7 +354,13 @@ func TestAdapterVerifyCodexAcceptsNormalizedResponseCompletedEvidence(t *testing
 		t.Fatalf("create request: %v", err)
 	}
 	request.Header.Set("Content-Type", "application/json")
-	response, err := http.DefaultClient.Do(request)
+	authorizeCollectorRequest(t, request, home)
+	client, err := collectorHTTPSClient(home, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.CloseIdleConnections()
+	response, err := client.Do(request)
 	if err != nil {
 		t.Fatalf("collector request: %v", err)
 	}
@@ -411,7 +422,8 @@ func TestCollectorRejectsPublicBindingWithoutExplicitOptIn(t *testing.T) {
 func TestVerifyCollectorReachabilityUsesConfiguredURLOrigin(t *testing.T) {
 	for _, configuredPath := range []string{"/v1/events", "/v1/logs"} {
 		t.Run(configuredPath, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			home := t.TempDir()
+			server := newCollectorTLSTestServer(t, home, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 				if request.Method != http.MethodGet || request.URL.Path != "/healthz" {
 					t.Fatalf("probe = %s %s", request.Method, request.URL.Path)
 				}
@@ -420,7 +432,7 @@ func TestVerifyCollectorReachabilityUsesConfiguredURLOrigin(t *testing.T) {
 			t.Cleanup(server.Close)
 			t.Setenv("QLOG_COLLECTOR_URL", server.URL+configuredPath)
 
-			reachable, message := verifyCollectorReachability(context.Background())
+			reachable, message := verifyCollectorReachability(context.Background(), home)
 			if !reachable {
 				t.Fatalf("reachable = false: %s", message)
 			}
@@ -542,8 +554,9 @@ func TestCollectorLifecycleCommandsExist(t *testing.T) {
 }
 
 func TestHookClaudeCodePostsLifecycleEvent(t *testing.T) {
+	home := t.TempDir()
 	var received []byte
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+	server := newCollectorTLSTestServer(t, home, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/v1/events" {
 			t.Fatalf("path = %s", request.URL.Path)
 		}
@@ -559,7 +572,7 @@ func TestHookClaudeCodePostsLifecycleEvent(t *testing.T) {
 	t.Setenv("QLOG_COLLECTOR_URL", server.URL+"/v1/events")
 	command := New(Version{})
 	output := new(bytes.Buffer)
-	command.SetArgs([]string{"hook", "claude-code"})
+	command.SetArgs([]string{"--home", home, "hook", "claude-code"})
 	command.SetIn(strings.NewReader(`{"session_id":"session-1","hook_event_name":"Stop","cwd":"C:/repo","transcript_path":"must-not-forward"}`))
 	setOutput(command, output)
 	if err := command.Execute(); err != nil {
@@ -639,7 +652,8 @@ func TestHookCopilotCLIIngestsLifecycleOnlyWithoutHookPayloadContent(t *testing.
 }
 
 func TestHookCopilotCLIForwardsWithoutOutput(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+	home := t.TempDir()
+	server := newCollectorTLSTestServer(t, home, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/v1/events" {
 			t.Fatalf("path = %s", request.URL.Path)
 		}
@@ -650,7 +664,7 @@ func TestHookCopilotCLIForwardsWithoutOutput(t *testing.T) {
 
 	command := New(Version{})
 	output := new(bytes.Buffer)
-	command.SetArgs([]string{"hook", "copilot-cli", "--event", "agentStop"})
+	command.SetArgs([]string{"--home", home, "hook", "copilot-cli", "--event", "agentStop"})
 	command.SetIn(strings.NewReader(`{"sessionId":"session-1","cwd":"C:/repo"}`))
 	setOutput(command, output)
 	if err := command.Execute(); err != nil {

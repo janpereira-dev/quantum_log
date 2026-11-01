@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -87,35 +86,38 @@ func (*fakeCollectorManager) Status(_ context.Context, listen string) (Collector
 }
 
 func TestProbeCollectorHealthIdentifiesManagedCollector(t *testing.T) {
-	server := httptest.NewServer(newCollectorMux(t.TempDir()))
+	home := t.TempDir()
+	server := newCollectorTLSTestServer(t, home, newCollectorMux(home))
 	t.Cleanup(server.Close)
 
-	health := probeCollectorHealth(context.Background(), strings.TrimPrefix(server.URL, "http://"))
+	health := probeCollectorHealth(context.Background(), home, strings.TrimPrefix(server.URL, "https://"))
 	if !health.Reachable || !health.Managed {
 		t.Fatalf("health = %#v, want reachable managed collector", health)
 	}
 }
 
 func TestProbeCollectorHealthDoesNotIdentifyArbitraryHealthyEndpoint(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+	home := t.TempDir()
+	server := newCollectorTLSTestServer(t, home, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.WriteHeader(http.StatusOK)
 		_, _ = writer.Write([]byte(`{"status":"ok"}`))
 	}))
 	t.Cleanup(server.Close)
 
-	health := probeCollectorHealth(context.Background(), strings.TrimPrefix(server.URL, "http://"))
+	health := probeCollectorHealth(context.Background(), home, strings.TrimPrefix(server.URL, "https://"))
 	if !health.Reachable || health.Managed {
 		t.Fatalf("health = %#v, want reachable untrusted endpoint", health)
 	}
 }
 
 func TestProbeCollectorHealthRejectsUnhealthyHTTPStatus(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+	home := t.TempDir()
+	server := newCollectorTLSTestServer(t, home, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.WriteHeader(http.StatusServiceUnavailable)
 	}))
 	t.Cleanup(server.Close)
 
-	health := probeCollectorHealth(context.Background(), strings.TrimPrefix(server.URL, "http://"))
+	health := probeCollectorHealth(context.Background(), home, strings.TrimPrefix(server.URL, "https://"))
 	if health.Reachable || health.Running {
 		t.Fatalf("health = %#v, want unreachable and not running", health)
 	}

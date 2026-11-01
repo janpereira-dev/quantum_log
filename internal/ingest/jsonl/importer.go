@@ -78,8 +78,8 @@ func ImportWithPromptCapture(ctx context.Context, store *storepkg.Store, reader 
 	return importWithTrustAndPromptCapture(ctx, store, reader, false, mode)
 }
 
-func ImportTrusted(ctx context.Context, store *storepkg.Store, reader io.Reader) (int, error) {
-	return importWithTrustAndPromptCapture(ctx, store, reader, true, "hash")
+func ImportTrusted(ctx context.Context, store *storepkg.Store, reader io.Reader, mode string) (int, error) {
+	return importWithTrustAndPromptCapture(ctx, store, reader, true, mode)
 }
 
 func importWithTrustAndPromptCapture(ctx context.Context, store *storepkg.Store, reader io.Reader, trusted bool, promptCaptureMode string) (int, error) {
@@ -107,12 +107,11 @@ func importWithTrustAndPromptCapture(ctx context.Context, store *storepkg.Store,
 		if parsed.Payload == nil {
 			parsed.Payload = json.RawMessage("{}")
 		}
-		if isInteractionEvent(parsed.EventType) {
-			parsed.Payload = enforcePromptCapturePolicy(parsed.Payload, promptCaptureMode)
-		}
+		parsed.Payload = metadataPayload(parsed.Payload)
+		parsed.Payload = enforcePromptCapturePolicy(parsed.Payload, promptCaptureMode)
 		evidence := "{}"
 		if parsed.EvidenceJSON != nil {
-			evidence = string(parsed.EvidenceJSON)
+			evidence = string(metadataEvidence(parsed.EvidenceJSON))
 		}
 		appendResult, err := store.AppendRawEvent(ctx, storepkg.RawEventInput{IngestionIdentity: parsed.IngestionIdentity, Source: parsed.Source, SourceVersion: parsed.SourceVersion, SessionID: parsed.SessionID, EventType: parsed.EventType, TraceID: parsed.TraceID, SpanID: parsed.SpanID, ParentSpanID: parsed.ParentSpanID, Payload: parsed.Payload, OccurredAt: parsed.OccurredAt, ProjectID: parsed.ProjectID, ProjectLocationID: parsed.ProjectLocationID, WorkContextID: parsed.WorkContextID, ResolutionMethod: parsed.ResolutionMethod, ResolutionConfidence: parsed.ResolutionConfidence, EvidenceJSON: evidence})
 		if err != nil {
@@ -147,6 +146,15 @@ func enforcePromptCapturePolicy(payload json.RawMessage, mode string) json.RawMe
 	var values map[string]any
 	if json.Unmarshal(payload, &values) != nil {
 		return json.RawMessage(`{"prompt_capture_mode":"off"}`)
+	}
+	captureFields := false
+	for _, key := range []string{"prompt_hash", "interaction_hash", "interaction_redacted", "prompt_capture_mode"} {
+		if _, ok := values[key]; ok {
+			captureFields = true
+		}
+	}
+	if !captureFields {
+		return payload
 	}
 	values["prompt_capture_mode"] = mode
 	if mode == "off" {

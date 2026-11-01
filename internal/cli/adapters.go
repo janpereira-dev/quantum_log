@@ -96,15 +96,15 @@ func newAdapterCommand(home *string) *cobra.Command {
 				return fmt.Errorf("adapter %s is unavailable: %s", adapter.Descriptor().ID, detection.Evidence)
 			}
 		}
-		options := adapters.InstallOptions{DryRun: dryRun}
-		if adapter.Descriptor().ID == "copilot" && !dryRun {
-			paths, err := config.Resolve(*home)
-			if err != nil {
-				return err
-			}
+		paths, err := config.Resolve(*home)
+		if err != nil {
+			return err
+		}
+		options := adapters.InstallOptions{DryRun: dryRun, Home: paths.Home}
+		if (adapter.Descriptor().ID == "copilot" || adapter.Descriptor().ID == "claude-code") && !dryRun {
 			options, err = setupInstallOptions(paths.Home, "")
 			if err != nil {
-				return fmt.Errorf("install Copilot CLI adapter: %w", err)
+				return fmt.Errorf("install %s adapter: %w", adapter.Descriptor().ID, err)
 			}
 		}
 		result, err := adapter.Install(command.Context(), options)
@@ -144,7 +144,7 @@ func newAdapterCommand(home *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			status = enrichAdapterStatus(command.Context(), paths.Home, status, localAdapterStatusAccess{})
+			status = enrichAdapterStatus(command.Context(), paths.Home, status, localAdapterStatusAccess{home: paths.Home})
 			statuses = append(statuses, status)
 		}
 		if statusJSON {
@@ -226,7 +226,11 @@ func newAdapterCommand(home *string) *cobra.Command {
 		if !found {
 			return fmt.Errorf("adapter %q not found", args[0])
 		}
-		result, err := adapter.Uninstall(command.Context(), adapters.InstallOptions{DryRun: uninstallDryRun})
+		paths, err := config.Resolve(*home)
+		if err != nil {
+			return err
+		}
+		result, err := adapter.Uninstall(command.Context(), adapters.InstallOptions{DryRun: uninstallDryRun, Home: paths.Home})
 		if err != nil {
 			return err
 		}
@@ -252,10 +256,10 @@ type adapterStatusAccess interface {
 	HasRecentEvidence(context.Context, string, adapters.SetupStatus) (bool, error)
 }
 
-type localAdapterStatusAccess struct{}
+type localAdapterStatusAccess struct{ home string }
 
-func (localAdapterStatusAccess) CollectorReachable(ctx context.Context) bool {
-	reachable, _ := verifyCollectorReachability(ctx)
+func (a localAdapterStatusAccess) CollectorReachable(ctx context.Context) bool {
+	reachable, _ := verifyCollectorReachability(ctx, a.home)
 	return reachable
 }
 
@@ -362,7 +366,7 @@ func verifyAdapter(ctx context.Context, home string, adapter adapters.Adapter, p
 		adapterVerifyStage{Name: "settings", Passed: status.Installed, Required: true, Message: string(status.InstallationState)},
 		adapterVerifyStage{Name: "availability", Passed: status.Available, Required: true, Message: status.Evidence},
 	)
-	collectorOK, collectorMessage := verifyCollectorReachability(ctx)
+	collectorOK, collectorMessage := verifyCollectorReachability(ctx, home)
 	stages = append(stages, adapterVerifyStage{Name: "collector", Passed: collectorOK, Required: true, Message: collectorMessage})
 	duration, err := time.ParseDuration(since)
 	if err != nil {
@@ -401,13 +405,13 @@ func verifyAdapter(ctx context.Context, home string, adapter adapters.Adapter, p
 	return adapterVerifyResult{AdapterID: adapter.Descriptor().ID, Ready: ready, Stages: stages, Message: message}
 }
 
-func verifyCollectorReachability(ctx context.Context) (bool, string) {
+func verifyCollectorReachability(ctx context.Context, home string) (bool, string) {
 	endpoint := os.Getenv("QLOG_COLLECTOR_URL")
 	if endpoint == "" {
-		endpoint = "http://127.0.0.1:4318/v1/traces"
+		endpoint = "https://127.0.0.1:4318/v1/traces"
 	}
 	parsed, err := url.Parse(endpoint)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+	if err != nil || parsed.Scheme != "https" || !loopbackHost(parsed.Hostname()) || parsed.User != nil || parsed.Fragment != "" {
 		return false, fmt.Sprintf("invalid collector URL %q", endpoint)
 	}
 	healthEndpoint := parsed.Scheme + "://" + parsed.Host + "/healthz"
@@ -416,7 +420,11 @@ func verifyCollectorReachability(ctx context.Context) (bool, string) {
 		return false, err.Error()
 	}
 	request.Header.Set("Content-Type", "application/json")
-	client := http.Client{Timeout: 2 * time.Second}
+	client, err := collectorHTTPSClient(home, 2*time.Second)
+	if err != nil {
+		return false, err.Error()
+	}
+	defer client.CloseIdleConnections()
 	response, err := client.Do(request)
 	if err != nil {
 		return false, err.Error()

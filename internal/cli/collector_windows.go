@@ -93,6 +93,10 @@ type windowsCollectorFallbackState struct {
 
 func windowsCollectorStatus(ctx context.Context, listen string) (CollectorStatus, error) {
 	status := CollectorStatus{Listen: listen, Mode: windowsCollectorNoMode, ServiceID: windowsCollectorTaskName, StatePath: collectorStateDir(), LogPath: collectorLogPath()}
+	home := ""
+	if settings, err := readWindowsCollectorTaskDefinitionSettings(); err == nil {
+		home = settings.Home
+	}
 	output, err := queryWindowsCollectorTask(ctx)
 	if err == nil {
 		status.Installed = true
@@ -116,11 +120,12 @@ func windowsCollectorStatus(ctx context.Context, listen string) (CollectorStatus
 			status.Mode = windowsCollectorFallbackMode
 			status.ServiceID = windowsCollectorRunValue
 			status.Listen = fallback.Listen
+			home = fallback.Home
 			status.LogPath = fallback.LogPath
 			status.Running = windowsCollectorFallbackRunning(fallback)
 		}
 	}
-	health := probeCollectorHealth(ctx, status.Listen)
+	health := probeCollectorHealth(ctx, home, status.Listen)
 	return collectorStatusWithHealth(status, health), nil
 }
 

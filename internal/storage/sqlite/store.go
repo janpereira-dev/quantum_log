@@ -21,9 +21,11 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/janpereira-dev/quantum_log/internal/audit"
+	"github.com/janpereira-dev/quantum_log/internal/config"
 	"github.com/janpereira-dev/quantum_log/internal/domain"
 	"github.com/janpereira-dev/quantum_log/internal/pricing"
 	storelock "github.com/janpereira-dev/quantum_log/internal/storage/lock"
@@ -34,11 +36,13 @@ import (
 var migrations embed.FS
 
 type Store struct {
-	db         *sql.DB
-	quiescence *storelock.Handle
-	writerLock *storelock.Handle
-	writable   bool
-	warnings   []string
+	recordModelMu  sync.Mutex
+	recordedTokens *int64
+	db             *sql.DB
+	quiescence     *storelock.Handle
+	writerLock     *storelock.Handle
+	writable       bool
+	warnings       []string
 }
 
 type WorkContextInput struct {
@@ -506,6 +510,9 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve database path: %w", err)
 	}
+	if err := CheckDatabaseLocation(absolutePath); err != nil {
+		return nil, err
+	}
 	if err := ensureParent(absolutePath); err != nil {
 		return nil, err
 	}
@@ -523,7 +530,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		return nil, writerLockError(err)
 	}
 	// modernc accepts a SQLite URI with a Windows-safe forward-slash path.
-	dsn := "file:" + filepath.ToSlash(absolutePath) + "?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
+	dsn := databaseURI(absolutePath, "_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		_ = writerLock.Close()
@@ -564,7 +571,7 @@ func OpenReadOnly(ctx context.Context, path string) (*Store, error) {
 		_ = quiescence.Close()
 		return nil, err
 	}
-	dsn := "file:" + filepath.ToSlash(absolutePath) + "?mode=ro&immutable=1&_pragma=query_only(1)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
+	dsn := databaseURI(absolutePath, "mode=ro&immutable=1&_pragma=query_only(1)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)")
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		_ = quiescence.Close()
@@ -606,7 +613,7 @@ func OpenSnapshotReadOnly(ctx context.Context, path string) (*Store, error) {
 		_ = quiescence.Close()
 		return nil, readerWriterLockError(err)
 	}
-	dsn := "file:" + filepath.ToSlash(absolutePath) + "?mode=ro&_pragma=query_only(1)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
+	dsn := databaseURI(absolutePath, "mode=ro&_pragma=query_only(1)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)")
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		_ = quiescence.Close()
@@ -670,7 +677,7 @@ func Checkpoint(ctx context.Context, path string) (result error) {
 	}
 	defer func() { result = errors.Join(result, writerLock.Close()) }()
 
-	dsn := "file:" + filepath.ToSlash(absolutePath) + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
+	dsn := databaseURI(absolutePath, "_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)")
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return fmt.Errorf("open sqlite for maintenance: %w", err)
@@ -1961,6 +1968,12 @@ func (s *Store) BudgetAlerts(ctx context.Context, now time.Time) ([]BudgetAlert,
 }
 
 func (s *Store) RecordModelCall(ctx context.Context, input ModelCallInput) (string, error) {
+	s.recordModelMu.Lock()
+	defer s.recordModelMu.Unlock()
+	total, err := modelCallTotal(input)
+	if err != nil {
+		return "", err
+	}
 	if strings.TrimSpace(input.Provider) == "" || strings.TrimSpace(input.ModelID) == "" {
 		return "", errors.New("model call provider and model id are required")
 	}
@@ -1973,17 +1986,26 @@ func (s *Store) RecordModelCall(ctx context.Context, input ModelCallInput) (stri
 	id := newID()
 	createdAt := time.Now().UTC()
 	now := timestamp(createdAt)
-	total := input.InputTokens + input.OutputTokens + input.ReasoningTokens + input.CachedInputTokens + input.CacheWriteTokens
-	for _, metric := range input.Metrics {
-		if metric.Name == "total_tokens" && metric.Value != nil {
-			total = *metric.Value
-		}
-	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", err
 	}
 	defer rollback(tx)
+	if input.RawEventID != "" {
+		var existingID string
+		err := tx.QueryRowContext(ctx, `SELECT id FROM model_calls WHERE raw_event_id = ?`, input.RawEventID).Scan(&existingID)
+		if err == nil {
+			return existingID, tx.Commit()
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return "", err
+		}
+	}
+	nextTotal, err := s.nextUsageTotal(ctx, tx, total)
+	if err != nil {
+		return "", err
+	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO model_calls (id, raw_event_id, interaction_id, interaction_upstream_id, primary_project_id, project_location_id, work_context_id, task_id, session_id, turn_id, started_at, finished_at, duration_ms, agent_name, provider, model_id, input_tokens, output_tokens, reasoning_tokens, cached_input_tokens, cache_write_tokens, total_tokens, estimated_cost_usd_micros, estimated_cost_eur_micros, capture_quality, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, nullable(input.RawEventID), nullable(input.InteractionID), input.InteractionUpstreamID, nullable(input.ProjectID), nullable(input.ProjectLocationID), nullable(input.WorkContextID), nullable(input.TaskID), nullable(input.SessionID), nullable(input.TurnID), timestamp(input.OccurredAt), nullableTime(input.CompletedAt), durationMilliseconds(input.DurationMS), input.AgentName, input.Provider, input.ModelID, input.InputTokens, input.OutputTokens, input.ReasoningTokens, input.CachedInputTokens, input.CacheWriteTokens, total, input.EstimatedCostUSDMicros, input.EstimatedCostEURMicros, input.CaptureQuality, now)
 	if err != nil {
 		if input.RawEventID != "" && isUniqueConstraint(err) {
@@ -2025,6 +2047,7 @@ func (s *Store) RecordModelCall(ctx context.Context, input ModelCallInput) (stri
 	if err := tx.Commit(); err != nil {
 		return "", err
 	}
+	s.recordedTokens = &nextTotal
 	return id, nil
 }
 
@@ -2736,7 +2759,10 @@ func (s *Store) Usage(ctx context.Context, query UsageQuery) (UsageReport, error
 	if query.ProjectSlug == "" {
 		where, args := usageWindow(query)
 		if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(total_tokens), 0) FROM model_calls c`+where, args...).Scan(&totalTokens); err != nil {
-			return UsageReport{}, err
+			return UsageReport{}, fmt.Errorf("read aggregate token usage: %w", err)
+		}
+		if totalTokens < 0 {
+			return UsageReport{}, errors.New("existing aggregate tokens are negative; explicit repair is required")
 		}
 	}
 	allocationQuery := query
@@ -2760,7 +2786,15 @@ func (s *Store) Usage(ctx context.Context, query UsageQuery) (UsageReport, error
 		if err := rows.Scan(&callID, &allocationID, &row.ProjectSlug, &row.AgentName, &row.Provider, &row.Model, &row.CaptureQuality, &row.InputTokens, &row.OutputTokens, &row.ReasoningTokens, &row.CachedInputTokens, &row.CacheWriteTokens, &row.TotalTokens, &cost, &basisPoints); err != nil {
 			return UsageReport{}, err
 		}
+		for _, value := range []int64{row.InputTokens, row.OutputTokens, row.ReasoningTokens, row.CachedInputTokens, row.CacheWriteTokens, row.TotalTokens, cost} {
+			if _, err := addUsageCount(0, value); err != nil {
+				return UsageReport{}, err
+			}
+		}
 		offset := allocatedBasis[callID]
+		if err := validateAllocationRange(offset, basisPoints); err != nil {
+			return UsageReport{}, err
+		}
 		row.InputTokens = apportionShare(row.InputTokens, offset, basisPoints)
 		row.OutputTokens = apportionShare(row.OutputTokens, offset, basisPoints)
 		row.ReasoningTokens = apportionShare(row.ReasoningTokens, offset, basisPoints)
@@ -2772,16 +2806,15 @@ func (s *Store) Usage(ctx context.Context, query UsageQuery) (UsageReport, error
 		if query.ProjectSlug != "" && row.ProjectSlug != normalizeSlug(query.ProjectSlug) {
 			continue
 		}
-		totalAllocated += row.AllocatedCostUSDMicros
+		totalAllocated, err = addUsageCount(totalAllocated, row.AllocatedCostUSDMicros)
+		if err != nil {
+			return UsageReport{}, err
+		}
 		key := row.ProjectSlug + "\x00" + row.AgentName + "\x00" + row.Provider + "\x00" + row.Model + "\x00" + row.CaptureQuality
 		if existing, found := grouped[key]; found {
-			existing.InputTokens += row.InputTokens
-			existing.OutputTokens += row.OutputTokens
-			existing.ReasoningTokens += row.ReasoningTokens
-			existing.CachedInputTokens += row.CachedInputTokens
-			existing.CacheWriteTokens += row.CacheWriteTokens
-			existing.TotalTokens += row.TotalTokens
-			existing.AllocatedCostUSDMicros += row.AllocatedCostUSDMicros
+			if err := addUsageCounts([7]*int64{&existing.InputTokens, &existing.OutputTokens, &existing.ReasoningTokens, &existing.CachedInputTokens, &existing.CacheWriteTokens, &existing.TotalTokens, &existing.AllocatedCostUSDMicros}, [7]int64{row.InputTokens, row.OutputTokens, row.ReasoningTokens, row.CachedInputTokens, row.CacheWriteTokens, row.TotalTokens, row.AllocatedCostUSDMicros}); err != nil {
+				return UsageReport{}, err
+			}
 			grouped[key] = existing
 		} else {
 			grouped[key] = row
@@ -2793,7 +2826,10 @@ func (s *Store) Usage(ctx context.Context, query UsageQuery) (UsageReport, error
 	if query.ProjectSlug != "" {
 		totalTokens = 0
 		for _, row := range grouped {
-			totalTokens += row.TotalTokens
+			totalTokens, err = addUsageCount(totalTokens, row.TotalTokens)
+			if err != nil {
+				return UsageReport{}, err
+			}
 		}
 	}
 	report := UsageReport{GroupBy: append([]string(nil), query.GroupBy...), Rows: make([]UsageRow, 0), Measurements: make([]MeasurementSummary, 0), TotalTokens: totalTokens, AllocatedCostUSDMicros: totalAllocated}
@@ -3081,7 +3117,15 @@ func (s *Store) usageMeasurements(ctx context.Context, query UsageQuery) ([]Meas
 		if err := rows.Scan(&callID, &projectSlug, &quality, &inputTokens, &outputTokens, &reasoningTokens, &cachedInputTokens, &cacheWriteTokens, &totalTokens, &cost, &basisPoints); err != nil {
 			return nil, fmt.Errorf("scan usage measurements: %w", err)
 		}
+		for _, value := range []int64{inputTokens, outputTokens, reasoningTokens, cachedInputTokens, cacheWriteTokens, totalTokens, cost} {
+			if _, err := addUsageCount(0, value); err != nil {
+				return nil, err
+			}
+		}
 		offset := allocatedBasis[callID]
+		if err := validateAllocationRange(offset, basisPoints); err != nil {
+			return nil, err
+		}
 		inputTokens = apportionShare(inputTokens, offset, basisPoints)
 		outputTokens = apportionShare(outputTokens, offset, basisPoints)
 		reasoningTokens = apportionShare(reasoningTokens, offset, basisPoints)
@@ -3099,13 +3143,9 @@ func (s *Store) usageMeasurements(ctx context.Context, query UsageQuery) ([]Meas
 			summary.ModelCallCount++
 			seenCalls[callID] = true
 		}
-		summary.InputTokens += inputTokens
-		summary.OutputTokens += outputTokens
-		summary.ReasoningTokens += reasoningTokens
-		summary.CachedInputTokens += cachedInputTokens
-		summary.CacheWriteTokens += cacheWriteTokens
-		summary.TotalTokens += totalTokens
-		summary.EstimatedCostUSDMicros += cost
+		if err := addUsageCounts([7]*int64{&summary.InputTokens, &summary.OutputTokens, &summary.ReasoningTokens, &summary.CachedInputTokens, &summary.CacheWriteTokens, &summary.TotalTokens, &summary.EstimatedCostUSDMicros}, [7]int64{inputTokens, outputTokens, reasoningTokens, cachedInputTokens, cacheWriteTokens, totalTokens, cost}); err != nil {
+			return nil, err
+		}
 		byQuality[quality] = summary
 	}
 	if err := rows.Err(); err != nil {
@@ -3138,7 +3178,8 @@ func (s *Store) usageMeasurements(ctx context.Context, query UsageQuery) ([]Meas
 }
 
 func apportionShare(value, offset, basisPoints int64) int64 {
-	return value*(offset+basisPoints)/10000 - value*offset/10000
+	share := func(points int64) int64 { return value/10000*points + value%10000*points/10000 }
+	return share(offset+basisPoints) - share(offset)
 }
 
 func (s *Store) SessionSnapshot(ctx context.Context, sessionID string) (SessionSnapshot, error) {
@@ -3743,8 +3784,13 @@ func sensitiveKey(key string) bool {
 }
 
 func ensureParent(path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := config.EnsurePrivateHome(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("create database directory: %w", err)
+	}
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		if err := config.CheckPrivateFile(path + suffix); err != nil {
+			return err
+		}
 	}
 	return nil
 }

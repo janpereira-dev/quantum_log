@@ -29,6 +29,9 @@ func AcquireInitializationGuard(path string) (*InitializationGuard, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve database path: %w", err)
 	}
+	if err := CheckDatabaseLocation(absolutePath); err != nil {
+		return nil, err
+	}
 	if _, err := os.Stat(filepath.Dir(absolutePath)); errors.Is(err, os.ErrNotExist) {
 		return &InitializationGuard{}, nil
 	} else if err != nil {

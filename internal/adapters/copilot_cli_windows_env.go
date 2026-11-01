@@ -128,15 +128,34 @@ func copilotCLIPowerShellProfilePaths() []string {
 	return profiles
 }
 
-func copilotCLIProfileBlock() string {
+func copilotCLIProfileBlock(tokenPaths ...string) string {
+	authPair, tokenGuard := "", ""
+	if len(tokenPaths) > 0 {
+		tokenGuard = "  try { $qlogToken = [IO.File]::ReadAllText('" + strings.ReplaceAll(tokenPaths[0], "'", "''") + "').Trim() } catch { throw 'qlog: collector token is missing or unreadable' }\n  if ($qlogToken -cnotmatch '^[0-9a-f]{64}$') { throw 'qlog: collector token is invalid' }\n"
+		readToken := "('x-qlog-token=' + $qlogToken)"
+		authPair = ", @('OTEL_EXPORTER_OTLP_HEADERS'," + readToken + ")"
+		for _, signal := range []string{"TRACES", "LOGS", "METRICS"} {
+			authPair += ", @('OTEL_EXPORTER_OTLP_" + signal + "_HEADERS'," + readToken + ")"
+		}
+	}
+	caGuard := ""
+	if len(tokenPaths) > 1 {
+		quotedCA := "'" + strings.ReplaceAll(tokenPaths[1], "'", "''") + "'"
+		authPair += ", @('NODE_TLS_REJECT_UNAUTHORIZED','1'), @('OTEL_EXPORTER_OTLP_CERTIFICATE'," + quotedCA + ")"
+		for _, signal := range []string{"TRACES", "LOGS", "METRICS"} {
+			authPair += ", @('OTEL_EXPORTER_OTLP_" + signal + "_CERTIFICATE'," + quotedCA + "), @('OTEL_EXPORTER_OTLP_" + signal + "_PROTOCOL','http/json'), @('OTEL_EXPORTER_OTLP_" + signal + "_ENDPOINT','https://127.0.0.1:4318/v1/" + strings.ToLower(signal) + "')"
+		}
+		caGuard = "  try { if (([IO.File]::ReadAllBytes(" + quotedCA + ")).Length -eq 0) { throw 'empty CA' } } catch { throw 'qlog: collector CA is missing or unreadable' }\n"
+	}
+
 	return copilotCLIProfileBlockStart + "\n" +
 		"if ($null -eq (Get-Variable qlogCopilotOriginal -Scope Global -ErrorAction SilentlyContinue)) { $global:qlogCopilotOriginal = (Get-Command copilot -CommandType Function -ErrorAction SilentlyContinue).ScriptBlock }\n" +
 		"function global:copilot {\n" +
 		"  [CmdletBinding()]\n" +
 		"  param([Parameter(ValueFromRemainingArguments=$true)][object[]]$qlogArgs)\n" +
 		"  $qlogArgs = @($qlogArgs)\n" +
-		"  $qlogPrevious = @{}\n" +
-		"  foreach ($qlogPair in @(@('COPILOT_OTEL_ENABLED','true'), @('COPILOT_OTEL_EXPORTER_TYPE','otlp-http'), @('OTEL_EXPORTER_OTLP_ENDPOINT','http://127.0.0.1:4318'), @('OTEL_EXPORTER_OTLP_PROTOCOL','http/json'), @('OTEL_METRICS_EXPORTER','none'), @('OTEL_LOGS_EXPORTER','none'), @('OTEL_SERVICE_NAME','github-copilot'), @('OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT','false'), @('QLOG_COLLECTOR_URL','http://127.0.0.1:4318/v1/events'))) { $qlogPrevious[$qlogPair[0]] = [Environment]::GetEnvironmentVariable($qlogPair[0], 'Process'); Set-Item -Path ('Env:' + $qlogPair[0]) -Value $qlogPair[1] }\n" +
+		caGuard + tokenGuard + "  $qlogPrevious = @{}\n" +
+		"  foreach ($qlogPair in @(@('COPILOT_OTEL_ENABLED','true'), @('COPILOT_OTEL_EXPORTER_TYPE','otlp-http'), @('OTEL_EXPORTER_OTLP_ENDPOINT','https://127.0.0.1:4318'), @('OTEL_EXPORTER_OTLP_PROTOCOL','http/json'), @('COPILOT_OTEL_ENDPOINT','https://127.0.0.1:4318'), @('OTEL_METRICS_EXPORTER','none'), @('OTEL_LOGS_EXPORTER','none'), @('OTEL_SERVICE_NAME','github-copilot'), @('OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT','false'), @('QLOG_COLLECTOR_URL','https://127.0.0.1:4318/v1/events')" + authPair + ")) { $qlogPrevious[$qlogPair[0]] = [Environment]::GetEnvironmentVariable($qlogPair[0], 'Process'); Set-Item -Path ('Env:' + $qlogPair[0]) -Value $qlogPair[1] }\n" +
 		"  try { if ($null -ne $global:qlogCopilotOriginal) { & $global:qlogCopilotOriginal @qlogArgs } else { $qlogCopilotExecutable = @(Get-Command copilot -CommandType Application -ErrorAction Stop)[0].Path; & $qlogCopilotExecutable @qlogArgs }; $qlogSuccess = $?; $qlogExitCode = $LASTEXITCODE } finally { foreach ($qlogKey in $qlogPrevious.Keys) { if ($null -eq $qlogPrevious[$qlogKey]) { Remove-Item -Path ('Env:' + $qlogKey) -ErrorAction SilentlyContinue } else { Set-Item -Path ('Env:' + $qlogKey) -Value $qlogPrevious[$qlogKey] } } }\n" +
 		"  if ($null -ne $qlogExitCode) { $global:LASTEXITCODE = $qlogExitCode }; if (-not $qlogSuccess) { $qlogError = [System.Management.Automation.ErrorRecord]::new([System.Exception]::new('copilot exited with code ' + $qlogExitCode), 'QlogCopilotExit', [System.Management.Automation.ErrorCategory]::NotSpecified, $null); $PSCmdlet.WriteError($qlogError) }\n" +
 		"}\n" +
@@ -187,7 +206,7 @@ func hasNonASCIIBody(contents []byte) bool {
 	return false
 }
 
-func withCopilotCLIProfileBlock(contents string) (string, error) {
+func withCopilotCLIProfileBlock(contents string, tokenPaths ...string) (string, error) {
 	start := strings.Index(contents, copilotCLIProfileBlockStart)
 	end := strings.Index(contents, copilotCLIProfileBlockEnd)
 	if start == -1 && end != -1 || start != -1 && end == -1 || end < start {
@@ -201,12 +220,12 @@ func withCopilotCLIProfileBlock(contents string) (string, error) {
 		if end < len(contents) && contents[end] == '\n' {
 			end++
 		}
-		return contents[:start] + copilotCLIProfileBlock() + contents[end:], nil
+		return contents[:start] + copilotCLIProfileBlock(tokenPaths...) + contents[end:], nil
 	}
 	if contents != "" && !strings.HasSuffix(contents, "\n") {
 		contents += "\n"
 	}
-	return contents + copilotCLIProfileBlock(), nil
+	return contents + copilotCLIProfileBlock(tokenPaths...), nil
 }
 
 func withoutCopilotCLIProfileBlock(contents string) (string, bool, error) {
@@ -228,7 +247,7 @@ func withoutCopilotCLIProfileBlock(contents string) (string, bool, error) {
 	return contents[:start] + contents[end:], true, nil
 }
 
-func (a copilotCLIAdapter) installWindowsPowerShellProfile(dryRun bool) (SetupChange, error) {
+func (a copilotCLIAdapter) installWindowsPowerShellProfile(dryRun bool, tokenPaths ...string) (SetupChange, error) {
 	profiles := copilotCLIPowerShellProfilePaths()
 	managed := []string{}
 	if state, err := os.ReadFile(a.windowsPowerShellProfileStatePath()); err == nil {
@@ -236,7 +255,7 @@ func (a copilotCLIAdapter) installWindowsPowerShellProfile(dryRun bool) (SetupCh
 	}
 	action := "unchanged"
 	for _, profile := range profiles {
-		change, err := a.installWindowsPowerShellProfileAt(profile, dryRun)
+		change, err := a.installWindowsPowerShellProfileAt(profile, dryRun, tokenPaths...)
 		if err != nil {
 			return SetupChange{}, err
 		}
@@ -262,12 +281,12 @@ func containsManagedPath(paths []string, candidate string) bool {
 	return false
 }
 
-func (a copilotCLIAdapter) installWindowsPowerShellProfileAt(profile string, dryRun bool) (SetupChange, error) {
+func (a copilotCLIAdapter) installWindowsPowerShellProfileAt(profile string, dryRun bool, tokenPaths ...string) (SetupChange, error) {
 	contents, err := os.ReadFile(profile)
 	if err != nil && !os.IsNotExist(err) {
 		return SetupChange{}, fmt.Errorf("read PowerShell profile: %w", err)
 	}
-	updated, err := withCopilotCLIProfileBlock(string(contents))
+	updated, err := withCopilotCLIProfileBlock(string(contents), tokenPaths...)
 	if err != nil {
 		return SetupChange{}, err
 	}
@@ -350,7 +369,7 @@ func (a copilotCLIAdapter) windowsPowerShellProfileInstalled() bool {
 			return false
 		}
 		profile := string(contents)
-		if !strings.Contains(profile, copilotCLIProfileBlockStart) || !strings.Contains(profile, copilotCLIProfileBlockEnd) || !strings.Contains(profile, "function global:copilot") || !strings.Contains(profile, "COPILOT_OTEL_ENABLED") || !strings.Contains(profile, "qlogCopilotOriginal") {
+		if !strings.Contains(profile, copilotCLIProfileBlockStart) || !strings.Contains(profile, copilotCLIProfileBlockEnd) || !strings.Contains(profile, "function global:copilot") || !strings.Contains(profile, "COPILOT_OTEL_ENABLED") || !strings.Contains(profile, "qlogCopilotOriginal") || !strings.Contains(profile, "OTEL_EXPORTER_OTLP_HEADERS") || !strings.Contains(profile, "OTEL_EXPORTER_OTLP_TRACES_CERTIFICATE") {
 			return false
 		}
 	}

@@ -19,7 +19,7 @@ type claudeCodeAdapter struct{}
 func newClaudeCodeAdapter() claudeCodeAdapter { return claudeCodeAdapter{} }
 
 func (claudeCodeAdapter) Descriptor() Descriptor {
-	return Descriptor{ID: "claude-code", Name: "Claude Code", Version: "hooks-otel", Stable: true, Capabilities: Capabilities{ModelIdentity: true, InputTokens: true, OutputTokens: true, CacheTokens: true, SessionLifecycle: true, ProjectIdentity: true, WorkingDirectory: true, StructuredEvents: true}}
+	return Descriptor{ID: "claude-code", Name: "Claude Code", Version: "hooks-pinned-tls", Stable: true, Capabilities: Capabilities{SessionLifecycle: true, ProjectIdentity: true, WorkingDirectory: true, StructuredEvents: true}}
 }
 
 func (claudeCodeAdapter) Detect(context.Context) (Detection, error) {
@@ -49,7 +49,7 @@ func (a claudeCodeAdapter) PlanInstall(_ context.Context, options SetupOptions) 
 	if options.DryRun {
 		change.Description = "dry run: " + change.Description
 	}
-	return SetupPlan{AdapterID: "claude-code", State: SetupPartial, CaptureQuality: CaptureOTELReported, Changes: []SetupChange{change}, Notes: []string{"installs Claude Code lifecycle hooks and trace-only OTel configuration", "OTel message content capture is disabled; source E2E evidence remains required"}}, nil
+	return SetupPlan{AdapterID: "claude-code", State: SetupPartial, CaptureQuality: CaptureLifecycleOnly, Changes: []SetupChange{change}, Notes: []string{"installs lifecycle hooks over qlog pinned TLS; native OTel exporters remain disabled because Claude TLS pinning is unavailable", "model and token usage are not captured by this lifecycle-only integration"}}, nil
 }
 
 func (a claudeCodeAdapter) Status(ctx context.Context) (SetupStatus, error) {
@@ -63,10 +63,7 @@ func (a claudeCodeAdapter) Status(ctx context.Context) (SetupStatus, error) {
 		state = SetupPartial
 	}
 	quality := CaptureLifecycleOnly
-	if claudeSettingsHasOTEL(a.settingsPath()) {
-		quality = CaptureOTELReported
-	}
-	return SetupStatus{AdapterID: "claude-code", Available: detection.Available, Installed: installed, State: state, InstallationState: state, CaptureQuality: quality, Evidence: detection.Evidence, Notes: []string{"Claude Code hooks retain lifecycle and CWD evidence; trace-only OTel disables message content capture", "No source E2E evidence is claimed by setup"}}, nil
+	return SetupStatus{AdapterID: "claude-code", Available: detection.Available, Installed: installed, State: state, InstallationState: state, CaptureQuality: quality, Evidence: detection.Evidence, Notes: []string{"Claude Code hooks retain lifecycle and CWD evidence over qlog pinned TLS", "native OTel exporters are disabled: installed Claude transport did not accept the pinned collector CA; model and token usage are unavailable"}}, nil
 }
 
 func (a claudeCodeAdapter) Test(ctx context.Context) (TestResult, error) {
@@ -110,8 +107,58 @@ func (claudeCodeAdapter) ExtractProjectSignals(RawRecord) ProjectSignals { retur
 
 func (a claudeCodeAdapter) applySettings(dryRun bool, home, executablePath string) (SetupChange, error) {
 	path := a.settingsPath()
-	current, _ := os.ReadFile(path)
-	next, err := claudeSettingsWithQlogHooks(current, claudeCodeHookCommand(home, executablePath))
+	current, readErr := os.ReadFile(path)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return SetupChange{}, readErr
+	}
+	_, _, err := collectorCredentials(home, dryRun)
+	if err != nil {
+		return SetupChange{}, err
+	}
+	desired := claudeCodeOTELEnvironment()
+	statePath := path + ".qlog-otel-state.json"
+	var state vscodeSettingsMarker
+	stateBytes, stateErr := os.ReadFile(statePath)
+	if stateErr == nil {
+		if err := json.Unmarshal(stateBytes, &state); err != nil {
+			return SetupChange{}, err
+		}
+	} else if !os.IsNotExist(stateErr) {
+		return SetupChange{}, stateErr
+	}
+	if state.PreviousPresent == nil {
+		state.PreviousPresent = map[string]bool{}
+	}
+	if state.Previous == nil {
+		state.Previous = map[string]any{}
+	}
+	var previousSettings struct {
+		Env map[string]any `json:"env"`
+	}
+	if len(current) > 0 {
+		if err := json.Unmarshal(current, &previousSettings); err != nil {
+			return SetupChange{}, err
+		}
+	}
+	prepared := current
+	if stateErr == nil {
+		prepared, err = claudeSettingsWithoutQlogHooks(current, state)
+		if err != nil {
+			return SetupChange{}, err
+		}
+	}
+	state.Managed = map[string]any{}
+	for key, value := range desired {
+		if _, tracked := state.PreviousPresent[key]; !tracked {
+			previous, found := previousSettings.Env[key]
+			state.PreviousPresent[key] = found
+			if found {
+				state.Previous[key] = previous
+			}
+		}
+		state.Managed[key] = value
+	}
+	next, err := claudeSettingsWithQlogHooks(prepared, claudeCodeHookCommand(home, executablePath), desired)
 	if err != nil {
 		return SetupChange{}, err
 	}
@@ -123,20 +170,30 @@ func (a claudeCodeAdapter) applySettings(dryRun bool, home, executablePath strin
 		action = "unchanged"
 	}
 	change := SetupChange{Path: path, Action: action, Description: "Claude Code lifecycle hooks call " + claudeCodeHookCommand(home, executablePath)}
-	if dryRun || action == "unchanged" {
+	if dryRun {
 		return change, nil
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := ensurePrivateAdapterPaths(path, statePath); err != nil {
 		return SetupChange{}, err
+	}
+	if action == "unchanged" {
+		return change, nil
 	}
 	if len(current) > 0 {
 		backup := path + ".qlog-backup-" + time.Now().UTC().Format("20060102150405")
-		if err := os.WriteFile(backup, current, 0o600); err != nil {
+		if err := writePrivateAdapterFile(backup, current); err != nil {
 			return SetupChange{}, err
 		}
 		change.BackupPath = backup
 	}
-	return change, os.WriteFile(path, next, 0o600)
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		return SetupChange{}, err
+	}
+	if err := writePrivateAdapterFile(statePath, encoded); err != nil {
+		return SetupChange{}, err
+	}
+	return change, writePrivateAdapterFile(path, next)
 }
 
 func (a claudeCodeAdapter) removeSettings(dryRun bool) (SetupChange, error) {
@@ -148,7 +205,18 @@ func (a claudeCodeAdapter) removeSettings(dryRun bool) (SetupChange, error) {
 	if err != nil {
 		return SetupChange{}, err
 	}
-	next, err := claudeSettingsWithoutQlogHooks(current)
+	statePath := path + ".qlog-otel-state.json"
+	var states []vscodeSettingsMarker
+	if data, err := os.ReadFile(statePath); err == nil {
+		var state vscodeSettingsMarker
+		if err := json.Unmarshal(data, &state); err != nil {
+			return SetupChange{}, err
+		}
+		states = append(states, state)
+	} else if !os.IsNotExist(err) {
+		return SetupChange{}, err
+	}
+	next, err := claudeSettingsWithoutQlogHooks(current, states...)
 	if err != nil {
 		return SetupChange{}, err
 	}
@@ -162,11 +230,19 @@ func (a claudeCodeAdapter) removeSettings(dryRun bool) (SetupChange, error) {
 		return change, nil
 	}
 	backup := path + ".qlog-backup-" + time.Now().UTC().Format("20060102150405")
-	if err := os.WriteFile(backup, current, 0o600); err != nil {
+	if err := writePrivateAdapterFile(backup, current); err != nil {
 		return SetupChange{}, err
 	}
 	change.BackupPath = backup
-	return change, os.WriteFile(path, next, 0o600)
+	if err := writePrivateAdapterFile(path, next); err != nil {
+		return SetupChange{}, err
+	}
+	if len(states) > 0 {
+		if err := os.Remove(statePath); err != nil {
+			return SetupChange{}, err
+		}
+	}
+	return change, nil
 }
 
 func (claudeCodeAdapter) settingsPath() string {
@@ -182,25 +258,6 @@ func (claudeCodeAdapter) settingsPath() string {
 func claudeSettingsHasQlog(path string) bool {
 	contents, err := os.ReadFile(path)
 	return err == nil && bytesContains(contents, []byte("qlog")) && bytesContains(contents, []byte("hook claude-code"))
-}
-
-func claudeSettingsHasOTEL(path string) bool {
-	contents, err := os.ReadFile(path)
-	if err != nil {
-		return false
-	}
-	var settings struct {
-		Env map[string]string `json:"env"`
-	}
-	if json.Unmarshal(contents, &settings) != nil {
-		return false
-	}
-	for key, value := range claudeCodeOTELEnvironment() {
-		if settings.Env[key] != value {
-			return false
-		}
-	}
-	return true
 }
 
 func claudeCodeHookCommand(home, executablePath string) string {
@@ -221,7 +278,7 @@ func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
-func claudeSettingsWithQlogHooks(current []byte, command string) ([]byte, error) {
+func claudeSettingsWithQlogHooks(current []byte, command string, environments ...map[string]string) ([]byte, error) {
 	settings := map[string]any{}
 	if len(current) > 0 {
 		if err := json.Unmarshal(current, &settings); err != nil {
@@ -240,7 +297,11 @@ func claudeSettingsWithQlogHooks(current []byte, command string) ([]byte, error)
 	if env == nil {
 		env = map[string]any{}
 	}
-	for key, value := range claudeCodeOTELEnvironment() {
+	desired := claudeCodeOTELEnvironment()
+	if len(environments) > 0 {
+		desired = environments[0]
+	}
+	for key, value := range desired {
 		env[key] = value
 	}
 	settings["env"] = env
@@ -249,6 +310,17 @@ func claudeSettingsWithQlogHooks(current []byte, command string) ([]byte, error)
 
 func claudeCodeOTELEnvironment() map[string]string {
 	return map[string]string{
+		"CLAUDE_CODE_ENABLE_TELEMETRY":                       "0",
+		"CLAUDE_CODE_ENHANCED_TELEMETRY_BETA":                "0",
+		"OTEL_TRACES_EXPORTER":                               "none",
+		"OTEL_LOGS_EXPORTER":                                 "none",
+		"OTEL_METRICS_EXPORTER":                              "none",
+		"OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "false",
+	}
+}
+
+func legacyClaudeCodeOTELEnvironment() map[string]string {
+	env := map[string]string{
 		"CLAUDE_CODE_ENABLE_TELEMETRY":                       "1",
 		"CLAUDE_CODE_ENHANCED_TELEMETRY_BETA":                "1",
 		"OTEL_TRACES_EXPORTER":                               "otlp",
@@ -258,9 +330,10 @@ func claudeCodeOTELEnvironment() map[string]string {
 		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT":                 "http://127.0.0.1:4318/v1/traces",
 		"OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "false",
 	}
+	return env
 }
 
-func claudeSettingsWithoutQlogHooks(current []byte) ([]byte, error) {
+func claudeSettingsWithoutQlogHooks(current []byte, states ...vscodeSettingsMarker) ([]byte, error) {
 	settings := map[string]any{}
 	if err := json.Unmarshal(current, &settings); err != nil {
 		return nil, err
@@ -296,8 +369,20 @@ func claudeSettingsWithoutQlogHooks(current []byte) ([]byte, error) {
 		}
 	}
 	if env, ok := settings["env"].(map[string]any); ok {
-		for key, value := range claudeCodeOTELEnvironment() {
-			if env[key] == value {
+		managed := map[string]any{}
+		for key, value := range legacyClaudeCodeOTELEnvironment() {
+			managed[key] = value
+		}
+		if len(states) > 0 {
+			managed = states[0].Managed
+		}
+		for key, value := range managed {
+			if reflect.DeepEqual(env[key], value) {
+				if len(states) > 0 && states[0].PreviousPresent[key] {
+					env[key] = states[0].Previous[key]
+					changed = true
+					continue
+				}
 				delete(env, key)
 				changed = true
 			}

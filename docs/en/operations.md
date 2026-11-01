@@ -22,7 +22,11 @@ Run diagnostics when normal writers are inactive. Diagnostics acquire exclusive 
 
 ## Collector operation
 
-Default collector endpoint is `http://127.0.0.1:4318`:
+The hardened legacy source uses `https://127.0.0.1:4318`. Its per-installation
+certificate lives at `<legacy-home>/collector-tls/cert.pem`; managed producers
+pin it before sending the v2 token. Rerun legacy setup after upgrading. Previously
+published binaries may still use the earlier HTTP transport; installing an old
+signed release does not apply these source changes.
 
 ```bash
 qlog collector serve
@@ -35,10 +39,17 @@ Endpoints are:
 | Endpoint | Input |
 | --- | --- |
 | `/v1/traces` | OTLP/HTTP JSON or protobuf traces. |
+| `/v1/logs` | Supported native Codex OTLP logs. |
 | `/v1/events` | qlog JSON events. |
 | `/healthz` | `GET` or `HEAD` health check. |
 
 For managed service lifecycle use `install`, `start`, `stop`, `restart`, `logs`, and `uninstall`. A listener outside loopback is rejected unless `--allow-non-loopback` is explicit. If you opt in, you own network exposure, firewall, authentication, and host-hardening consequences.
+
+Do not bypass certificate verification to restore connectivity. An existing
+certificate must cover the configured host; a mismatched or damaged identity
+requires explicit recovery. Missing identity files are never enrolled by health
+checks or clients. VS Code must be fully closed and opened through the generated
+`qlog-code` launcher so its exporter receives the scoped CA and credentials.
 
 ## Adapter operation
 

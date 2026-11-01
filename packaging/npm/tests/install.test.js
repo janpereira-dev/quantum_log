@@ -92,6 +92,7 @@ test('uses only matching local candidate archive and checksum manifest', () => {
   assert.deepEqual(localArtifactPaths(resolvePlatform('linux', 'x64'), directory), {
     archive: path.join(directory, 'qlog_0.3.2-rc.3_linux_amd64.tar.gz'),
     checksums: path.join(directory, 'checksums.txt'),
+    bundle: path.join(directory, 'checksums.txt.sigstore.json'),
   });
 });
 
@@ -112,9 +113,10 @@ test('installs from generated local candidate artifact', { skip: !process.env.QL
   assert.ok(artifactDirectory, 'QLOG_INSTALL_LOCAL_ARTIFACT_DIR must point to generated candidate artifacts');
 
   const platform = resolvePlatform();
-  const { archive, checksums } = localArtifactPaths(platform, artifactDirectory);
+  const { archive, checksums, bundle } = localArtifactPaths(platform, artifactDirectory);
   await fs.access(archive);
   await fs.access(checksums);
+  await fs.access(bundle);
 
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'qlog-npm-artifact-'));
   let packagePath;

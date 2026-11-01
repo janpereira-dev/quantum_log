@@ -4,8 +4,10 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
+	"github.com/janpereira-dev/quantum_log/internal/config"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -26,7 +28,12 @@ func (a openCodeAdapter) Descriptor() Descriptor {
 }
 
 func (a openCodeAdapter) Install(_ context.Context, options InstallOptions) (InstallResult, error) {
-	change, err := applyManagedFile(a.pluginPath(), openCodePluginSource(), options.DryRun)
+	paths, _, err := collectorCredentials(options.Home, options.DryRun)
+	if err != nil {
+		return InstallResult{}, err
+	}
+	source := strings.NewReplacer("__QLOG_PROMPT_HASH_KEY_PATH__", strconv.Quote(paths.PromptHashKey), "__QLOG_COLLECTOR_CA_PATH__", strconv.Quote(config.CollectorCertificatePath(paths))).Replace(openCodePluginSource())
+	change, err := applyManagedFile(a.pluginPath(), source, options.DryRun)
 	if err != nil {
 		return InstallResult{}, err
 	}
@@ -34,7 +41,12 @@ func (a openCodeAdapter) Install(_ context.Context, options InstallOptions) (Ins
 }
 
 func (a openCodeAdapter) PlanInstall(_ context.Context, options SetupOptions) (SetupPlan, error) {
-	change, err := applyManagedFile(a.pluginPath(), openCodePluginSource(), true)
+	paths, _, err := collectorCredentials(options.Home, true)
+	if err != nil {
+		return SetupPlan{}, err
+	}
+	source := strings.NewReplacer("__QLOG_PROMPT_HASH_KEY_PATH__", strconv.Quote(paths.PromptHashKey), "__QLOG_COLLECTOR_CA_PATH__", strconv.Quote(config.CollectorCertificatePath(paths))).Replace(openCodePluginSource())
+	change, err := applyManagedFile(a.pluginPath(), source, true)
 	if err != nil {
 		return SetupPlan{}, err
 	}
@@ -49,7 +61,7 @@ func (a openCodeAdapter) Status(ctx context.Context) (SetupStatus, error) {
 	if err != nil {
 		return SetupStatus{}, err
 	}
-	installed := fileContains(a.pluginPath(), "QUANTUM_LOG OpenCode passive capture")
+	installed := fileContains(a.pluginPath(), "QUANTUM_LOG OpenCode passive capture") && fileContains(a.pluginPath(), "X-Qlog-Token") && fileContains(a.pluginPath(), "rejectUnauthorized: true")
 	state := SetupUnavailable
 	if detection.Available {
 		state = SetupAvailable

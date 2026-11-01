@@ -88,9 +88,11 @@ func Ingest(ctx context.Context, service *app.Service, event Event) (int, error)
 	if event.Source == "copilot-cli-hook" {
 		payload = lifecycleOnlyPayload(payload)
 	}
+	rawPrompt := payload
 	if isPromptEvent(event.EventType) {
-		payload = attachPromptCapture(payload, event.Payload, config.PromptCaptureMode(service.Paths), service.Paths)
+		rawPrompt = event.Payload
 	}
+	payload = attachPromptCapture(payload, rawPrompt, config.PromptCaptureMode(service.Paths), service.Paths)
 	line := map[string]any{
 		"source":                        event.Source,
 		"source_version":                event.SourceVersion,
@@ -123,6 +125,22 @@ func isPromptEvent(eventType string) bool {
 	return normalized == "interaction.prompt" || normalized == "user.prompt" || normalized == "userpromptsubmitted" || normalized == "userpromptsubmit" || normalized == "user.message"
 }
 
+// PrepareForwarding minimizes content before crossing the collector boundary.
+// Full text capture remains available only through direct local ingestion.
+func PrepareForwarding(event Event, paths config.Paths) Event {
+	mode := config.PromptCaptureMode(paths)
+	if mode == "full" {
+		mode = "hash"
+	}
+	payload := sanitizePluginPayload(event.Payload)
+	rawPrompt := payload
+	if isPromptEvent(event.EventType) {
+		rawPrompt = event.Payload
+	}
+	event.Payload = attachPromptCapture(payload, rawPrompt, mode, paths)
+	return event
+}
+
 func attachPromptCapture(payload, raw json.RawMessage, mode string, paths config.Paths) json.RawMessage {
 	var source map[string]any
 	var target map[string]any
@@ -130,6 +148,17 @@ func attachPromptCapture(payload, raw json.RawMessage, mode string, paths config
 		return payload
 	}
 	prompt, _ := source["prompt"].(string)
+	if prompt == "" {
+		captureFields := false
+		for _, key := range []string{"prompt_hash", "interaction_hash", "interaction_redacted", "prompt_capture_mode"} {
+			if _, ok := target[key]; ok {
+				captureFields = true
+			}
+		}
+		if !captureFields {
+			return payload
+		}
+	}
 	target["prompt_capture_mode"] = mode
 	existingHash, _ := target["interaction_hash"].(string)
 	if existingHash == "" {

@@ -65,7 +65,7 @@ func Resolve(homeOverride string) (Paths, error) {
 }
 
 func Ensure(paths Paths) error {
-	if err := os.MkdirAll(paths.Home, 0o700); err != nil {
+	if err := EnsurePrivateHome(paths.Home); err != nil {
 		return err
 	}
 	if _, err := os.Stat(paths.ConfigFile); errors.Is(err, os.ErrNotExist) {
@@ -83,9 +83,15 @@ func Ensure(paths Paths) error {
 // PromptHashKey returns the installation-local secret used to prevent prompt
 // fingerprints from being comparable or reversible across ledgers.
 func PromptHashKey(paths Paths) ([]byte, error) {
+	if err := EnsurePrivateDirectory(paths.Home); err != nil {
+		return nil, err
+	}
 	keyPath := paths.PromptHashKey
 	if keyPath == "" {
 		keyPath = filepath.Join(paths.Home, "prompt-hash.key")
+	}
+	if err := CheckPrivateFile(keyPath); err != nil {
+		return nil, err
 	}
 	key, err := os.ReadFile(keyPath)
 	if err == nil && len(key) >= 32 {

@@ -130,7 +130,7 @@ func (darwinCollectorManager) Status(ctx context.Context, listen string) (Collec
 	if status.Installed && exec.CommandContext(ctx, "launchctl", "print", darwinCollectorDomain()+"/"+darwinCollectorLabel).Run() == nil {
 		status.Running = true
 	}
-	health := probeCollectorHealth(ctx, listen)
+	health := probeCollectorHealth(ctx, home, listen)
 	return collectorStatusWithHealth(status, health), nil
 }
 

@@ -111,6 +111,7 @@ func (i *Importer) Import(ctx context.Context, reader io.Reader) (Result, error)
 	buffer := bufio.NewReaderSize(reader, 64*1024)
 	var meta metadata
 	var previous *counters
+	var previousAt time.Time
 	var child bool
 	var childCreated time.Time
 	var childStarted bool
@@ -199,12 +200,14 @@ func (i *Importer) Import(ctx context.Context, reader io.Reader) (Result, error)
 			if child {
 				if childCreated.IsZero() || !occurredAt.After(childCreated) {
 					previous = &current
+					previousAt = occurredAt
 					result.Skipped++ // Forked history belongs to the parent, not the new session ID.
 					break
 				}
 				if !childStarted {
 					if previous != nil && previous.Total != nil && *current.Total == *previous.Total {
 						previous = &current
+						previousAt = occurredAt
 						result.Skipped++ // Re-emitting the inherited total does not prove child usage.
 						break
 					}
@@ -212,14 +215,40 @@ func (i *Importer) Import(ctx context.Context, reader io.Reader) (Result, error)
 					if sameCounters(current, usage.Info.Last) {
 						previous = nil // Native last usage confirms a fresh child counter.
 					} else if previous == nil {
-						previous = &current
-						result.Skipped++ // Ambiguous inherited total: establish a baseline first.
-						break
+						checkpointAt, payload, duplicate, err := service.Store.ModelCallImportCheckpoint(ctx, Source, meta.ID, snapshotIdentity(meta.ID, current, occurredAt))
+						if err != nil {
+							return result, err
+						}
+						if duplicate {
+							previous = &current
+							previousAt = occurredAt
+							result.Duplicates++
+							break
+						}
+						if !checkpointAt.IsZero() && !occurredAt.After(checkpointAt) {
+							return result, errors.New("overlapping or conflicting child snapshot; recorded evidence was retained")
+						}
+						if checkpointAt.IsZero() {
+							previous = &current
+							previousAt = occurredAt
+							result.Skipped++ // No proven child baseline for this fragment.
+							break
+						}
+						var checkpoint struct {
+							Usage counters `json:"total_token_usage"`
+						}
+						if err := json.Unmarshal(payload, &checkpoint); err != nil {
+							return result, err
+						}
+						previous = &checkpoint.Usage
+						previousAt = checkpointAt
 					}
 				}
 			}
 			delta, usable := difference(current, previous)
+			baselineAt := previousAt
 			previous = &current
+			previousAt = occurredAt
 			if !usable {
 				result.Skipped++
 				break
@@ -236,7 +265,7 @@ func (i *Importer) Import(ctx context.Context, reader io.Reader) (Result, error)
 					i.projects[cwd] = project
 				}
 			}
-			if err := persist(ctx, service, meta, current, delta, occurredAt, project, &result); err != nil {
+			if err := persist(ctx, service, meta, current, delta, occurredAt, baselineAt, project, &result); err != nil {
 				return result, fmt.Errorf("codex session line %d: %w", lineNumber, err)
 			}
 		}
@@ -299,7 +328,18 @@ func difference(current counters, previous *counters) (counters, bool) {
 	return delta, present && (previous == nil || changed)
 }
 
-func persist(ctx context.Context, service *app.Service, meta metadata, current, delta counters, at time.Time, project app.ResolvedProject, result *Result) error {
+func snapshotIdentity(sessionID string, current counters, at time.Time) string {
+	// Hash only native identity and cumulative measurements, never file paths or content.
+	identity, _ := json.Marshal(struct {
+		Session string
+		Time    string
+		Usage   counters
+	}{sessionID, at.UTC().Format(time.RFC3339Nano), current})
+	digest := sha256.Sum256(identity)
+	return hex.EncodeToString(digest[:])
+}
+
+func persist(ctx context.Context, service *app.Service, meta metadata, current, delta counters, at, baselineAt time.Time, project app.ResolvedProject, result *Result) error {
 	provider, model := identifier(meta.Provider), identifier(meta.Model)
 	if provider == "" {
 		provider = "unavailable"
@@ -307,13 +347,33 @@ func persist(ctx context.Context, service *app.Service, meta metadata, current, 
 	if model == "" {
 		model = "unavailable"
 	}
-	// Hash only native identity and cumulative measurements, never file paths or content.
-	identity, _ := json.Marshal(struct {
-		Session string
-		Time    string
-		Usage   counters
-	}{meta.ID, at.UTC().Format(time.RFC3339Nano), current})
-	digest := sha256.Sum256(identity)
+	identity := snapshotIdentity(meta.ID, current, at)
+	checkpointAt, checkpointPayload, duplicate, err := service.Store.ModelCallImportCheckpoint(ctx, Source, meta.ID, identity)
+	if err != nil {
+		return err
+	}
+	if duplicate {
+		result.Duplicates++
+		return nil
+	}
+	if !checkpointAt.IsZero() {
+		if !at.After(checkpointAt) {
+			return errors.New("overlapping or conflicting session snapshot; earlier evidence was retained, import a non-overlapping later interval")
+		}
+		if checkpointAt.After(baselineAt) {
+			var checkpoint struct {
+				Usage counters `json:"total_token_usage"`
+			}
+			if err := json.Unmarshal(checkpointPayload, &checkpoint); err != nil {
+				return fmt.Errorf("read stored session checkpoint: %w", err)
+			}
+			var usable bool
+			delta, usable = difference(current, &checkpoint.Usage)
+			if !usable {
+				return errors.New("overlapping or reset session counter without a trustworthy later baseline; recorded evidence was retained")
+			}
+		}
+	}
 	payload, _ := json.Marshal(struct {
 		Agent    string   `json:"agent_name"`
 		Provider string   `json:"provider"`
@@ -323,7 +383,7 @@ func persist(ctx context.Context, service *app.Service, meta metadata, current, 
 	if err := service.Store.EnsureSession(ctx, meta.ID, "codex", at); err != nil {
 		return err
 	}
-	raw, err := service.Store.AppendRawEvent(ctx, storepkg.RawEventInput{Source: Source, SourceVersion: identifier(meta.Version), SessionID: meta.ID, IngestionIdentity: hex.EncodeToString(digest[:]), EventType: "model.call", OccurredAt: at, Payload: payload, ProjectID: project.ProjectID, ProjectLocationID: project.LocationID, ResolutionMethod: string(project.Resolution.Method), ResolutionConfidence: string(project.Resolution.Confidence)})
+	raw, err := service.Store.AppendRawEvent(ctx, storepkg.RawEventInput{Source: Source, SourceVersion: identifier(meta.Version), SessionID: meta.ID, IngestionIdentity: identity, EventType: "model.call", OccurredAt: at, Payload: payload, ProjectID: project.ProjectID, ProjectLocationID: project.LocationID, ResolutionMethod: string(project.Resolution.Method), ResolutionConfidence: string(project.Resolution.Confidence)})
 	if err != nil {
 		return err
 	}

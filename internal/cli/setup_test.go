@@ -410,6 +410,21 @@ func TestBuiltArtifactSetupWritesDurableHookCommand(t *testing.T) {
 	if strings.Contains(contents, "go-build") || strings.Contains(contents, ".test") {
 		t.Fatalf("generated hook references transient Go executable: %s", contents)
 	}
+	directConfigHome := t.TempDir()
+	directHome := t.TempDir()
+	directClaude := exec.Command(artifact, "--home", directHome, "adapter", "install", "claude-code")
+	directClaude.Env = append(os.Environ(), "QLOG_ADAPTER_CONFIG_HOME="+directConfigHome, "QLOG_HOME="+t.TempDir())
+	if output, err := directClaude.CombinedOutput(); err != nil {
+		t.Fatalf("run built artifact direct Claude install: %v\n%s", err, output)
+	}
+	directSettings, err := os.ReadFile(filepath.Join(directConfigHome, ".claude", "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	escapedDirectHome := strings.ReplaceAll(directHome, `\`, `\\`)
+	if !strings.Contains(string(directSettings), escapedArtifact) || !strings.Contains(string(directSettings), escapedDirectHome) {
+		t.Fatalf("direct Claude install lost durable executable or selected home: %s", directSettings)
+	}
 	if runtime.GOOS == "windows" {
 		// The built child cannot inherit this package's in-memory profile seam.
 		// Copilot's Windows install behavior is covered in adapters tests.

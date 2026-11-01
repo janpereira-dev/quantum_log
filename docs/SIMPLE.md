@@ -10,7 +10,8 @@ is no background process to keep running between commands.
 
 Start at the [v0.4.0-rc11 release](https://github.com/janpereira-dev/quantum_log/releases/tag/v0.4.0-rc11).
 When its assets are available after the release checks, choose your
-`qlog-simple_0.4.0-rc11_OS_ARCH` archive and verify it against `checksums.txt`.
+`qlog-simple_0.4.0-rc11_OS_ARCH` archive. Authenticate `checksums.txt` using its
+Sigstore bundle, then verify the archive hash as described below.
 Extract it and follow the included [bilingual portable README](../packaging/simple/README.md)
 for the demo and your first import. No Go installation is needed.
 
@@ -61,8 +62,22 @@ default ledger.
 
 When a release includes `qlog-simple_VERSION_OS_ARCH` assets, download the
 archive for your operating system and architecture together with that
-release's `checksums.txt`. Compare the archive's SHA-256 with its exact entry
-before extracting it. On Windows, `Get-FileHash ARCHIVE.zip -Algorithm SHA256`
+release's `checksums.txt` and `checksums.txt.sigstore.json`. Install
+[Cosign](https://docs.sigstore.dev/cosign/system_config/installation/) from its
+official distribution and authenticate the manifest before extracting or running
+anything. For the exact release tag, for example:
+
+```sh
+cosign verify-blob --bundle checksums.txt.sigstore.json --certificate-oidc-issuer https://token.actions.githubusercontent.com --certificate-identity https://github.com/janpereira-dev/quantum_log/.github/workflows/release.yml@refs/tags/v0.4.0-rc11 checksums.txt
+```
+
+The command works in PowerShell too. Stop on a missing or invalid signature;
+a matching checksum alone cannot authenticate the publisher. With a source
+checkout, the existing authenticity verifier supports `--include-simple`
+(PowerShell: `-IncludeSimple`) to check the full release.
+
+Then compare the archive's SHA-256 with its exact authenticated entry.
+On Windows, `Get-FileHash ARCHIVE.zip -Algorithm SHA256`
 prints the value; Linux uses `sha256sum ARCHIVE.tar.gz`, and macOS uses
 `shasum -a 256 ARCHIVE.tar.gz`.
 
@@ -103,7 +118,10 @@ An import is a snapshot. Run it again after using Codex to include newer
 evidence. Reimporting the same evidence is idempotent. A recent modification
 time can include older events within the selected file; it is not the event
 date filter used by `report --today`. `import --json` provides a machine-readable
-import result.
+import result. An unseen older or conflicting snapshot for an already imported
+session is rejected as an overlap, retaining the recorded evidence and totals.
+A later partial file uses the persisted counter as its baseline. Imports can
+commit earlier valid samples before a later error; replay remains idempotent.
 
 ## Read and export
 
@@ -119,6 +137,8 @@ Use the project identifier printed by the report. Without a filter, reporting
 and exporting cover all imported evidence grouped by project, agent, and model.
 `--today` uses the current local calendar day. CSV exports go to standard
 output and contain aggregate summaries, not raw content or source paths.
+Potential spreadsheet formulas in text fields are prefixed with an apostrophe
+in CSV only; stored identifiers and JSON values remain unchanged.
 
 Tokens are based on agent-reported cumulative usage snapshots. They are not a
 measurement of subscription charges or a guarantee that every model call is
@@ -160,6 +180,13 @@ The importer whitelists metadata and usage counters. It does not retain
 prompts, responses, tool arguments, tool results, or source file content. Local
 metadata still identifies sessions and projects; protect the data directory
 as you would other local work records. Exports omit source paths.
+
+New data directories receive private permissions. An existing directory or file
+with unsafe permissions is refused before sensitive writes; its permissions and
+data are not changed automatically. On Windows this checks actual ACLs.
+If an older unescaped SQLite URI placed a database beside a home containing
+`#` or percent escapes, commands stop with recovery guidance rather than moving,
+merging or replacing the old database. Retain a backup and recover explicitly.
 
 The existing append-only storage, duplicate prevention, privacy handling, and
 hash chain are reused. The historical schema and migrations remain in source;
