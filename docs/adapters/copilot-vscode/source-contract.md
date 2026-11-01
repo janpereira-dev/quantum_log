@@ -25,8 +25,9 @@ same real application completed its synthetic turn.
 No real account, provider credentials, user workspace, or existing editor profile
 was used. This proves native application transport and reported synthetic usage;
 it does not prove authenticated provider execution, project attribution, or the
-full stable-capture gate. The earlier 2026-09-03 spike with VS Code 1.136.0 and no
-installed extension remains historical evidence. CLI evidence is a different
+full stable-capture gate. The earlier 2026-09-03 spike with VS Code 1.136.0 remains
+historical evidence: no Copilot extension was installed and no authenticated
+real-device editor turn was available at that time. CLI evidence is a different
 product boundary and must not be inherited.
 
 Official documentation lists OTLP and file exporter settings. They are capability

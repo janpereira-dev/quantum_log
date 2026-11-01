@@ -8,7 +8,8 @@ OpenTelemetry monitoring section.
 
 ## Current status
 
-Copilot CLI remains unsupported for stable capture. On 2026-11-01, the official
+Copilot CLI remains unsupported for stable capture. The implemented transport
+remains OTLP HTTP over verified HTTPS. On 2026-11-01, the official
 portable [CLI 1.0.105](https://github.com/github/copilot-cli/releases/tag/v1.0.105)
 on Windows completed an isolated, offline synthetic task using the documented
 [local provider and offline mode](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-llm-models).
