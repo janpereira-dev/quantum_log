@@ -31,6 +31,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+      - name: Use private permissions for POSIX test fixtures
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          printf 'umask 077\n' > "$RUNNER_TEMP/qlog-test-env"
+          echo "BASH_ENV=$RUNNER_TEMP/qlog-test-env" >> "$GITHUB_ENV"
       - uses: actions/setup-go@v7
         with:
           go-version: '1.26.10'

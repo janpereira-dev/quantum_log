@@ -39,6 +39,11 @@ Schema changes require a numbered migration and storage tests. Keep the
 
 Required local checks:
 
+On POSIX, run these in a shell with `umask 077` so `t.TempDir()` creates private
+fixture homes. The permission boundary also applies to test data; do not relax
+it or change permissions on existing user ledgers to make tests pass. CI uses
+this mask only inside its test job, and release validation does the same.
+
 ```bash
 go test -count=1 ./...
 go test -race ./...

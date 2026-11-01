@@ -50,6 +50,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          umask 077
           test -z "$(gofmt -l .)"
           go mod tidy
           git diff --exit-code -- go.mod go.sum
