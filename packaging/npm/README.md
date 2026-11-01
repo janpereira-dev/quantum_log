@@ -35,3 +35,9 @@ same behavior for direct script invocation.
 `QLOG_INSTALL_LOCAL_ARTIFACT_DIR` and `npm run test:artifact` remain only for
 maintaining this historical fixture against its pinned candidate. They do not
 validate RC10 and must not be presented as a supported user installation path.
+
+The maintained installer now requires an installed Cosign and the exact release's
+`checksums.txt.sigstore.json`, including local fixture installations. It verifies
+the GitHub Actions issuer and the exact tagged release-workflow identity before
+extracting or writing a binary. Unsigned historical candidates fail closed;
+unit fixtures test the verifier gate without claiming cryptographic acceptance.

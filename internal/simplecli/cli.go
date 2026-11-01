@@ -20,6 +20,7 @@ import (
 
 	"github.com/janpereira-dev/quantum_log/internal/app"
 	"github.com/janpereira-dev/quantum_log/internal/config"
+	"github.com/janpereira-dev/quantum_log/internal/csvsafe"
 	"github.com/janpereira-dev/quantum_log/internal/ingest/codexsession"
 	"github.com/janpereira-dev/quantum_log/internal/storage/sqlite"
 )
@@ -339,6 +340,9 @@ func report(ctx context.Context, home, command string, args []string, out, errOu
 	if err != nil {
 		return err
 	}
+	if err := sqlite.CheckDatabaseLocation(paths.Database); err != nil {
+		return err
+	}
 	if _, err := os.Stat(paths.Database); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	} else if err == nil {
@@ -371,7 +375,7 @@ func report(ctx context.Context, home, command string, args []string, out, errOu
 			return err
 		}
 		for _, row := range summary.Rows {
-			if err := writer.Write([]string{row.Project, row.Agent, row.Provider, row.Model, strconv.FormatInt(row.Tokens, 10), row.Quality, summary.CostQuality}); err != nil {
+			if err := writer.Write([]string{csvsafe.Text(row.Project), csvsafe.Text(row.Agent), csvsafe.Text(row.Provider), csvsafe.Text(row.Model), strconv.FormatInt(row.Tokens, 10), csvsafe.Text(row.Quality), summary.CostQuality}); err != nil {
 				return err
 			}
 		}

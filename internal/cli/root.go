@@ -15,6 +15,7 @@ import (
 
 	"github.com/janpereira-dev/quantum_log/internal/app"
 	"github.com/janpereira-dev/quantum_log/internal/config"
+	"github.com/janpereira-dev/quantum_log/internal/csvsafe"
 	"github.com/janpereira-dev/quantum_log/internal/ingest/jsonl"
 	"github.com/janpereira-dev/quantum_log/internal/pricing"
 	"github.com/janpereira-dev/quantum_log/internal/storage/sqlite"
@@ -689,7 +690,7 @@ func writeCapabilityCSV(writer io.Writer, report sqlite.CapabilityReport) error 
 			provenance = []sqlite.MetricProvenance{{Source: "—", RawKey: "—", Confidence: "—"}}
 		}
 		for _, item := range provenance {
-			if err := csvWriter.Write([]string{strconv.FormatInt(report.Interactions, 10), strconv.FormatInt(report.Prompts, 10), metric.Name, metric.State, displayMetric(metric), strconv.FormatInt(metric.ReportedCount, 10), strconv.FormatInt(metric.MissingCount, 10), strconv.FormatInt(metric.ReportedZeroCount, 10), item.Source, item.RawKey, item.Confidence, strconv.FormatInt(item.Count, 10)}); err != nil {
+			if err := csvWriter.Write([]string{strconv.FormatInt(report.Interactions, 10), strconv.FormatInt(report.Prompts, 10), csvsafe.Text(metric.Name), csvsafe.Text(metric.State), displayMetric(metric), strconv.FormatInt(metric.ReportedCount, 10), strconv.FormatInt(metric.MissingCount, 10), strconv.FormatInt(metric.ReportedZeroCount, 10), csvsafe.Text(item.Source), csvsafe.Text(item.RawKey), csvsafe.Text(item.Confidence), strconv.FormatInt(item.Count, 10)}); err != nil {
 				return err
 			}
 		}
@@ -1169,7 +1170,7 @@ func writeCSV(writer io.Writer, records []sqlite.ExportRecord) error {
 			allocations = []sqlite.Allocation{{}}
 		}
 		for _, allocation := range allocations {
-			if err := csvWriter.Write([]string{record.ID, record.OccurredAt.Format(time.RFC3339Nano), record.ProjectSlug, record.ProjectLocationPath, record.Provider, record.Model, record.Agent, strconv.FormatInt(record.InputTokens, 10), strconv.FormatInt(record.OutputTokens, 10), strconv.FormatInt(record.ReasoningTokens, 10), strconv.FormatInt(record.CachedInputTokens, 10), strconv.FormatInt(record.CacheWriteTokens, 10), strconv.FormatInt(record.TotalTokens, 10), strconv.FormatInt(record.EstimatedCostUSDMicros, 10), record.CaptureQuality, allocation.ProjectSlug, strconv.FormatInt(allocation.BasisPoints, 10), allocation.Method}); err != nil {
+			if err := csvWriter.Write([]string{csvsafe.Text(record.ID), record.OccurredAt.Format(time.RFC3339Nano), csvsafe.Text(record.ProjectSlug), csvsafe.Text(record.ProjectLocationPath), csvsafe.Text(record.Provider), csvsafe.Text(record.Model), csvsafe.Text(record.Agent), strconv.FormatInt(record.InputTokens, 10), strconv.FormatInt(record.OutputTokens, 10), strconv.FormatInt(record.ReasoningTokens, 10), strconv.FormatInt(record.CachedInputTokens, 10), strconv.FormatInt(record.CacheWriteTokens, 10), strconv.FormatInt(record.TotalTokens, 10), strconv.FormatInt(record.EstimatedCostUSDMicros, 10), csvsafe.Text(record.CaptureQuality), csvsafe.Text(allocation.ProjectSlug), strconv.FormatInt(allocation.BasisPoints, 10), csvsafe.Text(allocation.Method)}); err != nil {
 				return err
 			}
 		}

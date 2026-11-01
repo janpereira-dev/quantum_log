@@ -161,12 +161,12 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 	if err != nil {
 		return BootstrapResult{}, err
 	}
-	plans, err := planSetupAdapters(ctx, paths.Home, items, yes, dryRun)
-	if err != nil {
-		return BootstrapResult{}, err
-	}
-	result = BootstrapResult{Consent: yes, PlanOnly: !yes || dryRun, Adapters: plans}
+	result = BootstrapResult{Consent: yes, PlanOnly: !yes || dryRun}
 	if !yes || dryRun {
+		result.Adapters, err = planSetupAdapters(ctx, paths.Home, items, yes, dryRun)
+		if err != nil {
+			return BootstrapResult{}, err
+		}
 		if dryRun {
 			result.Collector.Actions = []string{"dry run: collector install and start skipped"}
 		}
@@ -187,6 +187,10 @@ func bootstrapSupportedAdapters(ctx context.Context, home, executable string, ye
 		return BootstrapResult{}, err
 	}
 	if err := rejectForegroundCollectorReplacement(ctx, manager, defaultCollectorListen); err != nil {
+		return BootstrapResult{}, err
+	}
+	result.Adapters, err = planSetupAdapters(ctx, paths.Home, items, yes, dryRun)
+	if err != nil {
 		return BootstrapResult{}, err
 	}
 	collectorStopped, err := stopCollectorForLedgerInitialization(ctx, manager, activeCollectorListen)

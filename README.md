@@ -13,7 +13,8 @@ you invoke it and exits when the command finishes.
 Open the [v0.4.0-rc11 release](https://github.com/janpereira-dev/quantum_log/releases/tag/v0.4.0-rc11).
 Once its release checks complete and assets are available, choose the
 `qlog-simple_0.4.0-rc11_OS_ARCH` archive for your operating system and
-architecture, and verify its SHA-256 against that release's `checksums.txt`.
+architecture. Authenticate that release's `checksums.txt` using its Sigstore
+bundle, then verify the archive's SHA-256; follow the [download verification](docs/SIMPLE.md#portable-downloads).
 Extract it into a new folder and open a terminal there. The included
 [bilingual README](packaging/simple/README.md) walks through the portable version.
 

@@ -144,6 +144,20 @@ func TestAmbiguousChildHistoryIsNotInvented(t *testing.T) {
 	}
 }
 
+func TestChildSuffixUsesRecordedChildBaseline(t *testing.T) {
+	for _, inheritedPrefix := range []string{"", sample(4, `{"total_tokens":100}`)} {
+		t.Run(fmt.Sprintf("inherited_prefix=%t", inheritedPrefix != ""), func(t *testing.T) {
+			service, _ := fixture(t)
+			child := childHeader(`"parent_thread_id":"parent"`, "2026-10-13T09:00:05Z")
+			importLog(t, service, child+sample(4, `{"total_tokens":100}`)+childSample(6, 130, 30))
+			result := importLog(t, service, child+inheritedPrefix+childSample(7, 160, 30))
+			if result.Samples != 1 || usage(t, service).TotalTokens != 60 {
+				t.Fatalf("recorded child baseline was lost: %+v total=%d", result, usage(t, service).TotalTokens)
+			}
+		})
+	}
+}
+
 func TestReplayCopyAndGrowingLog(t *testing.T) {
 	service, _ := fixture(t)
 	first := header + sample(1, `{"input_tokens":100,"cached_input_tokens":40,"output_tokens":20,"reasoning_output_tokens":5,"total_tokens":120}`)
@@ -164,6 +178,46 @@ func TestReplayCopyAndGrowingLog(t *testing.T) {
 	}
 	if err := service.Store.VerifyLedger(context.Background(), "session-1"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestOverlappingPartialLogsFailWithoutChangingRecordedUsage(t *testing.T) {
+	service, path := fixture(t)
+	importLog(t, service, header+sample(2, `{"total_tokens":200}`))
+	_, err := Import(context.Background(), service, strings.NewReader(header+sample(1, `{"total_tokens":100}`)+sample(2, `{"total_tokens":200}`)))
+	if err == nil || !strings.Contains(err.Error(), "overlap") {
+		t.Fatalf("ambiguous earlier snapshot must fail explicitly: %v", err)
+	}
+	if got := usage(t, service).TotalTokens; got != 200 {
+		t.Fatalf("overlap changed stored usage: %d", got)
+	}
+	database, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = database.Close() }()
+	var count int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM raw_events`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("overlap changed raw evidence: count=%d err=%v", count, err)
+	}
+	importLog(t, service, header+sample(3, `{"total_tokens":250}`))
+	if got := usage(t, service).TotalTokens; got != 250 {
+		t.Fatalf("later suffix must use the persisted baseline: %d", got)
+	}
+	if err := service.Store.VerifyLedger(context.Background(), "session-1"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFullLogThenSuffixAndConflictingTimestamp(t *testing.T) {
+	service, _ := fixture(t)
+	importLog(t, service, header+sample(1, `{"total_tokens":100}`)+sample(2, `{"total_tokens":200}`))
+	if replay := importLog(t, service, header+sample(2, `{"total_tokens":200}`)); replay.Duplicates != 1 {
+		t.Fatalf("known suffix must remain idempotent: %+v", replay)
+	}
+	_, err := Import(context.Background(), service, strings.NewReader(header+sample(2, `{"total_tokens":300}`)))
+	if err == nil || !strings.Contains(err.Error(), "overlap") || usage(t, service).TotalTokens != 200 {
+		t.Fatalf("conflicting timestamp changed consumption: %v", err)
 	}
 }
 
@@ -409,7 +463,8 @@ func BenchmarkImport100Samples(b *testing.B) {
 	var input strings.Builder
 	input.WriteString(header)
 	for index := 1; index <= 100; index++ {
-		input.WriteString(sample(index/2, fmt.Sprintf(`{"input_tokens":%d,"cached_input_tokens":%d,"output_tokens":%d,"reasoning_output_tokens":%d,"total_tokens":%d}`, index*100, index*20, index*50, index*10, index*150)))
+		event := sample(index/2, fmt.Sprintf(`{"input_tokens":%d,"cached_input_tokens":%d,"output_tokens":%d,"reasoning_output_tokens":%d,"total_tokens":%d}`, index*100, index*20, index*50, index*10, index*150))
+		input.WriteString(strings.Replace(event, fmt.Sprintf("09:00:%02dZ", index/2), fmt.Sprintf("09:00:%02d.%03dZ", index/2, index%2*500), 1))
 	}
 	log := input.String()
 	for _, mode := range []string{"Append", "Replay"} {

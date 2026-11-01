@@ -54,6 +54,14 @@ func newCollectorCommand(home *string) *cobra.Command {
 		if err := service.Close(); err != nil {
 			return err
 		}
+		paths, err := config.Resolve(*home)
+		if err != nil {
+			return err
+		}
+		identity, err := config.CollectorServerTLS(paths, listen)
+		if err != nil {
+			return err
+		}
 		output, closeLog, err := collectorServeOutput(command, logFile)
 		if err != nil {
 			return err
@@ -62,12 +70,12 @@ func newCollectorCommand(home *string) *cobra.Command {
 		if err := recordCollectorFallbackProcess(fallbackState, *home, listen, logFile); err != nil {
 			return err
 		}
-		server := &http.Server{Addr: listen, Handler: newCollectorMux(*home), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: time.Minute}
-		_, err = fmt.Fprintf(output, "qlog collector listening on http://%s (/v1/traces and /v1/logs OTLP JSON/protobuf, /v1/events qlog JSON)\n", listen)
+		server := &http.Server{Addr: listen, TLSConfig: identity, Handler: newCollectorMux(*home, listen), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: time.Minute}
+		_, err = fmt.Fprintf(output, "qlog collector listening on https://%s (/v1/traces and /v1/logs OTLP JSON/protobuf, /v1/events qlog JSON)\n", listen)
 		if err != nil {
 			return err
 		}
-		err = server.ListenAndServe()
+		err = server.ListenAndServeTLS("", "")
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			_, _ = fmt.Fprintf(output, "collector server stopped: %v\n", err)
 			return err
@@ -122,11 +130,15 @@ func collectorStatus(ctx context.Context, home, listen string, homeExplicit, lis
 	return output, nil
 }
 
-func newCollectorMux(home string) *http.ServeMux {
+func newCollectorMux(home string, listen ...string) *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.Handle("/v1/traces", requestScopedHandler{home: home, build: otlp.NewHandler})
-	mux.Handle("/v1/logs", requestScopedHandler{home: home, build: otlp.NewHandler})
-	mux.Handle("/v1/events", requestScopedHandler{home: home, build: qlogevent.NewHandler})
+	address := "127.0.0.1:4318"
+	if len(listen) > 0 {
+		address = listen[0]
+	}
+	mux.Handle("/v1/traces", authenticatedCollector(home, address, requestScopedHandler{home: home, build: otlp.NewHandler}))
+	mux.Handle("/v1/logs", authenticatedCollector(home, address, requestScopedHandler{home: home, build: otlp.NewHandler}))
+	mux.Handle("/v1/events", authenticatedCollector(home, address, requestScopedHandler{home: home, build: qlogevent.NewHandler}))
 	mux.HandleFunc("/healthz", func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodGet && request.Method != http.MethodHead {
 			writer.Header().Set("Allow", "GET, HEAD")
@@ -168,14 +180,19 @@ type CollectorStatus struct {
 	ManagedHealth bool     `json:"-"`
 }
 
-func probeCollectorHealth(ctx context.Context, listen string) collectorHealth {
+func probeCollectorHealth(ctx context.Context, home, listen string) collectorHealth {
 	probeCtx, cancel := context.WithTimeout(ctx, 750*time.Millisecond)
 	defer cancel()
-	request, err := http.NewRequestWithContext(probeCtx, http.MethodGet, "http://"+listen+"/healthz", nil)
+	request, err := http.NewRequestWithContext(probeCtx, http.MethodGet, "https://"+listen+"/healthz", nil)
 	if err != nil {
 		return collectorHealth{Health: err.Error()}
 	}
-	response, err := http.DefaultClient.Do(request)
+	client, err := collectorHTTPSClient(home, 750*time.Millisecond)
+	if err != nil {
+		return collectorHealth{Health: err.Error()}
+	}
+	defer client.CloseIdleConnections()
+	response, err := client.Do(request)
 	if err != nil {
 		return collectorHealth{Health: err.Error()}
 	}

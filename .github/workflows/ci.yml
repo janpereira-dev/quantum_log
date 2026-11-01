@@ -31,6 +31,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+      - name: Use private permissions for POSIX test fixtures
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          printf 'umask 077\n' > "$RUNNER_TEMP/qlog-test-env"
+          echo "BASH_ENV=$RUNNER_TEMP/qlog-test-env" >> "$GITHUB_ENV"
       - uses: actions/setup-go@v7
         with:
           go-version: '1.26.10'
@@ -61,7 +67,7 @@ jobs:
           tar -czf "$stage/simple.tar.gz" -C "$stage" "qlog-simple$suffix" fixtures
           node scripts/acceptance/verify-simple-artifact.js "$stage/simple.tar.gz"
       - name: Test legacy npm packaging fixture without downloads
-        run: node --test packaging/npm/tests/install.test.js
+        run: node --test packaging/npm/tests/*.test.js
       - run: node packaging/npm/scripts/postinstall.js --dry-run
       - run: sh -n installers/install.sh installers/uninstall.sh
         shell: bash

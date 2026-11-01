@@ -1,11 +1,28 @@
 // QUANTUM_LOG OpenCode passive capture
 // Managed by qlog. Responses, tool inputs, and tool outputs never leave OpenCode.
 
-const endpoint = process.env.QLOG_COLLECTOR_URL || "http://127.0.0.1:4318/v1/events"
+import { readFile } from "node:fs/promises"
+import { createHmac } from "node:crypto"
+import { request } from "node:https"
+
+const endpoint = "https://127.0.0.1:4318/v1/events"
+const keyPath = __QLOG_PROMPT_HASH_KEY_PATH__
+const caPath = __QLOG_COLLECTOR_CA_PATH__
 
 async function post(event: unknown) {
   try {
-    await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(event) })
+    const [key, ca] = await Promise.all([readFile(keyPath), readFile(caPath)])
+    if (key.length < 32) return
+    const token = createHmac("sha256", key).update("qlog-collector-auth-v2").digest("hex")
+    await new Promise<void>((resolve, reject) => {
+      const outgoing = request(endpoint, { method: "POST", ca, rejectUnauthorized: true, headers: { "content-type": "application/json", "X-Qlog-Token": token } }, response => {
+        response.resume()
+        response.on("end", resolve)
+      })
+      outgoing.on("error", reject)
+      outgoing.setTimeout(5000, () => outgoing.destroy(new Error("collector timeout")))
+      outgoing.end(JSON.stringify(event))
+    })
   } catch {
     // Capture must not affect OpenCode execution.
   }

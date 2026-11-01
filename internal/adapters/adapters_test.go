@@ -16,10 +16,24 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/janpereira-dev/quantum_log/internal/config"
 	"github.com/pelletier/go-toml/v2"
 )
 
 func TestMain(m *testing.M) {
+	temporaryHome, err := os.MkdirTemp("", "qlog-adapter-home-")
+	if err != nil {
+		panic(err)
+	}
+	privateRoot := filepath.Join(temporaryHome, "private")
+	if err := config.EnsurePrivateDirectory(privateRoot); err != nil {
+		panic(err)
+	}
+	_ = os.Setenv("TEMP", privateRoot)
+	_ = os.Setenv("TMP", privateRoot)
+	_ = os.Setenv("TMPDIR", privateRoot)
+	_ = os.Setenv("QLOG_HOME", filepath.Join(privateRoot, "qlog"))
+
 	originalEnvironment := copilotCLIUserEnvironment
 	originalEnvironmentChanged := copilotCLIUserEnvironmentChanged
 	originalProfileDiscovery := copilotCLIPowerShellProfileDiscovery
@@ -37,6 +51,7 @@ func TestMain(m *testing.M) {
 		}
 	}
 	exitCode := m.Run()
+	_ = os.RemoveAll(temporaryHome)
 	if temporaryProfileDirectory != "" {
 		_ = os.RemoveAll(temporaryProfileDirectory)
 	}
@@ -76,8 +91,8 @@ func TestDefaultRegistryDeclaresOnlyVerifiedCapabilities(t *testing.T) {
 		t.Fatalf("codex must declare documented OTLP response.completed capabilities")
 	}
 	claude, found := registry.Get("claude-code")
-	if !found || !claude.Descriptor().Capabilities.SessionLifecycle || !claude.Descriptor().Capabilities.StructuredEvents || !claude.Descriptor().Capabilities.InputTokens || !claude.Descriptor().Capabilities.OutputTokens {
-		t.Fatalf("claude-code must declare documented OTel token and lifecycle capabilities")
+	if !found || !claude.Descriptor().Capabilities.SessionLifecycle || !claude.Descriptor().Capabilities.StructuredEvents || claude.Descriptor().Capabilities.InputTokens || claude.Descriptor().Capabilities.OutputTokens {
+		t.Fatalf("claude-code must declare lifecycle-only capabilities while native TLS is unsupported")
 	}
 	for _, id := range []string{"pi", "openclaw", "hermes"} {
 		adapter, found := registry.Get(id)
@@ -161,7 +176,7 @@ func TestCopilotCLIPowerShellProfileDoesNotSpawnCMD(t *testing.T) {
 func TestCopilotCLIOTELLauncherUsesOfficialEnvironmentWithoutGlobalMutation(t *testing.T) {
 	config := copilotCLIPosixBlock()
 	for _, want := range []string{
-		"COPILOT_OTEL_ENABLED=true", "COPILOT_OTEL_EXPORTER_TYPE=otlp-http", "OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318", "OTEL_EXPORTER_OTLP_PROTOCOL=http/json", "OTEL_METRICS_EXPORTER=none", "OTEL_LOGS_EXPORTER=none", "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false", "command copilot",
+		"COPILOT_OTEL_ENABLED=true", "COPILOT_OTEL_EXPORTER_TYPE=otlp-http", "OTEL_EXPORTER_OTLP_ENDPOINT=https://127.0.0.1:4318", "OTEL_EXPORTER_OTLP_PROTOCOL=http/json", "OTEL_METRICS_EXPORTER=none", "OTEL_LOGS_EXPORTER=none", "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false", "command copilot",
 	} {
 		if !strings.Contains(config, want) {
 			t.Fatalf("Copilot CLI OTel config missing %q:\n%s", want, config)
@@ -685,7 +700,7 @@ func TestCopilotVSCodeInstallConfiguresNativeOTelWithoutContentCapture(t *testin
 	}
 	assertSetting(t, settings, "github.copilot.chat.otel.enabled", true)
 	assertSetting(t, settings, "github.copilot.chat.otel.exporterType", "otlp-http")
-	assertSetting(t, settings, "github.copilot.chat.otel.otlpEndpoint", "http://127.0.0.1:4318")
+	assertSetting(t, settings, "github.copilot.chat.otel.otlpEndpoint", "https://127.0.0.1:4318")
 	assertSetting(t, settings, "github.copilot.chat.otel.captureContent", false)
 
 	status, err := adapter.Status(context.Background())
@@ -707,7 +722,7 @@ func TestVSCodeCopilotEqualInstallIsByteIdenticalAndReportsExactDrift(t *testing
 	settingsPath := filepath.Join(configHome, "Code", "User", "settings.json")
 	first := mustReadFile(t, settingsPath)
 	second, err := adapter.Install(context.Background(), InstallOptions{})
-	if err != nil || second.Changed || len(second.Changes) != 1 || second.Changes[0].Action != "unchanged" {
+	if err != nil || second.Changed || len(second.Changes) != 2 || second.Changes[0].Action != "unchanged" {
 		t.Fatalf("equal install = %#v, %v", second, err)
 	}
 	if after := mustReadFile(t, settingsPath); string(after) != string(first) {
@@ -718,7 +733,7 @@ func TestVSCodeCopilotEqualInstallIsByteIdenticalAndReportsExactDrift(t *testing
 	settings["github.copilot.chat.otel.captureContent"] = true
 	writeSettingsMap(t, settingsPath, settings)
 	drifted, err := adapter.Install(context.Background(), InstallOptions{})
-	if err != nil || !drifted.Changed || len(drifted.Changes) != 1 {
+	if err != nil || !drifted.Changed || len(drifted.Changes) != 2 {
 		t.Fatalf("drifted install = %#v, %v", drifted, err)
 	}
 	if got := drifted.Changes[0].Description; got != "qlog managed settings drifted: github.copilot.chat.otel.captureContent" {
@@ -825,7 +840,11 @@ func TestVSCodeCopilotUninstallRemovesOnlyManagedSettings(t *testing.T) {
 func TestCodexInstallReplacesEquivalentExporterForms(t *testing.T) {
 	const prefix = "model = \"gpt-5\"\n\n"
 	const suffix = "[features]\nexperimental = true\n"
-	desiredExporter := `exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/logs", protocol = "binary" } }`
+	paths, token, err := collectorCredentials("", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	desiredExporter := "exporter = " + codexOTelSettings(token, config.CollectorCertificatePath(paths))["exporter"]
 	tests := []struct {
 		name          string
 		otel          string
@@ -875,7 +894,7 @@ func TestCodexInstallReplacesEquivalentExporterForms(t *testing.T) {
 				t.Fatalf("exporter = %#v", otel["exporter"])
 			}
 			otlpHTTP, ok := exporter["otlp-http"].(map[string]any)
-			if !ok || otlpHTTP["endpoint"] != "http://127.0.0.1:4318/v1/logs" || otlpHTTP["protocol"] != "binary" {
+			if !ok || otlpHTTP["endpoint"] != "https://127.0.0.1:4318/v1/logs" || otlpHTTP["protocol"] != "binary" {
 				t.Fatalf("otlp-http = %#v", exporter["otlp-http"])
 			}
 
@@ -1043,7 +1062,7 @@ func TestClaudeCodeInstallUsesShellSafeExecutablePath(t *testing.T) {
 	}
 }
 
-func TestClaudeCodeInstallConfiguresTraceOnlyOTelWithoutContentCapture(t *testing.T) {
+func TestClaudeCodeInstallDisablesUnsupportedNativeOTelWithoutContentCapture(t *testing.T) {
 	configHome := t.TempDir()
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", configHome)
 	if _, err := newClaudeCodeAdapter().Install(context.Background(), InstallOptions{}); err != nil {
@@ -1055,12 +1074,11 @@ func TestClaudeCodeInstallConfiguresTraceOnlyOTelWithoutContentCapture(t *testin
 		t.Fatalf("settings env = %#v", settings["env"])
 	}
 	for key, want := range map[string]string{
-		"CLAUDE_CODE_ENABLE_TELEMETRY":                       "1",
-		"CLAUDE_CODE_ENHANCED_TELEMETRY_BETA":                "1",
-		"OTEL_TRACES_EXPORTER":                               "otlp",
+		"CLAUDE_CODE_ENABLE_TELEMETRY":                       "0",
+		"CLAUDE_CODE_ENHANCED_TELEMETRY_BETA":                "0",
+		"OTEL_TRACES_EXPORTER":                               "none",
 		"OTEL_METRICS_EXPORTER":                              "none",
 		"OTEL_LOGS_EXPORTER":                                 "none",
-		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT":                 "http://127.0.0.1:4318/v1/traces",
 		"OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "false",
 	} {
 		if env[key] != want {

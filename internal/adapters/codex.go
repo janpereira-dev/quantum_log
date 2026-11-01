@@ -7,9 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/janpereira-dev/quantum_log/internal/config"
 	"github.com/pelletier/go-toml/v2"
 )
 
@@ -21,11 +23,12 @@ type codexManagedValue struct {
 }
 
 type codexManagedState struct {
-	OriginalExporter  codexManagedValue `json:"original_exporter"`
-	OriginalLogPrompt codexManagedValue `json:"original_log_user_prompt"`
-	ManagedExporter   bool              `json:"managed_exporter"`
-	ManagedLogPrompt  bool              `json:"managed_log_user_prompt"`
-	CreatedOTel       bool              `json:"created_otel"`
+	OriginalExporter     codexManagedValue `json:"original_exporter"`
+	OriginalLogPrompt    codexManagedValue `json:"original_log_user_prompt"`
+	ManagedExporterValue string            `json:"managed_exporter_value,omitempty"`
+	ManagedExporter      bool              `json:"managed_exporter"`
+	ManagedLogPrompt     bool              `json:"managed_log_user_prompt"`
+	CreatedOTel          bool              `json:"created_otel"`
 }
 
 func newCodexAdapter() codexAdapter {
@@ -50,7 +53,11 @@ func (a codexAdapter) Descriptor() Descriptor {
 }
 
 func (a codexAdapter) Install(_ context.Context, options InstallOptions) (InstallResult, error) {
-	change, err := applyCodexOTelConfig(a.configPath(), a.statePath(), options.DryRun)
+	paths, token, err := collectorCredentials(options.Home, options.DryRun)
+	if err != nil {
+		return InstallResult{}, err
+	}
+	change, err := applyCodexOTelConfig(a.configPath(), a.statePath(), options.DryRun, token, config.CollectorCertificatePath(paths))
 	if err != nil {
 		return InstallResult{}, err
 	}
@@ -66,7 +73,11 @@ func (a codexAdapter) Uninstall(_ context.Context, options InstallOptions) (Inst
 }
 
 func (a codexAdapter) PlanInstall(_ context.Context, options SetupOptions) (SetupPlan, error) {
-	change, err := applyCodexOTelConfig(a.configPath(), a.statePath(), true)
+	paths, token, err := collectorCredentials(options.Home, true)
+	if err != nil {
+		return SetupPlan{}, err
+	}
+	change, err := applyCodexOTelConfig(a.configPath(), a.statePath(), true, token, config.CollectorCertificatePath(paths))
 	if err != nil {
 		return SetupPlan{}, err
 	}
@@ -105,20 +116,28 @@ func (a codexAdapter) statePath() string {
 	return filepath.Join(filepath.Dir(a.configPath()), "qlog-otel-state.json")
 }
 
-func codexOTelSettings() map[string]string {
+func codexOTelSettings(tokens ...string) map[string]string {
+	exporter := `{ otlp-http = { endpoint = "http://127.0.0.1:4318/v1/logs", protocol = "binary" } }`
+	if len(tokens) > 0 {
+		exporter = `{ otlp-http = { endpoint = "https://127.0.0.1:4318/v1/logs", protocol = "binary", headers = { "X-Qlog-Token" = "` + tokens[0] + `" }`
+		if len(tokens) > 1 {
+			exporter += `, tls = { ca-certificate = ` + strconv.Quote(tokens[1]) + ` }`
+		}
+		exporter += ` } }`
+	}
 	return map[string]string{
-		"exporter":        `{ otlp-http = { endpoint = "http://127.0.0.1:4318/v1/logs", protocol = "binary" } }`,
+		"exporter":        exporter,
 		"log_user_prompt": "false",
 	}
 }
 
-func applyCodexOTelConfig(configPath, statePath string, dryRun bool) (SetupChange, error) {
+func applyCodexOTelConfig(configPath, statePath string, dryRun bool, tokens ...string) (SetupChange, error) {
 	contents, err := os.ReadFile(configPath)
 	if err != nil && !os.IsNotExist(err) {
 		return SetupChange{}, fmt.Errorf("read Codex config: %w", err)
 	}
 	configMissing := os.IsNotExist(err)
-	updated, state, changed, err := updateCodexOTel(string(contents), codexOTelSettings())
+	updated, state, changed, err := updateCodexOTel(string(contents), codexOTelSettings(tokens...))
 	if err != nil {
 		return SetupChange{}, err
 	}
@@ -130,26 +149,39 @@ func applyCodexOTelConfig(configPath, statePath string, dryRun bool) (SetupChang
 		}
 	}
 	change := SetupChange{Path: configPath, Action: action, Description: "configure qlog-managed Codex OTLP logs"}
-	if !changed || dryRun {
+	if dryRun {
 		return change, nil
 	}
-	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
-		return SetupChange{}, fmt.Errorf("create Codex config directory: %w", err)
+	if err := ensurePrivateAdapterPaths(configPath, statePath); err != nil {
+		return SetupChange{}, err
 	}
-	_, stateErr := readCodexManagedState(statePath)
+	if !changed {
+		return change, nil
+	}
+	previousState, stateErr := readCodexManagedState(statePath)
 	if stateErr != nil && !os.IsNotExist(stateErr) {
 		return SetupChange{}, stateErr
 	}
-	if os.IsNotExist(stateErr) {
-		encoded, err := json.Marshal(state)
-		if err != nil {
-			return SetupChange{}, fmt.Errorf("encode Codex OTel state: %w", err)
+	if stateErr == nil {
+		if previousState.ManagedExporter {
+			state.OriginalExporter = previousState.OriginalExporter
 		}
-		if err := os.WriteFile(statePath, append(encoded, '\n'), 0o600); err != nil {
-			return SetupChange{}, fmt.Errorf("write Codex OTel state: %w", err)
+		state.ManagedExporter = state.ManagedExporter || previousState.ManagedExporter
+		if previousState.ManagedLogPrompt {
+			state.OriginalLogPrompt = previousState.OriginalLogPrompt
 		}
+		state.ManagedLogPrompt = state.ManagedLogPrompt || previousState.ManagedLogPrompt
+		state.CreatedOTel = previousState.CreatedOTel
 	}
-	if err := os.WriteFile(configPath, []byte(updated), 0o600); err != nil {
+	state.ManagedExporterValue = codexOTelSettings(tokens...)["exporter"]
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		return SetupChange{}, fmt.Errorf("encode Codex OTel state: %w", err)
+	}
+	if err := writePrivateAdapterFile(statePath, append(encoded, '\n')); err != nil {
+		return SetupChange{}, fmt.Errorf("write Codex OTel state: %w", err)
+	}
+	if err := writePrivateAdapterFile(configPath, []byte(updated)); err != nil {
 		return SetupChange{}, fmt.Errorf("write Codex config: %w", err)
 	}
 	return change, nil
@@ -167,7 +199,11 @@ func removeCodexOTelConfig(configPath, statePath string, dryRun bool) (SetupChan
 	if err != nil {
 		return SetupChange{}, fmt.Errorf("read Codex config: %w", err)
 	}
-	updated, changed, err := restoreCodexOTel(string(contents), state, codexOTelSettings())
+	desired := codexOTelSettings()
+	if state.ManagedExporterValue != "" {
+		desired["exporter"] = state.ManagedExporterValue
+	}
+	updated, changed, err := restoreCodexOTel(string(contents), state, desired)
 	if err != nil {
 		return SetupChange{}, err
 	}
@@ -179,7 +215,7 @@ func removeCodexOTelConfig(configPath, statePath string, dryRun bool) (SetupChan
 		return change, nil
 	}
 	if changed {
-		if err := os.WriteFile(configPath, []byte(updated), 0o600); err != nil {
+		if err := writePrivateAdapterFile(configPath, []byte(updated)); err != nil {
 			return SetupChange{}, fmt.Errorf("restore Codex config: %w", err)
 		}
 	}
@@ -288,8 +324,21 @@ func restoreCodexOTel(contents string, state codexManagedState, desired map[stri
 		}
 	}
 	if state.CreatedOTel && strings.HasPrefix(updated, "[otel]\n") {
-		updated = strings.TrimPrefix(updated, "[otel]\n")
-		changed = true
+		rootSettings := strings.TrimPrefix(updated, "[otel]\n")
+		if headers := tomlTableHeaders(rootSettings); len(headers) > 0 {
+			rootSettings = rootSettings[:headers[0].start]
+		}
+		hasUserSettings := false
+		for _, line := range strings.Split(rootSettings, "\n") {
+			if text := strings.TrimSpace(line); text != "" && !strings.HasPrefix(text, "#") {
+				hasUserSettings = true
+				break
+			}
+		}
+		if !hasUserSettings {
+			updated = strings.TrimPrefix(updated, "[otel]\n")
+			changed = true
+		}
 	}
 	if !changed {
 		return contents, false, nil
@@ -485,6 +534,10 @@ func codexOTelConfigured(path string) bool {
 	if err != nil {
 		return false
 	}
-	updated, _, changed, err := updateCodexOTel(string(contents), codexOTelSettings())
-	return err == nil && !changed && updated != ""
+	desired := codexOTelSettings()
+	if state, stateErr := readCodexManagedState(filepath.Join(filepath.Dir(path), "qlog-otel-state.json")); stateErr == nil && state.ManagedExporterValue != "" {
+		desired["exporter"] = state.ManagedExporterValue
+	}
+	updated, _, changed, err := updateCodexOTel(string(contents), desired)
+	return err == nil && !changed && updated != "" && strings.Contains(desired["exporter"], `"X-Qlog-Token"`) && strings.Contains(desired["exporter"], "https://127.0.0.1:4318/v1/logs") && strings.Contains(desired["exporter"], "ca-certificate")
 }

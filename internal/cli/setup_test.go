@@ -298,6 +298,59 @@ func TestSetupRejectsDifferentTargetBeforeLedgerInitialization(t *testing.T) {
 	}
 }
 
+func TestSetupTargetPreflightPrecedesAdapterPlanningOnlyWhenApplying(t *testing.T) {
+	for _, dryRun := range []bool{false, true} {
+		t.Run(fmt.Sprintf("dry-run=%t", dryRun), func(t *testing.T) {
+			base, found := adapters.Default().Get("codex")
+			if !found {
+				t.Fatal("Codex adapter fixture missing")
+			}
+			adapter := &setupFailingPlanAdapter{Adapter: base}
+			registry, err := adapters.NewRegistry(adapter)
+			if err != nil {
+				t.Fatal(err)
+			}
+			manager := &setupPreflightCountingManager{differentTargetPolicyDeniedCollectorManager: differentTargetPolicyDeniedCollectorManager{configuredHome: filepath.Join(t.TempDir(), "different-home")}}
+			home := t.TempDir()
+			_, err = bootstrapSupportedAdapters(context.Background(), home, temporaryDurableExecutable(t), true, dryRun, registry, manager)
+			if dryRun {
+				if err == nil || !strings.Contains(err.Error(), "synthetic adapter plan failure") || adapter.plans != 1 || manager.statusCalls != 0 {
+					t.Fatalf("dry run changed planning/preflight contract: err=%v plans=%d manager=%d", err, adapter.plans, manager.statusCalls)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "uninstall it before replacing") || adapter.plans != 0 {
+				t.Fatalf("adapter planning ran before target rejection: err=%v plans=%d", err, adapter.plans)
+			}
+			if manager.stopped || manager.installed || manager.started {
+				t.Fatal("collector mutated during failed preflight/planning")
+			}
+			entries, readErr := os.ReadDir(home)
+			if readErr != nil || len(entries) != 0 {
+				t.Fatalf("ledger initialized before validation: entries=%v err=%v", entries, readErr)
+			}
+		})
+	}
+}
+
+type setupFailingPlanAdapter struct {
+	adapters.Adapter
+	plans int
+}
+
+func (a *setupFailingPlanAdapter) PlanInstall(context.Context, adapters.SetupOptions) (adapters.SetupPlan, error) {
+	a.plans++
+	return adapters.SetupPlan{}, errors.New("synthetic adapter plan failure")
+}
+
+type setupPreflightCountingManager struct {
+	differentTargetPolicyDeniedCollectorManager
+	statusCalls int
+}
+
+func (m *setupPreflightCountingManager) Status(ctx context.Context, listen string) (CollectorStatus, error) {
+	m.statusCalls++
+	return m.differentTargetPolicyDeniedCollectorManager.Status(ctx, listen)
+}
+
 func TestSetupDoesNotStopCollectorForUntrustedHealthEndpoint(t *testing.T) {
 	t.Setenv("QLOG_ADAPTER_CONFIG_HOME", t.TempDir())
 	manager := &reachableCollectorManager{}
@@ -409,6 +462,21 @@ func TestBuiltArtifactSetupWritesDurableHookCommand(t *testing.T) {
 	}
 	if strings.Contains(contents, "go-build") || strings.Contains(contents, ".test") {
 		t.Fatalf("generated hook references transient Go executable: %s", contents)
+	}
+	directConfigHome := t.TempDir()
+	directHome := t.TempDir()
+	directClaude := exec.Command(artifact, "--home", directHome, "adapter", "install", "claude-code")
+	directClaude.Env = append(os.Environ(), "QLOG_ADAPTER_CONFIG_HOME="+directConfigHome, "QLOG_HOME="+t.TempDir())
+	if output, err := directClaude.CombinedOutput(); err != nil {
+		t.Fatalf("run built artifact direct Claude install: %v\n%s", err, output)
+	}
+	directSettings, err := os.ReadFile(filepath.Join(directConfigHome, ".claude", "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	escapedDirectHome := strings.ReplaceAll(directHome, `\`, `\\`)
+	if !strings.Contains(string(directSettings), escapedArtifact) || !strings.Contains(string(directSettings), escapedDirectHome) {
+		t.Fatalf("direct Claude install lost durable executable or selected home: %s", directSettings)
 	}
 	if runtime.GOOS == "windows" {
 		// The built child cannot inherit this package's in-memory profile seam.

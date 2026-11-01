@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased — security hardening
+
+- Enforce legacy prompt policy before forwarding and across event types; remove
+  prompt-derived fallback identities and restrict NDJSON to its metadata contract.
+- Require per-installation collector authentication and regenerate authenticated
+  settings for legacy adapters. Existing integrations must rerun legacy setup.
+- Authenticate the legacy collector before sending its token with installation-
+  pinned HTTPS, reject HTTP/foreign certificates/redirects, and invalidate old
+  transport tokens without changing prompt hashes or ledger history. VS Code
+  uses a private-home launcher and requires closing existing instances first.
+- Keep Claude Code integration at lifecycle-only capture through qlog hooks:
+  its native HTTP exporter does not accept the installation CA in the tested
+  client, so managed setup disables native exporters and supplies no native token.
+- Accept current native Codex usage logs without fabricated trace IDs, using
+  the source event time and inclusive counter semantics while preserving the
+  older traced schema and rejecting inconsistent or incomplete measurements.
+- Respect the selected legacy home in direct adapter install/uninstall, keep
+  durable hook commands, and preserve user-edited Codex OTel section ownership
+  during uninstall. Scope every Copilot signal's CA and credentials to its child.
+- Give trusted hook forwarding its existing two-second ingestion budget instead
+  of aborting at 400 ms, while retaining cancellation and best-effort agent exits.
+- Escape SQLite file URIs, refuse automatic recovery of previously misrouted
+  databases, and create private Windows data directories while retaining unsafe
+  existing files and permissions for explicit remediation.
+- Reject conflicting imports, use recorded baselines for later parent/child
+  fragments, guard token arithmetic and neutralize spreadsheet formulas in CSV.
+- Authenticate release manifests before installer extraction/execution, require
+  Cosign and the release bundle, and quote shell profile paths as data.
+- Update `golang.org/x/net` to v0.62.0 and its required transitive versions.
+- Preserve raw history and separate simple/legacy entrypoints. These source
+  changes do not update existing published archives or installed integrations.
+
 ## 0.4.0-rc11 - 2026-10-25
 
 - Add separate `qlog-simple` portable archives for the on-demand Codex workflow,

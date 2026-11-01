@@ -4,16 +4,20 @@ package otlp
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/janpereira-dev/quantum_log/internal/app"
+	"github.com/janpereira-dev/quantum_log/internal/config"
 	"github.com/janpereira-dev/quantum_log/internal/ingest/jsonl"
 	collectorlogpb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	collectortracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
@@ -183,7 +187,7 @@ func (r Receiver) ingest(ctx context.Context, request exportTraceServiceRequest)
 		}
 		return 0, 0, nil
 	}
-	imported, err := jsonl.ImportTrusted(ctx, r.service.Store, &lines)
+	imported, err := jsonl.ImportTrusted(ctx, r.service.Store, &lines, config.PromptCaptureMode(r.service.Paths))
 	if err != nil {
 		return 0, count, fmt.Errorf("import OTLP spans: %w", err)
 	}
@@ -217,7 +221,7 @@ func (r Receiver) ingestLogs(ctx context.Context, request exportLogsServiceReque
 		}
 		return 0, nil
 	}
-	imported, err := jsonl.ImportTrusted(ctx, r.service.Store, &lines)
+	imported, err := jsonl.ImportTrusted(ctx, r.service.Store, &lines, config.PromptCaptureMode(r.service.Paths))
 	if err != nil {
 		return 0, fmt.Errorf("import OTLP logs: %w", err)
 	}
@@ -477,18 +481,28 @@ func otlpUpstreamEventID(input span) string {
 }
 
 func (r Receiver) codexLogEvent(ctx context.Context, resource, record map[string]string, input logRecord) (map[string]any, bool, error) {
-	if resource["service.name"] != "codex" || record["event.name"] != "codex.sse_event" || record["event.kind"] != "response.completed" || input.TraceID == "" || input.SpanID == "" {
+	if (resource["service.name"] != "codex" && resource["service.name"] != "codex_exec") || record["event.name"] != "codex.sse_event" || record["event.kind"] != "response.completed" {
 		return nil, false, nil
 	}
 	model := record["model"]
-	inputTokens, hasInput := requiredNumber(record, "input_tokens")
-	outputTokens, hasOutput := requiredNumber(record, "output_tokens")
+	_, nativeInput := record["input_token_count"]
+	_, nativeOutput := record["output_token_count"]
+	native := nativeInput || nativeOutput
+	fields := []struct{ name, key string }{
+		{"input_tokens", "input_tokens"}, {"output_tokens", "output_tokens"},
+		{"cached_input_tokens", "cached_input_tokens"}, {"reasoning_tokens", "reasoning_output_tokens"},
+	}
+	if native {
+		fields = []struct{ name, key string }{
+			{"input_tokens", "input_token_count"}, {"output_tokens", "output_token_count"},
+			{"cached_input_tokens", "cached_token_count"}, {"cache_write_tokens", "cache_write_token_count"},
+			{"reasoning_tokens", "reasoning_token_count"}, {"total_tokens", "tool_token_count"},
+		}
+	}
+	inputTokens, hasInput := requiredNumber(record, fields[0].key)
+	outputTokens, hasOutput := requiredNumber(record, fields[1].key)
 	if model == "" || !hasInput || !hasOutput {
 		return nil, false, nil
-	}
-	resolved, err := r.service.ResolveProject(ctx, "", record["qlog.project"], first(record, resource, "process.cwd", "qlog.cwd"))
-	if err != nil {
-		return nil, false, err
 	}
 	payload := map[string]any{
 		"provider":                 "openai",
@@ -498,34 +512,84 @@ func (r Receiver) codexLogEvent(ctx context.Context, resource, record map[string
 		"codex_response_completed": true,
 		"input_tokens":             inputTokens,
 		"output_tokens":            outputTokens,
-		// Codex does not always expose a prompt hook. Its OTLP trace is the
-		// stable turn identity used for a privacy-safe interaction root.
-		"interaction_upstream_id": input.TraceID,
 	}
-	observations := []map[string]any{
-		{"name": "input_tokens", "value": inputTokens, "source": "otel", "raw_key": "input_tokens", "confidence": "reported"},
-		{"name": "output_tokens", "value": outputTokens, "source": "otel", "raw_key": "output_tokens", "confidence": "reported"},
+	usage := make(map[string]int64)
+	observations := make([]map[string]any, 0, len(fields))
+	for _, field := range fields {
+		value, valid := requiredNumber(record, field.key)
+		if _, present := record[field.key]; native && present && !valid {
+			return nil, false, nil
+		}
+		if valid {
+			usage[field.name] = value
+			payload[field.name] = value
+			observations = append(observations, map[string]any{"name": field.name, "value": value, "source": "otel", "raw_key": field.key, "confidence": "reported"})
+		}
 	}
-	if value, found := requiredNumber(record, "cached_input_tokens"); found {
-		payload["cached_input_tokens"] = value
-		observations = append(observations, map[string]any{"name": "cached_input_tokens", "value": value, "source": "otel", "raw_key": "cached_input_tokens", "confidence": "reported"})
-	}
-	if value, found := requiredNumber(record, "reasoning_output_tokens"); found {
-		payload["reasoning_tokens"] = value
-		observations = append(observations, map[string]any{"name": "reasoning_tokens", "value": value, "source": "otel", "raw_key": "reasoning_output_tokens", "confidence": "reported"})
+	if native {
+		cached, written, reasoning := usage["cached_input_tokens"], usage["cache_write_tokens"], usage["reasoning_tokens"]
+		if cached > inputTokens || written > inputTokens-cached || reasoning > outputTokens || inputTokens > math.MaxInt64-outputTokens {
+			return nil, false, nil
+		}
+		if total, reported := usage["total_tokens"]; reported && total != inputTokens+outputTokens {
+			return nil, false, nil
+		}
+		// Native counts include cache/read-write and reasoning subsets; storage uses disjoint components.
+		payload["input_tokens"] = inputTokens - cached - written
+		payload["output_tokens"] = outputTokens - reasoning
 	}
 	payload["metric_observations"] = observations
 	occurredAt := fromUnixNano(input.TimeUnixNano)
+	sessionID := first(record, resource, "conversation.id")
+	upstreamID, interactionID := codexLogIdentity(record, input), input.TraceID
+	if input.TraceID == "" || input.SpanID == "" {
+		nanoseconds, err := strconv.ParseInt(input.TimeUnixNano, 10, 64)
+		if !native || input.TraceID != "" || input.SpanID != "" || strings.TrimSpace(sessionID) == "" || (err != nil && input.TimeUnixNano != "") {
+			return nil, false, nil
+		}
+		observed := ""
+		if input.ObservedTimeUnixNano != "" {
+			value, err := strconv.ParseInt(input.ObservedTimeUnixNano, 10, 64)
+			if err != nil || value < 0 {
+				return nil, false, nil
+			}
+			if value > 0 {
+				observed = strconv.FormatInt(value, 10)
+			}
+		}
+		if nanoseconds <= 0 {
+			if observed == "" {
+				return nil, false, nil
+			}
+			// The Rust SDK supplies observed precision at emission; never substitute receiver time.
+			occurredAt, err = time.Parse(time.RFC3339Nano, record["event.timestamp"])
+			if err != nil || !occurredAt.After(time.Unix(0, 0)) || occurredAt.After(time.Unix(0, math.MaxInt64)) {
+				return nil, false, nil
+			}
+		}
+		identity, _ := json.Marshal(struct {
+			Conversation, At, Model string
+			Usage                   map[string]int64
+			Observed                string `json:",omitempty"`
+		}{sessionID, occurredAt.UTC().Format(time.RFC3339Nano), model, usage, observed})
+		digest := sha256.Sum256(identity)
+		upstreamID = "codex-log:" + hex.EncodeToString(digest[:])
+		interactionID = upstreamID
+	}
+	payload["interaction_upstream_id"] = interactionID
 	if occurredAt.IsZero() {
 		occurredAt = time.Now().UTC()
 	}
-	sessionID := first(record, resource, "conversation.id")
 	if sessionID == "" {
 		sessionID = input.TraceID
 	}
+	resolved, err := r.service.ResolveProject(ctx, "", record["qlog.project"], first(record, resource, "process.cwd", "qlog.cwd"))
+	if err != nil {
+		return nil, false, err
+	}
 	return map[string]any{
 		"source":                        "otlp-http",
-		"source_version":                first(resource, record, "service.version"),
+		"source_version":                first(resource, record, "service.version", "app.version"),
 		"session_id":                    sessionID,
 		"event_type":                    "model.call",
 		"occurred_at":                   occurredAt,
@@ -536,7 +600,7 @@ func (r Receiver) codexLogEvent(ctx context.Context, resource, record map[string
 		"project_resolution_evidence":   map[string]string{"source": "central-project-resolver"},
 		"trace_id":                      input.TraceID,
 		"span_id":                       input.SpanID,
-		"upstream_event_id":             codexLogIdentity(record, input),
+		"upstream_event_id":             upstreamID,
 		"payload":                       payload,
 	}, true, nil
 }
@@ -606,10 +670,11 @@ type span struct {
 	Attributes        []keyValue `json:"attributes"`
 }
 type logRecord struct {
-	TraceID      string     `json:"traceId"`
-	SpanID       string     `json:"spanId"`
-	TimeUnixNano string     `json:"timeUnixNano"`
-	Attributes   []keyValue `json:"attributes"`
+	TraceID              string     `json:"traceId"`
+	SpanID               string     `json:"spanId"`
+	TimeUnixNano         string     `json:"timeUnixNano"`
+	ObservedTimeUnixNano string     `json:"observedTimeUnixNano"`
+	Attributes           []keyValue `json:"attributes"`
 }
 type keyValue struct {
 	Key   string         `json:"key"`
@@ -657,10 +722,11 @@ func logsFromProto(input *collectorlogpb.ExportLogsServiceRequest) exportLogsSer
 			mappedScope := scopeLogs{LogRecords: make([]logRecord, 0, len(scopeLog.GetLogRecords()))}
 			for _, protoRecord := range scopeLog.GetLogRecords() {
 				mappedScope.LogRecords = append(mappedScope.LogRecords, logRecord{
-					TraceID:      fmt.Sprintf("%x", protoRecord.GetTraceId()),
-					SpanID:       fmt.Sprintf("%x", protoRecord.GetSpanId()),
-					TimeUnixNano: strconv.FormatUint(protoRecord.GetTimeUnixNano(), 10),
-					Attributes:   fromProtoAttributes(protoRecord.GetAttributes()),
+					TraceID:              fmt.Sprintf("%x", protoRecord.GetTraceId()),
+					SpanID:               fmt.Sprintf("%x", protoRecord.GetSpanId()),
+					TimeUnixNano:         strconv.FormatUint(protoRecord.GetTimeUnixNano(), 10),
+					ObservedTimeUnixNano: strconv.FormatUint(protoRecord.GetObservedTimeUnixNano(), 10),
+					Attributes:           fromProtoAttributes(protoRecord.GetAttributes()),
 				})
 			}
 			mappedResource.ScopeLogs = append(mappedResource.ScopeLogs, mappedScope)

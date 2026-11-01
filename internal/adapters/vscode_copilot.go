@@ -19,14 +19,37 @@ func (a vscodeCopilotAdapter) Descriptor() Descriptor {
 }
 
 func (a vscodeCopilotAdapter) Install(_ context.Context, options InstallOptions) (InstallResult, error) {
+	if !options.DryRun {
+		if err := ensurePrivateAdapterPaths(a.settingsPath(), a.launcherStatePath()); err != nil {
+			return InstallResult{}, err
+		}
+	}
+	paths, token, err := collectorCredentials(options.Home, options.DryRun)
+	if err != nil {
+		return InstallResult{}, err
+	}
+	if _, err := writeCollectorTokenFile(paths.Home, token, options.DryRun); err != nil {
+		return InstallResult{}, err
+	}
+	if _, err := a.installLauncher(paths, true); err != nil {
+		return InstallResult{}, err
+	}
 	change, err := applyVSCodeSettings(a.settingsPath(), copilotOTelSettings(), a.id, options.DryRun)
 	if err != nil {
 		return InstallResult{}, err
 	}
-	return InstallResult{Changed: !options.DryRun && (change.Action == "created" || change.Action == "updated"), Actions: []string{formatChange(change)}, Changes: []SetupChange{change}}, nil
+	launcher, err := a.installLauncher(paths, options.DryRun)
+	if err != nil {
+		return InstallResult{}, err
+	}
+	return InstallResult{Changed: !options.DryRun && (change.Action == "created" || change.Action == "updated" || launcher.Action == "created" || launcher.Action == "updated"), Actions: []string{formatChange(change), formatChange(launcher)}, Changes: []SetupChange{change, launcher}}, nil
 }
 
 func (a vscodeCopilotAdapter) PlanInstall(_ context.Context, options SetupOptions) (SetupPlan, error) {
+	paths, _, err := collectorCredentials(options.Home, true)
+	if err != nil {
+		return SetupPlan{}, err
+	}
 	change, err := applyVSCodeSettings(a.settingsPath(), copilotOTelSettings(), a.id, true)
 	if err != nil {
 		return SetupPlan{}, err
@@ -34,7 +57,11 @@ func (a vscodeCopilotAdapter) PlanInstall(_ context.Context, options SetupOption
 	if options.DryRun {
 		change.Description = "dry run: " + change.Description
 	}
-	return SetupPlan{AdapterID: a.id, State: SetupAvailable, CaptureQuality: CaptureOTELReported, Changes: []SetupChange{change}, Notes: []string{"Copilot OTel reports documented model and token fields; clean-device real-agent acceptance remains required"}}, nil
+	launcher, err := a.installLauncher(paths, true)
+	if err != nil {
+		return SetupPlan{}, err
+	}
+	return SetupPlan{AdapterID: a.id, State: SetupAvailable, CaptureQuality: CaptureOTELReported, Changes: []SetupChange{change, launcher}, Notes: []string{"close all VS Code windows and relaunch through the generated qlog-code launcher; direct launch has no collector credential", "clean-device real-agent acceptance remains required"}}, nil
 }
 
 func (a vscodeCopilotAdapter) Uninstall(_ context.Context, options InstallOptions) (InstallResult, error) {
@@ -42,7 +69,11 @@ func (a vscodeCopilotAdapter) Uninstall(_ context.Context, options InstallOption
 	if err != nil {
 		return InstallResult{}, err
 	}
-	return InstallResult{Changed: !options.DryRun && change.Action == "removed", Actions: []string{formatChange(change)}, Changes: []SetupChange{change}}, nil
+	launcher, err := a.uninstallLauncher(options.DryRun)
+	if err != nil {
+		return InstallResult{}, err
+	}
+	return InstallResult{Changed: !options.DryRun && (change.Action == "removed" || launcher.Action == "removed"), Actions: []string{formatChange(change), formatChange(launcher)}, Changes: []SetupChange{change, launcher}}, nil
 }
 
 func (a vscodeCopilotAdapter) Status(ctx context.Context) (SetupStatus, error) {
@@ -50,7 +81,7 @@ func (a vscodeCopilotAdapter) Status(ctx context.Context) (SetupStatus, error) {
 	if err != nil {
 		return SetupStatus{}, err
 	}
-	installed := jsonSettingsContain(a.settingsPath(), copilotOTelSettings())
+	installed := jsonSettingsContain(a.settingsPath(), copilotOTelSettings()) && a.launcherInstalled()
 	state := SetupUnavailable
 	if detection.Available {
 		state = SetupAvailable
@@ -58,7 +89,7 @@ func (a vscodeCopilotAdapter) Status(ctx context.Context) (SetupStatus, error) {
 	if installed {
 		state = SetupInstalled
 	}
-	return SetupStatus{AdapterID: a.id, Available: detection.Available, Installed: installed, State: state, InstallationState: state, CaptureQuality: CaptureOTELReported, Evidence: detection.Evidence, Notes: []string{"Copilot OTel reports documented model and token fields; clean-device real-agent acceptance remains required"}}, nil
+	return SetupStatus{AdapterID: a.id, Available: detection.Available, Installed: installed, State: state, InstallationState: state, CaptureQuality: CaptureOTELReported, Evidence: detection.Evidence, Notes: []string{"close all VS Code windows and relaunch through the generated qlog-code TLS launcher; direct launch has no collector credential", "clean-device real-agent acceptance remains required"}}, nil
 }
 
 func (a vscodeCopilotAdapter) Test(ctx context.Context) (TestResult, error) {
@@ -74,12 +105,14 @@ func (a vscodeCopilotAdapter) settingsPath() string {
 }
 
 func copilotOTelSettings() map[string]any {
-	return map[string]any{
+	settings := map[string]any{
 		"github.copilot.chat.otel.enabled":        true,
 		"github.copilot.chat.otel.exporterType":   "otlp-http",
-		"github.copilot.chat.otel.otlpEndpoint":   "http://127.0.0.1:4318",
+		"github.copilot.chat.otel.otlpEndpoint":   "https://127.0.0.1:4318",
 		"github.copilot.chat.otel.captureContent": false,
 	}
+	settings["github.copilot.chat.otel.headers"] = map[string]any{}
+	return settings
 }
 
 func jsonSettingsContain(path string, desired map[string]any) bool {

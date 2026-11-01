@@ -6,8 +6,24 @@ No Go installation or background process is required.
 Importa sesiones locales de Codex, consulta los tokens registrados y exporta CSV.
 No necesitas instalar Go ni mantener un proceso en segundo plano.
 
-Verify the archive's SHA-256 against its release's `checksums.txt` before use.
-Comprueba el SHA-256 del archivo con el `checksums.txt` de su misma release.
+Before extraction or execution, download `checksums.txt` and
+`checksums.txt.sigstore.json` from the same release. With an officially installed
+Cosign, authenticate the manifest using the exact release tag (replace the tag
+below when downloading another version), then compare the archive's SHA-256
+with its exact entry. Stop if either verification fails.
+
+Antes de extraer o ejecutar, descarga `checksums.txt` y
+`checksums.txt.sigstore.json` de la misma release. Con Cosign instalado desde su
+distribución oficial, autentica el manifiesto usando el tag exacto (sustituye el
+tag del ejemplo si elegiste otra versión) y después compara el SHA-256 del archivo
+con su entrada exacta. Detente si falla cualquiera de las comprobaciones.
+
+```sh
+cosign verify-blob --bundle checksums.txt.sigstore.json --certificate-oidc-issuer https://token.actions.githubusercontent.com --certificate-identity https://github.com/janpereira-dev/quantum_log/.github/workflows/release.yml@refs/tags/v0.4.0-rc11 checksums.txt
+```
+
+PowerShell: `Get-FileHash ARCHIVE.zip -Algorithm SHA256`.
+Linux: `sha256sum ARCHIVE.tar.gz`. macOS: `shasum -a 256 ARCHIVE.tar.gz`.
 
 ## 1. Try the demo / Prueba la demostración
 

@@ -544,7 +544,7 @@ func TestSimplePortableReleasePreservesLegacyBinaryAndUsesSyntheticSmoke(t *test
 	for _, want := range []string{
 		"os: [ubuntu-latest, macos-latest, windows-latest]",
 		"verify-simple-artifact.js", "fixtures/demo-session.jsonl",
-		"node --test packaging/npm/tests/install.test.js",
+		"node --test packaging/npm/tests/*.test.js",
 	} {
 		if !strings.Contains(string(ci), want) {
 			t.Errorf("portable CI validation missing %q", want)

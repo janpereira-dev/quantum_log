@@ -37,6 +37,11 @@ func vscodeSettingsPath(variant string) string {
 }
 
 func applyVSCodeSettings(path string, desired map[string]any, owner string, dryRun bool) (SetupChange, error) {
+	if !dryRun {
+		if err := ensurePrivateAdapterPaths(path); err != nil {
+			return SetupChange{}, err
+		}
+	}
 	settings, original, existed, err := readVSCodeSettings(path)
 	if err != nil {
 		return SetupChange{}, err
@@ -46,7 +51,16 @@ func applyVSCodeSettings(path string, desired map[string]any, owner string, dryR
 	state, hasState := vscodeManagedState(settings, owner)
 	if !hasState {
 		state = vscodeSettingsMarker{Managed: make(map[string]any, len(desired)), Previous: make(map[string]any, len(desired)), PreviousPresent: make(map[string]bool, len(desired))}
-		for key := range desired {
+	}
+	drifted := make([]string, 0, len(desired))
+	if state.Previous == nil {
+		state.Previous = map[string]any{}
+	}
+	if state.PreviousPresent == nil {
+		state.PreviousPresent = map[string]bool{}
+	}
+	for key := range desired {
+		if _, tracked := state.PreviousPresent[key]; !tracked {
 			previous, found := settings[key]
 			state.PreviousPresent[key] = found
 			if found {
@@ -54,7 +68,6 @@ func applyVSCodeSettings(path string, desired map[string]any, owner string, dryR
 			}
 		}
 	}
-	drifted := make([]string, 0, len(desired))
 	state.Managed = make(map[string]any, len(desired))
 	for key, value := range desired {
 		if !reflect.DeepEqual(settings[key], value) {
@@ -112,7 +125,10 @@ func removeVSCodeSettings(path string, desired map[string]any, owner string, dry
 		managed = managedVSCodeSettings(settings, owner)
 	}
 	changed := false
-	for key := range managed {
+	for key, value := range managed {
+		if hasState && !reflect.DeepEqual(settings[key], value) {
+			continue
+		}
 		if state.PreviousPresent[key] {
 			if !reflect.DeepEqual(settings[key], state.Previous[key]) {
 				settings[key] = state.Previous[key]
@@ -155,13 +171,13 @@ func readVSCodeSettings(path string) (map[string]any, []byte, bool, error) {
 }
 
 func writeVSCodeSettings(path string, settings map[string]any, original []byte, existed bool, action string, replaceKeys []string) (SetupChange, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return SetupChange{}, fmt.Errorf("create parent directory: %w", err)
+	if err := ensurePrivateAdapterPaths(path); err != nil {
+		return SetupChange{}, err
 	}
 	change := SetupChange{Path: path, Action: action, Description: "qlog settings written"}
 	if existed {
 		backupPath := plannedBackupPath(path)
-		if err := os.WriteFile(backupPath, original, 0o600); err != nil {
+		if err := writePrivateAdapterFile(backupPath, original); err != nil {
 			return SetupChange{}, fmt.Errorf("write backup: %w", err)
 		}
 		change.BackupPath = backupPath
